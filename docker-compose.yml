@@ -1,0 +1,148 @@
+# ============================================================
+# AudioGraphy single-host docker-compose (Phase 1 + minimal Phase 3)
+#
+# Services:
+#   mysql        — state layer + vectors (brute-force cosine Phase 1)
+#   adminer      — DB web UI (dev-only, port 8081)
+#   backend      — FastAPI (uvicorn)
+#   frontend     — Vite dev server (port 5173) — replaced by nginx in prod
+#
+# All model adapters (ASR/LLM/VAD/Embed) ship as MOCK by default
+# (ADAPTER_MODE=mock). Real vLLM/funASR services are out-of-scope for this sprint.
+#
+# Bring up:  docker compose up -d
+# Health:    docker compose ps
+# Logs:      docker compose logs -f backend
+# ============================================================
+
+name: audiography
+
+services:
+  mysql:
+    image: mysql:8.0.41
+    container_name: audiography-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
+      MYSQL_DATABASE: ${MYSQL_DB:-audiography}
+      MYSQL_USER: ${MYSQL_USER:-audiography}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-change-me}
+      TZ: Asia/Shanghai
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-authentication-plugin=mysql_native_password
+      - --max-connections=200
+      - --innodb-buffer-pool-size=512M
+      - --innodb-log-file-size=128M
+      - --slow-query-log=ON
+      - --long-query-time=1
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./mysql/init:/docker-entrypoint-initdb.d:ro
+      - ./mysql/conf.d:/etc/mysql/conf.d:ro
+    ports:
+      # Host 3307 → container 3306 (avoid conflict with locally-installed MySQL on 3306)
+      # Backend / adminer connect via the internal docker network on 3306 directly.
+      - "3307:3306"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "mysqladmin ping -h 127.0.0.1 -u$${MYSQL_USER} -p$${MYSQL_PASSWORD} --silent",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    networks:
+      - audiography_net
+
+  adminer:
+    image: adminer:5.3.0
+    container_name: audiography-adminer
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    ports:
+      - "8081:8080"
+    environment:
+      ADMINER_DEFAULT_SERVER: mysql
+    networks:
+      - audiography_net
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: audiography-backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      ADAPTER_MODE: ${ADAPTER_MODE:-mock}
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      WORKING_DIR: /data/working_dir
+    volumes:
+      - ./backend:/app
+      - working_dir:/data/working_dir
+    ports:
+      - "8000:8000"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    healthcheck:
+      test:
+        ["CMD-SHELL", "python -c \"import httpx,sys; sys.exit(0 if httpx.get('http://127.0.0.1:8000/health', timeout=2).status_code==200 else 1)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    networks:
+      - audiography_net
+    command: >
+      sh -c "
+        alembic upgrade head &&
+        uvicorn audio_graphy.main:app --host 0.0.0.0 --port 8000 --reload --reload-delay 1
+      "
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: dev
+    container_name: audiography-frontend
+    restart: unless-stopped
+    environment:
+      VITE_API_BASE: http://localhost:8000/api/v1
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    ports:
+      - "5173:5173"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      # node:22-slim doesn't ship wget/curl — use node's http module directly
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://127.0.0.1:5173/',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    networks:
+      - audiography_net
+    command: pnpm dev --host 0.0.0.0
+
+volumes:
+  mysql_data:
+    name: audiography_mysql_data
+  working_dir:
+    name: audiography_working_dir
+
+networks:
+  audiography_net:
+    name: audiography_net
+    driver: bridge

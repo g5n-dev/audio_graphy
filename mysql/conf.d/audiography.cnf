@@ -1,0 +1,41 @@
+# ============================================================
+# AudioGraphy MySQL 8 custom config (mounted at /etc/mysql/conf.d/)
+# Tuned for Phase 1 single-host brute-force cosine + state layer.
+# ============================================================
+
+[mysqld]
+# --- Charset / collation -----------------------------------------------
+character-set-server = utf8mb4
+collation-server = utf8mb4_unicode_ci
+init-connect = 'SET NAMES utf8mb4'
+
+# --- Time zone ----------------------------------------------------------
+default-time-zone = '+08:00'
+
+# --- Connection & timeout ----------------------------------------------
+max_connections = 200
+wait_timeout = 28800
+interactive_timeout = 28800
+connect_timeout = 10
+
+# --- InnoDB (Phase 1 brute-force vectors live here) -------------------
+innodb_buffer_pool_size = 512M
+innodb_log_file_size = 128M
+innodb_flush_log_at_trx_commit = 1
+innodb_flush_method = O_DIRECT
+innodb_file_per_table = 1
+
+# --- Slow query log (useful for tuning brute-force cosine) ------------
+slow_query_log = ON
+slow_query_log_file = /var/lib/mysql/slow.log
+long_query_time = 1
+log_queries_not_using_indexes = OFF
+
+# --- SQL mode (strict, but permissive of zero-date) -------------------
+sql_mode = STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION
+
+[client]
+default-character-set = utf8mb4
+
+[mysql]
+default-character-set = utf8mb4
