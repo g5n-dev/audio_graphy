@@ -41,9 +41,7 @@ EXPECTED_TABLES = {
 }
 
 
-def _run_alembic(
-    *args: str, env: dict[str, str]
-) -> subprocess.CompletedProcess[str]:
+def _run_alembic(*args: str, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
     """Run alembic CLI command via subprocess using the installed binary."""
     cmd = [ALEMBIC_BIN, "-c", str(ALEMBIC_INI), *list(args)]
     result = subprocess.run(
@@ -94,9 +92,7 @@ class TestAlembicRoundtrip:
         # Run alembic upgrade head
         result = _run_alembic("upgrade", "head", env=env)
         assert result.returncode == 0, (
-            f"alembic upgrade head failed:\n"
-            f"stdout: {result.stdout}\n"
-            f"stderr: {result.stderr}"
+            f"alembic upgrade head failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
         )
 
         # Verify all 13 tables exist
@@ -109,17 +105,13 @@ class TestAlembicRoundtrip:
             result_set = conn.execute(text("SHOW TABLES"))
             tables = {row[0] for row in result_set}
 
-        assert EXPECTED_TABLES.issubset(tables), (
-            f"Missing tables: {EXPECTED_TABLES - tables}"
-        )
+        assert EXPECTED_TABLES.issubset(tables), f"Missing tables: {EXPECTED_TABLES - tables}"
         assert "_alembic_sentinel" not in tables
 
         # Run alembic downgrade base
         result = _run_alembic("downgrade", "base", env=env)
         assert result.returncode == 0, (
-            f"alembic downgrade base failed:\n"
-            f"stdout: {result.stdout}\n"
-            f"stderr: {result.stderr}"
+            f"alembic downgrade base failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
         )
 
         # Verify all 13 tables are dropped

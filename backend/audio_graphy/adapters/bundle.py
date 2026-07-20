@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from audio_graphy.adapters.protocols import (
     ASRAdapter,
@@ -10,6 +11,9 @@ from audio_graphy.adapters.protocols import (
     LLMAdapter,
     VADAdapter,
 )
+
+if TYPE_CHECKING:
+    from audio_graphy.config import Settings
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,7 +31,7 @@ class AdapterBundle:
     embed: EmbedAdapter
 
 
-def build_mock_bundle(settings) -> AdapterBundle:
+def build_mock_bundle(settings: Settings) -> AdapterBundle:
     """Construct a fully-mocked bundle (default for ADAPTER_MODE=mock)."""
     from audio_graphy.adapters.mock_asr import MockASRAdapter
     from audio_graphy.adapters.mock_embed import MockEmbedAdapter
