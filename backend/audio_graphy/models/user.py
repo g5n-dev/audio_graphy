@@ -45,6 +45,7 @@ class User(TenantScopedBase):
         nullable=False,
         default=UserRole.VIEWER.value,
     )
+    password_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
     # ORM relationships (lazy-loaded)
     created_prompts: Mapped[list[Prompt]] = relationship("Prompt", back_populates="created_by_user")

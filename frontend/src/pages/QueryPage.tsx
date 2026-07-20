@@ -1,0 +1,133 @@
+/**
+ * Query page — natural language search with dual-channel retrieval.
+ *
+ * Shows: query input, LLM answer, citations list, retrieval stats.
+ */
+
+import { useState } from "react";
+import { Card, Input, Button, Typography, List, Tag, Spin, Statistic, Grid } from "@arco-design/web-react";
+import { query as queryApi } from "@/api/services";
+import type { QueryResponse } from "@/types/api";
+
+const { Title, Text, Paragraph } = Typography;
+const { Row, Col } = Grid;
+
+export default function QueryPage() {
+  const [input, setInput] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<QueryResponse | null>(null);
+  const [error, setError] = useState<string>("");
+
+  const handleSearch = async () => {
+    if (!input.trim()) return;
+    setLoading(true);
+    setError("");
+    setResult(null);
+    try {
+      const resp = await queryApi(input.trim());
+      setResult(resp);
+    } catch (err: unknown) {
+      const msg =
+        err && typeof err === "object" && "response" in err
+          ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            ((err as any).response?.data?.error?.message ?? "查询失败")
+          : "查询失败";
+      setError(msg);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div style={{ padding: 24 }}>
+      <Title heading={4} style={{ marginBottom: 16 }}>
+        智能问答
+      </Title>
+
+      <Card style={{ marginBottom: 16 }}>
+        <div style={{ display: "flex", gap: 12 }}>
+          <Input
+            placeholder="输入自然语言查询, 例如: '本月哪些录音提到了新能源产品?'"
+            value={input}
+            onChange={setInput}
+            onPressEnter={handleSearch}
+            size="large"
+          />
+          <Button
+            type="primary"
+            size="large"
+            loading={loading}
+            onClick={handleSearch}
+          >
+            搜索
+          </Button>
+        </div>
+      </Card>
+
+      {error && (
+        <Card style={{ marginBottom: 16, borderColor: "#f53f3f" }}>
+          <Text style={{ color: "#f53f3f" }}>{error}</Text>
+        </Card>
+      )}
+
+      {loading && (
+        <div style={{ textAlign: "center", padding: 48 }}>
+          <Spin size={40} tip="检索中..." />
+        </div>
+      )}
+
+      {result && (
+        <>
+          <Card title="回答" style={{ marginBottom: 16 }}>
+            <Paragraph>{result.answer || "(无回答)"}</Paragraph>
+            {result.retrieval_stats && (
+              <Row gutter={16}>
+                <Col span={6}>
+                  <Statistic title="向量检索" value={result.retrieval_stats.naive_hits} />
+                </Col>
+                <Col span={6}>
+                  <Statistic title="图谱检索" value={result.retrieval_stats.graph_hits} />
+                </Col>
+                <Col span={6}>
+                  <Statistic title="时间过滤" value={result.retrieval_stats.filtered_by_time} />
+                </Col>
+                <Col span={6}>
+                  <Statistic title="LLM过滤" value={result.retrieval_stats.filtered_by_judge} />
+                </Col>
+              </Row>
+            )}
+          </Card>
+
+          {result.citations.length > 0 && (
+            <Card title={`引用 (${result.citations.length})`}>
+              <List>
+                {result.citations.map((cite, i) => (
+                  <List.Item key={i}>
+                    <div style={{ width: "100%" }}>
+                      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 4 }}>
+                        <Tag color="blue">{cite.entity}</Tag>
+                        {cite.recording_id && (
+                          <Text style={{ fontSize: 12, color: "#86909c" }}>
+                            录音 #{cite.recording_id}
+                          </Text>
+                        )}
+                        <Text style={{ fontSize: 12, color: "#86909c" }}>
+                          置信度: {(cite.confidence * 100).toFixed(1)}%
+                        </Text>
+                      </div>
+                      {cite.transcript_snippet && (
+                        <Paragraph style={{ margin: 0, color: "#4e5969", fontSize: 13 }}>
+                          "{cite.transcript_snippet}"
+                        </Paragraph>
+                      )}
+                    </div>
+                  </List.Item>
+                ))}
+              </List>
+            </Card>
+          )}
+        </>
+      )}
+    </div>
+  );
+}

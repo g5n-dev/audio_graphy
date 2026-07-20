@@ -14,7 +14,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import BigInteger, DateTime, MetaData, String
+from sqlalchemy import BigInteger, DateTime, Integer, MetaData, String
 from sqlalchemy.orm import DeclarativeBase, Mapped, declared_attr, mapped_column
 
 # Naming convention for auto-generated constraint names.
@@ -64,7 +64,11 @@ class Base(DeclarativeBase):
             result.append(ch.lower())
         return "".join(result)
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"),
+        primary_key=True,
+        autoincrement=True,
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

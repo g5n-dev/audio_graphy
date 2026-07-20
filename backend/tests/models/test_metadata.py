@@ -15,6 +15,7 @@ from audio_graphy.models import (
     LLMCallLog,
     PipelineState,
     Prompt,
+    RecomputeTask,
     Recording,
     RecordingStatus,
     Segment,
@@ -44,6 +45,7 @@ EXPECTED_TABLES = {
     "vectors_chunk",
     "audit_logs",
     "llm_call_logs",
+    "recompute_tasks",
 }
 
 EXPECTED_MODELS = {
@@ -60,15 +62,16 @@ EXPECTED_MODELS = {
     VectorChunk,
     AuditLog,
     LLMCallLog,
+    RecomputeTask,
 }
 
 
 @pytest.mark.integration
 class TestMetadata:
-    """Verify Base.metadata contains all 13 tables."""
+    """Verify Base.metadata contains all 14 tables (13 original + recompute_tasks)."""
 
     def test_metadata_has_13_tables(self) -> None:
-        assert len(Base.metadata.tables) == 13
+        assert len(Base.metadata.tables) == 14
 
     def test_metadata_table_names(self) -> None:
         assert set(Base.metadata.tables.keys()) == EXPECTED_TABLES

@@ -24,6 +24,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import TYPE_CHECKING
 
+import tiktoken
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from audio_graphy.adapters.bundle import AdapterBundle
@@ -121,12 +122,15 @@ class Chunker:
         overlap_tokens: int = 0,
         session_factory: async_sessionmaker[AsyncSession] | None = None,
         file_index: FileIndex | None = None,
+        encoding_name: str = "cl100k_base",
     ) -> None:
         self._bundle = bundle
         self._token_budget = token_budget
         self._overlap_tokens = overlap_tokens
         self._session_factory = session_factory
         self._file_index = file_index
+        self._encoding_name = encoding_name
+        self._enc = tiktoken.get_encoding(encoding_name)
 
     async def process_recording(
         self,
@@ -190,6 +194,10 @@ class Chunker:
     ) -> list[SegmentRecord]:
         """Transcribe each VAD segment via ASR.
 
+        Passes VAD segment boundaries to the ASR adapter (W12 fix) so that
+        real ASR services can transcribe specific time ranges. Mock adapters
+        ignore the segments parameter and transcribe the whole file.
+
         ASR failures on a single segment set transcript="" but don't block
         the rest (PRD §4.1 error handling).
 
@@ -204,7 +212,12 @@ class Chunker:
         for idx, seg in enumerate(vad_segments):
             transcript = ""
             try:
-                asr_result = await self._bundle.asr.transcribe(audio_path)
+                # Pass the single VAD segment to ASR (W12: segment-level transcription)
+                single_segment = [seg] if seg else None
+                asr_result = await self._bundle.asr.transcribe(
+                    audio_path,
+                    segments=single_segment,
+                )
                 transcript = asr_result.text
             except Exception as exc:
                 logger.warning(
@@ -296,22 +309,28 @@ class Chunker:
     # Utility methods
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _estimate_tokens(text: str) -> int:
-        """Estimate token count for Chinese text.
+    def _estimate_tokens(self, text: str) -> int:
+        """Estimate token count using tiktoken cl100k_base encoding.
 
-        Uses len(text) // 2 approximation (Q1 decision).
-        Empty strings return 0.
+        Replaces the old ``len(text) // 2`` approximation (W11 upgrade).
+        Handles Chinese/English mixed text accurately.
+
+        Uses lazy initialization of the tiktoken encoder to support
+        instances created via ``__new__`` (bypassing ``__init__``).
 
         Args:
             text: Input text.
 
         Returns:
-            Estimated token count.
+            Token count (0 for empty strings).
         """
         if not text:
             return 0
-        return max(1, len(text) // 2)
+        enc = getattr(self, "_enc", None)
+        if enc is None:
+            enc = tiktoken.get_encoding(getattr(self, "_encoding_name", "cl100k_base"))
+            self._enc = enc
+        return max(1, len(enc.encode(text)))
 
     @staticmethod
     def _compute_content_hash(text: str) -> str:

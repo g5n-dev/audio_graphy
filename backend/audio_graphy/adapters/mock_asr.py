@@ -14,7 +14,7 @@ import logging
 import os
 import random
 
-from audio_graphy.adapters.protocols import ASRResult
+from audio_graphy.adapters.protocols import ASRResult, VADSegment
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +51,7 @@ class MockASRAdapter:
         self,
         audio_path: str,
         *,
+        segments: list[VADSegment] | None = None,
         language: str = "zh",
     ) -> ASRResult:
         self._call_count += 1

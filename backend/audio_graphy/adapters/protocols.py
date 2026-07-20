@@ -86,6 +86,7 @@ class ASRAdapter(Protocol):
         self,
         audio_path: str,
         *,
+        segments: list[VADSegment] | None = None,
         language: str = "zh",
     ) -> ASRResult: ...
 
