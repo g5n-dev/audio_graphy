@@ -1,0 +1,161 @@
+%% AudioGraphy M1.4 Class Diagram — ORM Model Inheritance & Relationships
+%% Extracted from docs/m1.4-architecture.md §3
+
+classDiagram
+    class DeclarativeBase {
+        <<SQLAlchemy>>
+    }
+
+    class Base {
+        +BigInteger id
+        +DateTime created_at
+        +DateTime updated_at
+        +__tablename__() str
+        +__repr__() str
+    }
+
+    class TenantScopedBase {
+        +String tenant_id
+        +to_dict() dict
+    }
+
+    class Tenant {
+        +String code
+        +String name
+        +String brand
+        +String region
+    }
+
+    class User {
+        +String name
+        +String email
+        +String role
+    }
+
+    class Recording {
+        +String store_id
+        +String agent_name
+        +String customer_hash
+        +String path
+        +String status
+        +String pipeline_state
+        +DateTime recorded_at
+        +String prompt_version
+        +DateTime indexed_at
+    }
+
+    class Segment {
+        +BigInteger recording_id
+        +Integer idx
+        +Float start_sec
+        +Float end_sec
+        +Text transcript
+        +String speaker
+        +Float vad_conf
+    }
+
+    class Chunk {
+        +BigInteger recording_id
+        +JSON segment_ids
+        +Text text
+        +Integer token_n
+        +String content_hash
+    }
+
+    class TagFact {
+        +BigInteger recording_id
+        +String tag_path
+        +String tag_value
+        +Integer version
+        +String prompt_version
+        +String model_version
+        +String source
+        +String input_hash
+        +Float confidence
+        +DateTime computed_at
+        +BigInteger computed_by
+    }
+
+    class TagCurrent {
+        +BigInteger recording_id
+        +String tag_path
+        +String tag_value
+        +Integer version
+        +String prompt_version
+    }
+
+    class TagStat {
+        +String store_id
+        +String agent_name
+        +String tag_path
+        +String tag_value
+        +Integer tag_count
+    }
+
+    class Prompt {
+        +String name
+        +String version
+        +Text content
+        +Text changelog
+        +Boolean active
+        +BigInteger created_by
+    }
+
+    class VectorEntity {
+        +String entity_id
+        +LargeBinary embedding
+    }
+
+    class VectorChunk {
+        +BigInteger chunk_id
+        +LargeBinary embedding
+    }
+
+    class AuditLog {
+        +BigInteger user_id
+        +String action
+        +String target
+        +JSON before_value
+        +JSON after_value
+        +DateTime occurred_at
+    }
+
+    class LLMCallLog {
+        +String model
+        +String prompt_hash
+        +Integer tokens_in
+        +Integer tokens_out
+        +Boolean cached
+        +Integer latency_ms
+        +DateTime logged_at
+    }
+
+    DeclarativeBase <|-- Base
+    Base <|-- TenantScopedBase
+    Base <|-- Tenant
+    Base <|-- Prompt
+    TenantScopedBase <|-- User
+    TenantScopedBase <|-- Recording
+    TenantScopedBase <|-- Segment
+    TenantScopedBase <|-- Chunk
+    TenantScopedBase <|-- TagFact
+    TenantScopedBase <|-- TagCurrent
+    TenantScopedBase <|-- TagStat
+    TenantScopedBase <|-- VectorEntity
+    TenantScopedBase <|-- VectorChunk
+    TenantScopedBase <|-- AuditLog
+    TenantScopedBase <|-- LLMCallLog
+
+    %% Physical FK relationships
+    Recording "1" --> "*" Segment : recording_id FK CASCADE
+    Recording "1" --> "*" Chunk : recording_id FK CASCADE
+    Recording "1" --> "*" TagFact : recording_id FK CASCADE
+    Recording "1" --> "*" TagCurrent : recording_id FK CASCADE
+    User "1" --> "*" TagFact : computed_by FK SET NULL
+    User "1" --> "*" Prompt : created_by FK SET NULL
+    User "1" --> "*" AuditLog : user_id FK SET NULL
+    Chunk "1" --> "*" VectorChunk : chunk_id FK CASCADE
+
+    %% Logical references (no physical FK)
+    Tenant "1" ..> "*" User : tenant_id ~logical ref to code~
+    Tenant "1" ..> "*" Recording : tenant_id ~logical ref to code~

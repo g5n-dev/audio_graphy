@@ -21,8 +21,11 @@ BACKEND_DIR = Path(__file__).resolve().parent.parent
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
-# Import settings + Base metadata (M1.4 will populate Base.metadata with models)
+# Import settings + Base metadata.
+# Importing audio_graphy.models triggers all model modules to register on
+# Base.metadata (see models/__init__.py).
 from audio_graphy.config import get_settings
+from audio_graphy.models import *  # noqa: F403 — register all models
 from audio_graphy.models.base import Base
 
 config = context.config
