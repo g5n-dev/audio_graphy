@@ -1,0 +1,39 @@
+:root {
+  --ag-bg: #fafbfc;
+  --ag-text: #1d2129;
+  --ag-text-secondary: #4e5969;
+  --ag-text-muted: #86909c;
+  --ag-primary: #165dff;
+  --ag-border: #e5e6eb;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+body {
+  font-family:
+    -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue",
+    Arial, sans-serif;
+  background: var(--ag-bg);
+  color: var(--ag-text);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+a {
+  color: var(--ag-primary);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}

@@ -49,6 +49,7 @@ dev = [
     "testcontainers[mysql]>=4.8.0",
     "respx>=0.21.1",            # httpx mocking
     "factory-boy>=3.3.0",
+    "httpx2>=0.0.20",           # starlette TestClient now expects httpx2
     "ruff>=0.8.0",
     "mypy>=1.13.0",
     "pre-commit>=4.0.0",
@@ -101,6 +102,10 @@ ignore = [
 "tests/**" = ["S", "T20", "N802"]   # tests can use prints, snake_case funcs
 "alembic/**" = ["N", "E402"]
 "audio_graphy/adapters/mock_data/**" = ["S"]
+# Mock adapters use md5 (for hash keys, not crypto), random (for fake data),
+# and os.path in async functions (single-process mock, no concurrency concern).
+# All flagged issues are intentional and safe in mock context.
+"audio_graphy/adapters/mock_*.py" = ["S311", "S324", "ASYNC240"]
 
 [tool.ruff.format]
 quote-style = "double"
