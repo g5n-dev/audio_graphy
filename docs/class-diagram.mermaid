@@ -1,161 +1,304 @@
-%% AudioGraphy M1.4 Class Diagram — ORM Model Inheritance & Relationships
-%% Extracted from docs/m1.4-architecture.md §3
+%% AudioGraphy M2 — Class Diagram
+%% Extracted from docs/m2-architecture.md §3
 
 classDiagram
-    class DeclarativeBase {
-        <<SQLAlchemy>>
+    direction TB
+
+    %% ========== Shared Types (core/types.py) ==========
+    class GraphNode {
+        <<frozen dataclass, core/types.py>>
+        +entity_id: str
+        +name: str
+        +type: str
+        +description: str
+        +source_ids: list~str~
+        +recording_ids: list~int~
+        +degree: int
     }
 
-    class Base {
-        +BigInteger id
-        +DateTime created_at
-        +DateTime updated_at
-        +__tablename__() str
-        +__repr__() str
+    class GraphEdge {
+        <<frozen dataclass, core/types.py>>
+        +source: str
+        +target: str
+        +relation: str
+        +weight: float
+        +confidence: EdgeConfidence
+        +confidence_score: float | None
+        +source_ids: list~str~
     }
 
-    class TenantScopedBase {
-        +String tenant_id
-        +to_dict() dict
+    class GraphSnapshot {
+        <<frozen dataclass, core/types.py>>
+        +nodes: list~GraphNode~
+        +edges: list~GraphEdge~
+        +total_entities: int
+        +total_relations: int
+        +cross_recording_entities: int
     }
 
-    class Tenant {
-        +String code
-        +String name
-        +String brand
-        +String region
+    class VectorSearchHit {
+        <<frozen dataclass, core/types.py>>
+        +id: str | int
+        +score: float
     }
 
-    class User {
-        +String name
-        +String email
-        +String role
+    class AudioGraphyError {
+        <<base exception>>
+    }
+    class ParseError {
+        <<exception>>
+    }
+    class StorageError {
+        <<exception>>
+    }
+    class PipelineError {
+        <<exception>>
     }
 
-    class Recording {
-        +String store_id
-        +String agent_name
-        +String customer_hash
-        +String path
-        +String status
-        +String pipeline_state
-        +DateTime recorded_at
-        +String prompt_version
-        +DateTime indexed_at
+    AudioGraphyError <|-- ParseError
+    AudioGraphyError <|-- StorageError
+    AudioGraphyError <|-- PipelineError
+
+    %% ========== Chunker (core/chunker.py) ==========
+    class SegmentRecord {
+        <<frozen dataclass, core/chunker.py>>
+        +idx: int
+        +start_sec: float
+        +end_sec: float
+        +transcript: str
+        +speaker: str | None
+        +vad_conf: float
     }
 
-    class Segment {
-        +BigInteger recording_id
-        +Integer idx
-        +Float start_sec
-        +Float end_sec
-        +Text transcript
-        +String speaker
-        +Float vad_conf
+    class ChunkRecord {
+        <<frozen dataclass, core/chunker.py>>
+        +segment_ids: list~int~
+        +text: str
+        +token_n: int
+        +content_hash: str
     }
 
-    class Chunk {
-        +BigInteger recording_id
-        +JSON segment_ids
-        +Text text
-        +Integer token_n
-        +String content_hash
+    class ChunkerOutput {
+        <<frozen dataclass, core/chunker.py>>
+        +recording_id: int
+        +segments: list~SegmentRecord~
+        +chunks: list~ChunkRecord~
     }
 
-    class TagFact {
-        +BigInteger recording_id
-        +String tag_path
-        +String tag_value
-        +Integer version
-        +String prompt_version
-        +String model_version
-        +String source
-        +String input_hash
-        +Float confidence
-        +DateTime computed_at
-        +BigInteger computed_by
+    class Chunker {
+        <<core/chunker.py>>
+        -bundle: AdapterBundle
+        -token_budget: int
+        -overlap_tokens: int
+        +__init__(bundle, token_budget, overlap_tokens) None
+        +async process_recording(recording_id, audio_path, recorded_at, tenant_id) ChunkerOutput
+        -_estimate_tokens(text) int
+        -_pack_chunks(segments) list~ChunkRecord~
+        -_compute_content_hash(text) str
     }
 
-    class TagCurrent {
-        +BigInteger recording_id
-        +String tag_path
-        +String tag_value
-        +Integer version
-        +String prompt_version
+    %% ========== Extractor (core/extractor.py) ==========
+    class ExtractedEntity {
+        <<frozen dataclass, core/extractor.py>>
+        +name: str
+        +type: str
+        +description: str
+        +chunk_id: int
+        +recording_id: int
     }
 
-    class TagStat {
-        +String store_id
-        +String agent_name
-        +String tag_path
-        +String tag_value
-        +Integer tag_count
+    class ExtractedRelation {
+        <<frozen dataclass, core/extractor.py>>
+        +source_name: str
+        +target_name: str
+        +relation: str
+        +description: str
+        +weight: float
+        +confidence: EdgeConfidence
+        +chunk_id: int
+        +recording_id: int
     }
 
-    class Prompt {
-        +String name
-        +String version
-        +Text content
-        +Text changelog
-        +Boolean active
-        +BigInteger created_by
+    class ExtractionResult {
+        <<frozen dataclass, core/extractor.py>>
+        +chunk_id: int
+        +recording_id: int
+        +entities: list~ExtractedEntity~
+        +relations: list~ExtractedRelation~
+        +parse_success: bool
+        +gleaning_rounds: int
     }
 
-    class VectorEntity {
-        +String entity_id
-        +LargeBinary embedding
+    class EntityExtractor {
+        <<core/extractor.py>>
+        -bundle: AdapterBundle
+        -prompt_template: str
+        -gleaning_rounds: int
+        -entity_types: tuple~str~
+        -max_gleaning_retry: int
+        +__init__(bundle, prompt_template, gleaning_rounds, entity_types, max_gleaning_retry) None
+        +async extract_from_chunk(chunk_id, chunk_text, recording_id) ExtractionResult
+        +async extract_from_chunks(chunks, concurrency) list~ExtractionResult~
+        -_parse_llm_output(text) tuple
+        -_build_prompt(chunk_text) str
+        -_glean(entities, relations, chunk_text) tuple
+        -_normalize_entities(entities) list
     }
 
-    class VectorChunk {
-        +BigInteger chunk_id
-        +LargeBinary embedding
+    %% ========== Graph Builder (core/graph.py) ==========
+    class GraphBuilder {
+        <<core/graph.py>>
+        -graph_store: NetworkXGraphStore
+        -bundle: AdapterBundle
+        +__init__(graph_store, bundle) None
+        +async build_from_extractions(extractions, tenant_id) GraphSnapshot
+        -_merge_entities(extractions) dict
+        -_merge_edges(extractions, node_map) list~GraphEdge~
+        -_vote_type(types) str
+        -_dedup_descriptions(descriptions) str
+        -_compute_confidence(relations) EdgeConfidence
     }
 
-    class AuditLog {
-        +BigInteger user_id
-        +String action
-        +String target
-        +JSON before_value
-        +JSON after_value
-        +DateTime occurred_at
+    %% ========== Retrieval (core/retrieval.py) ==========
+    class CandidateSegment {
+        <<frozen dataclass, core/retrieval.py>>
+        +chunk_id: int
+        +recording_id: int
+        +segment_ids: list~int~
+        +text: str
+        +recorded_at: datetime | None
+        +score: float
+        +source_channel: str
     }
 
-    class LLMCallLog {
-        +String model
-        +String prompt_hash
-        +Integer tokens_in
-        +Integer tokens_out
-        +Boolean cached
-        +Integer latency_ms
-        +DateTime logged_at
+    class RetrievalResult {
+        <<frozen dataclass, core/retrieval.py>>
+        +query: str
+        +candidates: list~CandidateSegment~
+        +naive_hits: int
+        +graph_hits: int
+        +filtered_by_time: int
     }
 
-    DeclarativeBase <|-- Base
-    Base <|-- TenantScopedBase
-    Base <|-- Tenant
-    Base <|-- Prompt
-    TenantScopedBase <|-- User
-    TenantScopedBase <|-- Recording
-    TenantScopedBase <|-- Segment
-    TenantScopedBase <|-- Chunk
-    TenantScopedBase <|-- TagFact
-    TenantScopedBase <|-- TagCurrent
-    TenantScopedBase <|-- TagStat
-    TenantScopedBase <|-- VectorEntity
-    TenantScopedBase <|-- VectorChunk
-    TenantScopedBase <|-- AuditLog
-    TenantScopedBase <|-- LLMCallLog
+    class DualChannelRetriever {
+        <<core/retrieval.py>>
+        -bundle: AdapterBundle
+        -vector_store: MySQLVectorStore
+        -graph_store: NetworkXGraphStore
+        +__init__(bundle, vector_store, graph_store) None
+        +async retrieve(query, tenant_id, top_k, time_range) RetrievalResult
+        -_naive_channel(query_vec, tenant_id, top_k) list~CandidateSegment~
+        -_graph_channel(keywords, tenant_id, top_k) list~CandidateSegment~
+        -_union_dedup(naive, graph) list~CandidateSegment~
+        -_filter_by_time(candidates, time_range) tuple
+    }
 
-    %% Physical FK relationships
-    Recording "1" --> "*" Segment : recording_id FK CASCADE
-    Recording "1" --> "*" Chunk : recording_id FK CASCADE
-    Recording "1" --> "*" TagFact : recording_id FK CASCADE
-    Recording "1" --> "*" TagCurrent : recording_id FK CASCADE
-    User "1" --> "*" TagFact : computed_by FK SET NULL
-    User "1" --> "*" Prompt : created_by FK SET NULL
-    User "1" --> "*" AuditLog : user_id FK SET NULL
-    Chunk "1" --> "*" VectorChunk : chunk_id FK CASCADE
+    %% ========== Rerank (core/rerank.py) ==========
+    class Citation {
+        <<frozen dataclass, core/rerank.py>>
+        +entity: str
+        +chunk_id: int
+        +segment_ids: list~int~
+        +recording_id: int
+        +recorded_at: datetime | None
+        +transcript_snippet: str
+        +confidence: EdgeConfidence
+    }
 
-    %% Logical references (no physical FK)
-    Tenant "1" ..> "*" User : tenant_id ~logical ref to code~
-    Tenant "1" ..> "*" Recording : tenant_id ~logical ref to code~
+    class RerankResult {
+        <<frozen dataclass, core/rerank.py>>
+        +answer: str
+        +citations: list~Citation~
+        +filtered_count: int
+        +refined_count: int
+    }
+
+    class Reranker {
+        <<core/rerank.py>>
+        -bundle: AdapterBundle
+        +__init__(bundle) None
+        +async rerank_and_answer(query, candidates, time_range) RerankResult
+        -_llm_judge_filter(query, candidates) tuple
+        -_extract_keywords(query) list~str~
+        -_refine_descriptions(candidates, keywords) list
+        -_generate_answer(query, refined, citations) str
+        -_build_citations(candidates) list~Citation~
+    }
+
+    %% ========== Storage: FileIndex (storage/file_index.py) ==========
+    class FileIndex {
+        <<storage/file_index.py>>
+        -working_dir: Path
+        -tenant_id: str
+        -_stores: dict
+        +__init__(working_dir, tenant_id) None
+        +async get(store_name, key) Any | None
+        +async set(store_name, key, value) None
+        +async get_all(store_name) dict
+        +async delete(store_name, key) bool
+        +async get_llm_cache(cache_key) str | None
+        +async set_llm_cache(cache_key, response_text) None
+        +async llm_cache_hit(cache_key) bool
+        +async flush() None
+        +async load() None
+        +working_path Path
+    }
+
+    %% ========== Storage: MySQLVectorStore (storage/mysql_vector.py) ==========
+    class MySQLVectorStore {
+        <<storage/mysql_vector.py>>
+        -session_factory: async_sessionmaker
+        -dim: int
+        +__init__(session_factory, dim) None
+        +async upsert_entity_vector(tenant_id, entity_id, embedding) None
+        +async search_entities(tenant_id, query_vec, top_k) list~VectorSearchHit~
+        +async upsert_chunk_vector(tenant_id, chunk_id, embedding) None
+        +async search_chunks(tenant_id, query_vec, top_k) list~VectorSearchHit~
+        +_serialize(vec) bytes
+        +_deserialize(blob) tuple
+        -_brute_cosine(matrix, query_vec, top_k) list~VectorSearchHit~
+    }
+
+    %% ========== Storage: NetworkXGraphStore (storage/graph_networkx.py) ==========
+    class NetworkXGraphStore {
+        <<storage/graph_networkx.py>>
+        -working_dir: Path
+        -tenant_id: str
+        -_graph: nx.MultiDiGraph
+        +__init__(working_dir, tenant_id) None
+        +async upsert_node(node) None
+        +async get_node(entity_id) GraphNode | None
+        +async get_all_nodes() list~GraphNode~
+        +async upsert_edge(edge) None
+        +async get_edges(entity_id) list~GraphEdge~
+        +async get_neighbors(entity_id, max_hops) list~GraphNode~
+        +async get_relation_counts(entity_id) dict
+        +async get_node_degree(entity_id) int
+        +async save() None
+        +async load() None
+        +async has_graph() bool
+        -_node_to_attrs(node) dict
+        -_attrs_to_node(attrs) GraphNode
+        -_edge_to_attrs(edge) dict
+        -_attrs_to_edge(attrs) GraphEdge
+    }
+
+    %% ========== Relationships ==========
+    GraphSnapshot *-- GraphNode
+    GraphSnapshot *-- GraphEdge
+    ChunkerOutput *-- SegmentRecord
+    ChunkerOutput *-- ChunkRecord
+    ExtractionResult *-- ExtractedEntity
+    ExtractionResult *-- ExtractedRelation
+    RetrievalResult *-- CandidateSegment
+    RerankResult *-- Citation
+
+    GraphBuilder --> NetworkXGraphStore : uses
+    GraphBuilder ..> ExtractionResult : input
+    DualChannelRetriever --> MySQLVectorStore : uses
+    DualChannelRetriever --> NetworkXGraphStore : uses
+    DualChannelRetriever ..> VectorSearchHit : input
+    Reranker ..> CandidateSegment : input
+    MySQLVectorStore ..> VectorSearchHit : produces
+    NetworkXGraphStore ..> GraphNode : manages
+    NetworkXGraphStore ..> GraphEdge : manages

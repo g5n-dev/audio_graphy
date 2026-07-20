@@ -106,6 +106,10 @@ ignore = [
 # and os.path in async functions (single-process mock, no concurrency concern).
 # All flagged issues are intentional and safe in mock context.
 "audio_graphy/adapters/mock_*.py" = ["S311", "S324", "ASYNC240"]
+# Core and storage modules use hashlib.md5 for LLM cache keys (not crypto).
+# This is the same pattern as MockLLMAdapter.compute_prompt_hash.
+"audio_graphy/core/*.py" = ["S324"]
+"audio_graphy/storage/*.py" = ["S324"]
 
 [tool.ruff.format]
 quote-style = "double"

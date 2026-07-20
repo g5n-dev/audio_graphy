@@ -1,0 +1,9 @@
+# Prompt version registry — maps version → file path + changelog.
+# Used by the prompt loader to support version switching (P1-2).
+
+prompts:
+  entity_zh:
+    v1.0:
+      file: entity_zh.md
+      changelog: "初始版本，汽车销售领域，GraphRAG 分隔符协议 + few-shot + Gleaning"
+      active: true

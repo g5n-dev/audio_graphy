@@ -1,149 +1,204 @@
-%% AudioGraphy M1.4 Sequence Diagrams
-%% Extracted from docs/m1.4-architecture.md §4
+%% AudioGraphy M2 — Sequence Diagrams
+%% Extracted from docs/m2-architecture.md §4
 
-%% === Diagram 1: Alembic upgrade head ===
-
-sequenceDiagram
-    participant Dev as Developer
-    participant CLI as alembic CLI
-    participant Env as env.py
-    participant Cfg as Settings
-    participant DB as MySQL 8
-    participant Meta as Base.metadata
-
-    Dev->>CLI: alembic upgrade head
-    CLI->>Env: load env.py
-    Env->>Cfg: get_settings()
-    Cfg-->>Env: Settings(mysql_dsn_sync=...)
-    Env->>CLI: config.set_main_option("sqlalchemy.url", dsn)
-    Env->>Meta: import all model modules
-    Note over Meta: Tenant, User, Recording, Segment,<br/>Chunk, TagFact, TagCurrent, TagStat,<br/>Prompt, VectorEntity, VectorChunk,<br/>AuditLog, LLMCallLog
-    Meta-->>Env: Base.metadata.tables = {13 tables}
-    Env->>CLI: target_metadata = Base.metadata
-    CLI->>DB: CONNECT (mysql_dsn_sync)
-    CLI->>DB: SELECT version_num FROM alembic_version
-    DB-->>CLI: (empty — fresh database)
-    CLI->>DB: BEGIN TRANSACTION
-    CLI->>DB: op.drop_table("_alembic_sentinel") IF EXISTS
-    CLI->>DB: op.create_table("tenants", ...)
-    CLI->>DB: op.create_table("users", ...)
-    CLI->>DB: op.create_table("recordings", ...)
-    CLI->>DB: op.create_table("segments", ...) + FK + UNIQUE + CHECK
-    CLI->>DB: op.create_table("chunks", ...) + FK + UNIQUE + CHECK
-    CLI->>DB: op.create_table("tag_facts", ...) + 2 FK + UNIQUE + 2 CHECK
-    CLI->>DB: op.create_table("tag_current", ...) + FK + UNIQUE + CHECK
-    CLI->>DB: op.create_table("tag_stats", ...) + UNIQUE + CHECK
-    CLI->>DB: op.create_table("prompts", ...) + FK + UNIQUE
-    CLI->>DB: op.create_table("vectors_entity", ...) + INDEX
-    CLI->>DB: op.create_table("vectors_chunk", ...) + FK + UNIQUE
-    CLI->>DB: op.create_table("audit_logs", ...) + FK + INDEX
-    CLI->>DB: op.create_table("llm_call_logs", ...) + INDEX + 2 CHECK
-    CLI->>DB: INSERT INTO alembic_version VALUES ('0001_init')
-    CLI->>DB: COMMIT
-    DB-->>CLI: success
-    CLI-->>Dev: "Running upgrade -> 0001_init"
-
-%% === Diagram 2: Alembic downgrade base ===
+%% ============================================================
+%% 4.1 端到端索引时序 (End-to-End Indexing Sequence)
+%% ============================================================
 
 sequenceDiagram
-    participant Dev as Developer
-    participant CLI as alembic CLI
-    participant DB as MySQL 8
+    autonumber
+    participant Caller as 调用方
+    participant CHK as Chunker
+    participant VAD as VAD Adapter
+    participant ASR as ASR Adapter
+    participant DB as MySQL ORM
+    participant FI as FileIndex
+    participant EMB as Embed Adapter
+    participant EXT as EntityExtractor
+    participant LLM as Strong LLM
+    participant GRP as GraphBuilder
+    participant GN as NetworkXGraphStore
+    participant MV as MySQLVectorStore
 
-    Dev->>CLI: alembic downgrade base
-    CLI->>DB: SELECT version_num FROM alembic_version
-    DB-->>CLI: "0001_init"
-    CLI->>DB: BEGIN TRANSACTION
-    CLI->>DB: op.drop_table("llm_call_logs")
-    CLI->>DB: op.drop_table("audit_logs")
-    CLI->>DB: op.drop_table("vectors_chunk")
-    CLI->>DB: op.drop_table("vectors_entity")
-    CLI->>DB: op.drop_table("prompts")
-    CLI->>DB: op.drop_table("tag_stats")
-    CLI->>DB: op.drop_table("tag_current")
-    CLI->>DB: op.drop_table("tag_facts")
-    CLI->>DB: op.drop_table("chunks")
-    CLI->>DB: op.drop_table("segments")
-    CLI->>DB: op.drop_table("recordings")
-    CLI->>DB: op.drop_table("users")
-    CLI->>DB: op.drop_table("tenants")
-    CLI->>DB: DELETE FROM alembic_version WHERE version_num='0001_init'
-    CLI->>DB: COMMIT
-    DB-->>CLI: success
-    CLI-->>Dev: "Running downgrade 0001_init -> base"
-    Note over DB: SHOW TABLES -> empty
+    Caller->>CHK: process_recording(id, audio_path, recorded_at)
+    activate CHK
 
-%% === Diagram 3: Test — Model creation + constraint validation ===
+    CHK->>VAD: segment(audio_path)
+    VAD-->>CHK: VADSegment[]
+
+    loop 每个 VADSegment
+        CHK->>ASR: transcribe(segment_audio)
+        ASR-->>CHK: ASRResult(text, confidence)
+        Note over CHK: ASR 失败时 transcript="" 继续处理
+    end
+
+    CHK->>CHK: _pack_chunks(segments, token_budget)
+    Note over CHK: token 计数 = len(text) // 2 (Q1)
+    CHK->>CHK: _compute_content_hash(SHA-256)
+
+    CHK->>DB: INSERT segments
+    CHK->>DB: INSERT chunks
+    CHK->>FI: set video_segments + text_chunks
+    CHK-->>Caller: ChunkerOutput(segments, chunks)
+    deactivate CHK
+
+    Caller->>EMB: embed_texts(chunk_texts)
+    EMB-->>Caller: EmbeddingResult[]
+
+    loop 每个 chunk
+        Caller->>MV: upsert_chunk_vector(tenant, chunk_id, vec)
+        MV->>DB: UPSERT vectors_chunk
+    end
+
+    Caller->>EXT: extract_from_chunks(chunks, concurrency=4)
+    activate EXT
+    loop 每个 chunk concurrent
+        EXT->>LLM: complete(extraction_prompt, cache_key)
+        Note over LLM,FI: cache_key 命中则 cached=True
+        LLM-->>EXT: LLMResponse(text)
+
+        EXT->>LLM: complete(gleaning_prompt, cache_key)
+        LLM-->>EXT: LLMResponse(text)
+
+        EXT->>EXT: _parse_llm_output(text)
+        Note over EXT: 正则解析 GraphRAG 分隔符
+        EXT->>EXT: _normalize_entities(entities)
+        Note over EXT: 别名表 + 编辑距离2聚类
+    end
+    EXT-->>Caller: ExtractionResult[]
+    deactivate EXT
+
+    Caller->>GRP: build_from_extractions(extractions)
+    activate GRP
+    GRP->>GRP: _merge_entities + _merge_edges
+    Note over GRP: 类型多数投票 + 描述去重 + 边权累加
+    GRP->>GRP: _compute_confidence
+    Note over GRP: EXTRACTED / INFERRED / AMBIGUOUS
+
+    loop 每个 GraphNode
+        GRP->>GN: upsert_node(node)
+        GRP->>EMB: embed_texts([entity_name+desc])
+        GRP->>MV: upsert_entity_vector(tenant, entity_id, vec)
+    end
+    loop 每个 GraphEdge
+        GRP->>GN: upsert_edge(edge)
+    end
+    GRP->>GN: save() GraphML flush
+    GRP-->>Caller: GraphSnapshot(nodes, edges)
+    deactivate GRP
+
+    Caller->>FI: flush()
+    Caller->>DB: UPDATE recordings SET status=indexed
+
+%% ============================================================
+%% 4.2 端到端查询时序 (End-to-End Query Sequence)
+%% ============================================================
 
 sequenceDiagram
-    participant Test as pytest
-    participant TC as testcontainers
-    participant DB as MySQL Container
-    participant Session as SQLAlchemy Session
-    participant Model as ORM Model
+    autonumber
+    participant Caller as 调用方
+    participant RET as DualChannelRetriever
+    participant WL as Weak LLM
+    participant EMB as Embed Adapter
+    participant MV as MySQLVectorStore
+    participant GN as NetworkXGraphStore
+    participant DB as MySQL ORM
+    participant RNK as Reranker
+    participant SL as Strong LLM
 
-    Test->>TC: start MySQL 8 container
-    TC-->>DB: docker run mysql:8
-    DB-->>TC: ready (port mapped)
-    TC-->>Test: container url
+    Caller->>RET: retrieve(query, time_range)
+    activate RET
 
-    Test->>Session: create_engine(url)
-    Test->>Session: Base.metadata.create_all(engine)
-    Note over Session: Creates 13 tables from model definitions
+    RET->>WL: complete(query_rewrite_prompt, cache_key)
+    WL-->>RET: 改写query + 关键词列表
 
-    Test->>Model: Tenant(code="default", name="Default")
-    Test->>Session: session.add(tenant)
-    Test->>Session: session.commit()
-    Session-->>Test: success
+    RET->>EMB: embed_texts([query])
+    EMB-->>RET: EmbeddingResult(vector)
 
-    Test->>Model: Tenant(code="default", name="Dup")
-    Test->>Session: session.add(dup_tenant)
-    Test->>Session: session.commit()
-    Session-->>Test: IntegrityError (UNIQUE violation)
+    par Naive 通道
+        RET->>MV: search_chunks(tenant, vec, top_k)
+        MV->>DB: SELECT vectors_chunk WHERE tenant
+        MV->>MV: numpy矩阵cosine argpartition top-k
+        MV-->>RET: VectorSearchHit[]
+        RET->>DB: SELECT chunks WHERE id IN
+        RET->>RET: CandidateSegment channel=naive
+    and Graph 通道
+        RET->>GN: get_all_nodes()
+        GN-->>RET: GraphNode[]
+        RET->>RET: 关键词匹配实体名
+        loop 每个匹配实体
+            RET->>GN: get_neighbors(entity_id, max_hops=1)
+            GN-->>RET: neighbor nodes
+            RET->>GN: get_relation_counts(entity_id)
+            GN-->>RET: relation_type count dict
+        end
+        RET->>DB: SELECT chunks + segments
+        RET->>RET: CandidateSegment channel=graph
+    end
 
-    Test->>Model: User(role="hacker")
-    Test->>Session: session.add(user)
-    Test->>Session: session.commit()
-    Session-->>Test: IntegrityError (CHECK violation)
+    RET->>RET: union_dedup by chunk_id score=max
+    RET->>RET: filter_by_time recorded_at in range
+    RET->>RET: sort by recorded_at ASC
+    RET-->>Caller: RetrievalResult(candidates, hits, filtered)
+    deactivate RET
 
-    Test->>Model: Recording(tenant_id="a", ...)
-    Test->>Model: Recording(tenant_id="b", ...)
-    Test->>Session: SELECT * FROM recordings WHERE tenant_id = "a"
-    Session-->>Test: only tenant_a records
-    Note over Test: multi-tenant isolation verified
+    Caller->>RNK: rerank_and_answer(query, candidates)
+    activate RNK
 
-    Test->>TC: stop container
+    loop 每个候选段
+        RNK->>SL: complete(judge_prompt, cache_key)
+        SL-->>RNK: yes or no
+        Note over RNK: 失败则保留该段
+    end
+    Note over RNK: filtered_count = 被过滤数
 
-%% === Diagram 4: Alembic round-trip test ===
+    RNK->>WL: complete(keyword_prompt, cache_key)
+    WL-->>RNK: 关键词列表
+
+    loop 每个存活段
+        Note over RNK: ASR重转写 mock=原transcript 粗描述升级为精描述
+    end
+
+    RNK->>RNK: build_citations 三级溯源链
+    RNK->>SL: complete(answer_prompt, cache_key)
+    SL-->>RNK: 最终回答
+
+    RNK-->>Caller: RerankResult(answer, citations)
+    deactivate RNK
+
+%% ============================================================
+%% 4.3 LLM 缓存命中/未命中流程 (LLM Cache Flow)
+%% ============================================================
 
 sequenceDiagram
-    participant Test as test_alembic_roundtrip
-    participant TC as testcontainers
-    participant DB as MySQL Container
-    participant Alembic as alembic CLI
-    participant Meta as Base.metadata
+    autonumber
+    participant Core as core 模块
+    participant ADP as LLM Adapter 进程内_cache
+    participant FI as FileIndex 持久化cache
+    participant API as LLM API / Mock
 
-    Test->>TC: start MySQL 8 container
-    TC-->>Test: container url
+    Core->>Core: compute cache_key = MD5(model, messages)
 
-    Test->>Alembic: alembic upgrade head
-    Alembic->>DB: CREATE TABLE x 13
-    Alembic-->>Test: exit 0
+    Core->>ADP: complete(messages, cache_key=key)
 
-    Test->>DB: SHOW TABLES
-    DB-->>Test: [13 tables, no _alembic_sentinel]
-    Note over Test: assert 13 tables + sentinel absent
+    alt cache_key in adapter._cache
+        ADP-->>Core: LLMResponse(cached=True, 0 tokens)
+        Note over ADP,Core: Layer 1 HIT 进程内缓存命中
+    else cache_key NOT in adapter._cache
+        ADP->>FI: get_llm_cache(cache_key)
+        alt cache_key in file_index
+            FI-->>ADP: cached_response_text
+            ADP->>ADP: 存入 adapter._cache
+            ADP-->>Core: LLMResponse(cached=True)
+            Note over FI,ADP: Layer 2 HIT 持久化缓存命中
+        else cache_key NOT in file_index
+            ADP->>API: POST chat completions
+            API-->>ADP: LLM response
+            ADP->>ADP: 存入 adapter._cache
+            ADP->>FI: set_llm_cache(cache_key, response_text)
+            Note over ADP,FI: MISS 调API 双写两层缓存
+            ADP-->>Core: LLMResponse(cached=False, usage)
+        end
+    end
 
-    Test->>Meta: compare metadata.tables with DB
-    Meta-->>Test: 13 Table objects
-    Note over Test: assert DDL alignment
-
-    Test->>Alembic: alembic downgrade base
-    Alembic->>DB: DROP TABLE x 13
-    Alembic-->>Test: exit 0
-
-    Test->>DB: SHOW TABLES
-    DB-->>Test: [empty]
-    Note over Test: assert clean rollback
-
-    Test->>TC: stop container
+    Note over Core,FI: flush 在生命周期节点统一写盘 Layer 2 跨进程复用
