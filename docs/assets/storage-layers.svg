@@ -1,0 +1,105 @@
+<svg viewBox="0 0 1000 560" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Helvetica Neue', Arial, sans-serif">
+  <rect width="1000" height="560" fill="#FAFBFC"/>
+  <text x="500" y="32" text-anchor="middle" font-size="20" font-weight="700" fill="#1D2129">存储分层（Storage Layers）</text>
+  <text x="500" y="52" text-anchor="middle" font-size="12" fill="#86909C">VideoRAG 文件索引（复用） + MySQL 状态层（新增） + BaseStorage 抽象让三类存储可插拔</text>
+
+  <!-- 上半：抽象层 -->
+  <rect x="30" y="80" width="940" height="80" rx="8" fill="#F5E8FF" stroke="#722ED1" stroke-width="1.5"/>
+  <text x="500" y="103" text-anchor="middle" font-size="13" font-weight="700" fill="#5B1DAB">BaseStorage 抽象层（VideoRAG 提供，AudioRAG 直接复用）</text>
+  <rect x="60" y="115" width="280" height="35" rx="4" fill="#FFFFFF" stroke="#722ED1"/>
+  <text x="200" y="138" text-anchor="middle" font-size="11" font-weight="600" fill="#1D2129">BaseKVStorage（字典语义）</text>
+  <rect x="360" y="115" width="280" height="35" rx="4" fill="#FFFFFF" stroke="#722ED1"/>
+  <text x="500" y="138" text-anchor="middle" font-size="11" font-weight="600" fill="#1D2129">BaseVectorStorage（ANN 语义）</text>
+  <rect x="660" y="115" width="280" height="35" rx="4" fill="#FFFFFF" stroke="#722ED1"/>
+  <text x="800" y="138" text-anchor="middle" font-size="11" font-weight="600" fill="#1D2129">BaseGraphStorage（图遍历语义）</text>
+
+  <!-- 下半：MySQL 状态层 -->
+  <rect x="30" y="180" width="460" height="350" rx="8" fill="#E8F3FF" stroke="#165DFF" stroke-width="2"/>
+  <text x="260" y="203" text-anchor="middle" font-size="14" font-weight="700" fill="#0E42D2">MySQL 状态层（新增）</text>
+  <text x="260" y="220" text-anchor="middle" font-size="10" fill="#4E5969">orchestration · version · audit · aggregation · vectors (Phase 1)</text>
+
+  <rect x="50" y="235" width="200" height="55" rx="4" fill="#FFFFFF" stroke="#165DFF"/>
+  <text x="60" y="252" font-size="11" font-weight="700" fill="#1D2129">recordings</text>
+  <text x="60" y="267" font-size="9" font-family="ui-monospace, Menlo, monospace" fill="#86909C">id·path·tenant_id·status</text>
+  <text x="60" y="280" font-size="9" font-family="ui-monospace, Menlo, monospace" fill="#86909C">pipeline_state·recorded_at</text>
+
+  <rect x="260" y="235" width="220" height="55" rx="4" fill="#FFFFFF" stroke="#165DFF"/>
+  <text x="270" y="252" font-size="11" font-weight="700" fill="#1D2129">segments</text>
+  <text x="270" y="267" font-size="9" font-family="ui-monospace, Menlo, monospace" fill="#86909C">id·recording_id·idx·start·end</text>
+  <text x="270" y="280" font-size="9" font-family="ui-monospace, Menlo, monospace" fill="#86909C">transcript·speaker·vad_conf</text>
+
+  <rect x="50" y="300" width="200" height="55" rx="4" fill="#FFFFFF" stroke="#165DFF"/>
+  <text x="60" y="317" font-size="11" font-weight="700" fill="#1D2129">chunks</text>
+  <text x="60" y="332" font-size="9" font-family="ui-monospace, Menlo, monospace" fill="#86909C">id·segment_ids[]·text·token_n</text>
+  <text x="60" y="345" font-size="9" font-family="ui-monospace, Menlo, monospace" fill="#86909C">content_hash（去重）</text>
+
+  <rect x="260" y="300" width="220" height="55" rx="4" fill="#FFF1F0" stroke="#F53F3F"/>
+  <text x="270" y="317" font-size="11" font-weight="700" fill="#A8071A">tag_facts ★</text>
+  <text x="270" y="332" font-size="9" font-family="ui-monospace, Menlo, monospace" fill="#86909C">rec_id·tag_path·value·version</text>
+  <text x="270" y="345" font-size="9" font-family="ui-monospace, Menlo, monospace" fill="#86909C">prompt_version·input_hash·src</text>
+
+  <rect x="50" y="365" width="200" height="55" rx="4" fill="#E8FFEA" stroke="#00B42A"/>
+  <text x="60" y="382" font-size="11" font-weight="700" fill="#0F7A2E">tag_current（视图）</text>
+  <text x="60" y="397" font-size="9" fill="#86909C">SELECT MAX(version) GROUP BY</text>
+  <text x="60" y="410" font-size="9" fill="#86909C">(recording_id, tag_path)</text>
+
+  <rect x="260" y="365" width="220" height="55" rx="4" fill="#E8FFEA" stroke="#00B42A"/>
+  <text x="270" y="382" font-size="11" font-weight="700" fill="#0F7A2E">tag_stats（物化）</text>
+  <text x="270" y="397" font-size="9" font-family="ui-monospace, Menlo, monospace" fill="#86909C">tenant·store·tag_path·value·cnt</text>
+  <text x="270" y="410" font-size="9" fill="#86909C">增量 delta 刷新</text>
+
+  <rect x="50" y="430" width="430" height="40" rx="4" fill="#FFF7E8" stroke="#FF7D00"/>
+  <text x="60" y="447" font-size="11" font-weight="700" fill="#7A4D00">vectors_mysql（Phase 1 暴力余弦）</text>
+  <text x="60" y="462" font-size="9" font-family="ui-monospace, Menlo, monospace" fill="#86909C">entity_emb / chunk_emb · 10⁵-10⁶ 行 · 小规模与 NanoVectorDB 等价</text>
+
+  <rect x="50" y="480" width="430" height="40" rx="4" fill="#F7F8FA" stroke="#E5E6EB"/>
+  <text x="60" y="497" font-size="10" font-weight="700" fill="#1D2129">tenants · users · roles · prompts · audit_logs · llm_call_logs</text>
+  <text x="60" y="512" font-size="9" fill="#86909C">多租户 RBAC · prompt_version 注册 · 审计</text>
+
+  <!-- 下半：文件索引层 -->
+  <rect x="510" y="180" width="460" height="350" rx="8" fill="#E8FFEA" stroke="#00B42A" stroke-width="2"/>
+  <text x="740" y="203" text-anchor="middle" font-size="14" font-weight="700" fill="#0F7A2E">VideoRAG 文件索引（复用）</text>
+  <text x="740" y="220" text-anchor="middle" font-size="10" fill="#4E5969">working_dir 持久化 · index_done_callback flush · 跨次复用</text>
+
+  <rect x="530" y="235" width="200" height="50" rx="4" fill="#FFFFFF" stroke="#00B42A"/>
+  <text x="540" y="252" font-size="10" font-family="ui-monospace, Menlo, monospace" font-weight="700" fill="#1D2129">kv_store_video_path.json</text>
+  <text x="540" y="268" font-size="9" fill="#86909C">recording → path 映射</text>
+  <text x="540" y="280" font-size="9" fill="#86909C">去重依据</text>
+
+  <rect x="740" y="235" width="220" height="50" rx="4" fill="#FFFFFF" stroke="#00B42A"/>
+  <text x="750" y="252" font-size="10" font-family="ui-monospace, Menlo, monospace" font-weight="700" fill="#1D2129">kv_store_video_segments.json</text>
+  <text x="750" y="268" font-size="9" fill="#86909C">段级 transcript·timestamp</text>
+  <text x="750" y="280" font-size="9" fill="#86909C">·recorded_at·speaker</text>
+
+  <rect x="530" y="295" width="200" height="50" rx="4" fill="#FFFFFF" stroke="#00B42A"/>
+  <text x="540" y="312" font-size="10" font-family="ui-monospace, Menlo, monospace" font-weight="700" fill="#1D2129">kv_store_text_chunks.json</text>
+  <text x="540" y="328" font-size="9" fill="#86909C">chunk 文本 + 溯源</text>
+  <text x="540" y="340" font-size="9" fill="#86909C">segment_ids[]</text>
+
+  <rect x="740" y="295" width="220" height="50" rx="4" fill="#FFF1F0" stroke="#F53F3F" stroke-width="1.5"/>
+  <text x="750" y="312" font-size="10" font-family="ui-monospace, Menlo, monospace" font-weight="700" fill="#A8071A">kv_store_llm_response_cache ★</text>
+  <text x="750" y="328" font-size="9" fill="#A8071A">MD5(model,messages)</text>
+  <text x="750" y="340" font-size="9" fill="#A8071A">prompt 不变重打免费</text>
+
+  <rect x="530" y="355" width="430" height="50" rx="4" fill="#FFFFFF" stroke="#00B42A"/>
+  <text x="540" y="372" font-size="10" font-family="ui-monospace, Menlo, monospace" font-weight="700" fill="#1D2129">graph_chunk_entity_relation.graphml ★</text>
+  <text x="540" y="388" font-size="9" fill="#86909C">NetworkX 知识图谱 · 实体/关系/社区</text>
+  <text x="540" y="400" font-size="9" fill="#86909C">+ confidence（EXTRACTED/INFERRED，借鉴 Graphify）</text>
+
+  <rect x="530" y="415" width="200" height="50" rx="4" fill="#F7F8FA" stroke="#E5E6EB"/>
+  <text x="540" y="432" font-size="10" font-family="ui-monospace, Menlo, monospace" font-weight="700" fill="#1D2129">vdb_entities / vdb_chunks</text>
+  <text x="540" y="448" font-size="9" fill="#86909C">Phase 1 走 MySQL（同义）</text>
+  <text x="540" y="460" font-size="9" fill="#86909C">Phase 3 可切 NanoVectorDB/HNSW</text>
+
+  <rect x="740" y="415" width="220" height="50" rx="4" fill="#FFF1F0" stroke="#F53F3F" stroke-width="1.5" stroke-dasharray="3,2"/>
+  <text x="750" y="432" font-size="10" font-family="ui-monospace, Menlo, monospace" font-weight="700" fill="#A8071A">vdb_video_segment_feature.json ✗</text>
+  <text x="750" y="448" font-size="9" fill="#A8071A">视觉检索通道（砍掉）</text>
+  <text x="750" y="460" font-size="9" fill="#A8071A">Level 2 → CLAP 音频嵌入</text>
+
+  <rect x="530" y="475" width="430" height="45" rx="4" fill="#FFF7E8" stroke="#FF7D00"/>
+  <text x="540" y="492" font-size="10" font-weight="700" fill="#7A4D00">⚠ 必须 fixed working_dir 才能跨次复用索引</text>
+  <text x="540" y="508" font-size="9" fill="#86909C">默认每次新建时间戳目录不复用；固定后 insert_video 按 video_name 跨次去重生效</text>
+
+  <!-- 向量库路线决策 -->
+  <rect x="30" y="540" width="940" height="0" rx="0" fill="none"/>
+</svg>

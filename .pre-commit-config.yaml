@@ -1,0 +1,50 @@
+# See https://pre-commit.com for hook docs.
+# Install once: pip install pre-commit && pre-commit install
+# Run manually: pre-commit run --all-files
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+        args: [--allow-multiple-documents]
+      - id: check-toml
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=1024]
+      - id: detect-private-key
+      - id: check-case-conflict
+      - id: mixed-line-ending
+        args: [--fix=lf]
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.0
+    hooks:
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.13.0
+    hooks:
+      - id: mypy
+        additional_dependencies:
+          - pydantic>=2.10
+          - pydantic-settings>=2.6
+          - sqlalchemy>=2.0
+          - types-requests
+        args: [--strict, --config-file=backend/pyproject.toml]
+        files: ^backend/audio_graphy/
+        pass_filenames: false
+
+  - repo: local
+    hooks:
+      - id: pytest-smoke
+        name: pytest (smoke, no coverage gate)
+        entry: bash -c 'cd backend && python -m pytest tests/ -x --no-cov -q'
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]

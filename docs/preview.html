@@ -1,0 +1,1003 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AudioGraphy · 设计预览（Design Preview）</title>
+
+<!-- Arco Design CSS via CDN -->
+<link rel="stylesheet" href="https://unpkg.com/@arco-design/web-react@2.66.3/dist/css/arco.css">
+
+<!-- React + ReactDOM via CDN -->
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js" crossorigin></script>
+
+<!-- Babel Standalone for JSX in browser -->
+<script src="https://unpkg.com/@babel/standalone@7.27.0/babel.min.js"></script>
+
+<!-- AntV G6 via CDN -->
+<script src="https://unpkg.com/@antv/g6@5.0.50/dist/g6.min.js"></script>
+
+<style>
+  :root {
+    --ag-bg: #FAFBFC;
+    --ag-card-bg: #FFFFFF;
+    --ag-border: #E5E6EB;
+    --ag-text: #1D2129;
+    --ag-text-secondary: #4E5969;
+    --ag-text-muted: #86909C;
+    --ag-primary: #165DFF;
+    --ag-success: #00B42A;
+    --ag-warning: #FF7D00;
+    --ag-danger: #F53F3F;
+    --ag-purple: #722ED1;
+    --ag-shadow: 0 2px 8px rgba(0,0,0,0.04);
+    --ag-shadow-hover: 0 4px 16px rgba(0,0,0,0.08);
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Helvetica Neue', Arial, sans-serif;
+    background: var(--ag-bg);
+    color: var(--ag-text);
+    font-size: 14px;
+    line-height: 1.6;
+  }
+  .ag-hero {
+    background: linear-gradient(135deg, #165DFF 0%, #722ED1 100%);
+    color: white;
+    padding: 60px 40px 80px;
+    text-align: center;
+  }
+  .ag-hero h1 { margin: 0 0 12px; font-size: 36px; font-weight: 700; }
+  .ag-hero .ag-subtitle { font-size: 16px; opacity: 0.92; margin-bottom: 24px; }
+  .ag-hero .ag-meta { font-size: 12px; opacity: 0.8; }
+  .ag-nav-pills {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
+    margin-top: 24px;
+  }
+  .ag-nav-pills a {
+    color: white;
+    background: rgba(255,255,255,0.15);
+    padding: 6px 14px;
+    border-radius: 16px;
+    font-size: 12px;
+    text-decoration: none;
+    border: 1px solid rgba(255,255,255,0.25);
+    transition: background 0.2s;
+  }
+  .ag-nav-pills a:hover { background: rgba(255,255,255,0.3); }
+
+  .ag-container { max-width: 1280px; margin: 0 auto; padding: 0 24px; }
+  .ag-section { padding: 60px 0; border-bottom: 1px solid var(--ag-border); }
+  .ag-section h2 {
+    font-size: 28px;
+    font-weight: 700;
+    margin: 0 0 8px;
+    color: var(--ag-text);
+  }
+  .ag-section .ag-section-en { color: var(--ag-text-muted); font-size: 14px; margin-bottom: 32px; }
+  .ag-section h3 { font-size: 18px; font-weight: 600; margin: 32px 0 12px; }
+
+  .ag-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  .ag-grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+  .ag-grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+  @media (max-width: 768px) {
+    .ag-grid-2, .ag-grid-3, .ag-grid-4 { grid-template-columns: 1fr; }
+  }
+
+  .ag-card {
+    background: var(--ag-card-bg);
+    border: 1px solid var(--ag-border);
+    border-radius: 8px;
+    padding: 20px;
+    box-shadow: var(--ag-shadow);
+    transition: box-shadow 0.2s;
+  }
+  .ag-card:hover { box-shadow: var(--ag-shadow-hover); }
+  .ag-card-title { font-weight: 600; margin-bottom: 8px; }
+  .ag-card-desc { color: var(--ag-text-secondary); font-size: 13px; }
+
+  .ag-kpi-value { font-size: 32px; font-weight: 700; color: var(--ag-primary); }
+  .ag-kpi-label { color: var(--ag-text-muted); font-size: 12px; margin-top: 4px; }
+  .ag-kpi-trend-up { color: var(--ag-success); font-size: 12px; }
+  .ag-kpi-trend-down { color: var(--ag-danger); font-size: 12px; }
+
+  .ag-svg-frame {
+    background: white;
+    border: 1px solid var(--ag-border);
+    border-radius: 8px;
+    padding: 12px;
+    overflow-x: auto;
+  }
+  .ag-svg-frame svg { max-width: 100%; height: auto; display: block; margin: 0 auto; }
+
+  .ag-graph-container {
+    background: #FAFBFC;
+    border: 1px solid var(--ag-border);
+    border-radius: 8px;
+    height: 560px;
+    position: relative;
+    overflow: hidden;
+  }
+  .ag-graph-toolbar {
+    position: absolute; top: 12px; left: 12px; right: 12px;
+    display: flex; gap: 8px; z-index: 10;
+    flex-wrap: wrap;
+  }
+  .ag-graph-legend {
+    position: absolute; bottom: 12px; left: 12px;
+    background: rgba(255,255,255,0.95);
+    border: 1px solid var(--ag-border);
+    border-radius: 6px;
+    padding: 12px;
+    font-size: 12px;
+    z-index: 10;
+    max-width: 200px;
+  }
+  .ag-graph-legend h4 { margin: 0 0 8px; font-size: 12px; }
+  .ag-graph-legend .ag-legend-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+
+  .ag-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 500;
+    margin-right: 4px;
+  }
+  .ag-badge-blue { background: #E8F3FF; color: #165DFF; }
+  .ag-badge-green { background: #E8FFEA; color: #00B42A; }
+  .ag-badge-orange { background: #FFF7E8; color: #FF7D00; }
+  .ag-badge-red { background: #FFF1F0; color: #F53F3F; }
+  .ag-badge-purple { background: #F5E8FF; color: #722ED1; }
+  .ag-badge-gray { background: #F7F8FA; color: #86909C; }
+
+  .ag-color-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; }
+
+  /* Mock layout */
+  .ag-layout-mock {
+    border: 1px solid var(--ag-border);
+    border-radius: 8px;
+    overflow: hidden;
+    background: white;
+  }
+  .ag-layout-mock-header {
+    background: white;
+    border-bottom: 1px solid var(--ag-border);
+    padding: 12px 20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-weight: 600;
+  }
+  .ag-layout-mock-body { display: flex; min-height: 400px; }
+  .ag-layout-mock-sider {
+    width: 200px;
+    background: #001529;
+    color: rgba(255,255,255,0.85);
+    padding: 16px 0;
+  }
+  .ag-layout-mock-sider .ag-menu-item {
+    padding: 10px 20px;
+    cursor: pointer;
+    transition: background 0.2s;
+  }
+  .ag-layout-mock-sider .ag-menu-item:hover { background: rgba(255,255,255,0.08); }
+  .ag-layout-mock-sider .ag-menu-item.active { background: var(--ag-primary); color: white; }
+  .ag-layout-mock-main { flex: 1; padding: 20px; background: var(--ag-bg); }
+
+  .ag-table-mock {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  .ag-table-mock th, .ag-table-mock td {
+    text-align: left;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--ag-border);
+  }
+  .ag-table-mock th { background: #FAFBFC; font-weight: 600; color: var(--ag-text-secondary); }
+  .ag-table-mock tr:hover td { background: #F7F9FC; }
+
+  .ag-principle {
+    background: linear-gradient(135deg, #FFF7E8 0%, #FFF1F0 100%);
+    padding: 16px;
+    border-radius: 8px;
+    border-left: 4px solid var(--ag-warning);
+  }
+
+  .ag-footer {
+    text-align: center;
+    padding: 40px 20px;
+    color: var(--ag-text-muted);
+    font-size: 12px;
+    background: #F7F8FA;
+    border-top: 1px solid var(--ag-border);
+  }
+  .ag-timeline {
+    position: relative;
+    padding-left: 32px;
+  }
+  .ag-timeline::before {
+    content: '';
+    position: absolute;
+    left: 12px;
+    top: 8px;
+    bottom: 8px;
+    width: 2px;
+    background: var(--ag-border);
+  }
+  .ag-timeline-item { position: relative; padding-bottom: 24px; }
+  .ag-timeline-item::before {
+    content: '';
+    position: absolute;
+    left: -25px;
+    top: 8px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--ag-primary);
+    border: 2px solid white;
+    box-shadow: 0 0 0 2px var(--ag-primary);
+  }
+  .ag-timeline-item-title { font-weight: 600; margin-bottom: 4px; }
+  .ag-timeline-item-meta { color: var(--ag-text-muted); font-size: 12px; margin-bottom: 4px; }
+  .ag-timeline-item-content { color: var(--ag-text-secondary); font-size: 13px; }
+
+  .ag-note {
+    background: #E8F3FF;
+    border-left: 4px solid var(--ag-primary);
+    padding: 12px 16px;
+    border-radius: 4px;
+    margin: 16px 0;
+    font-size: 13px;
+  }
+  .ag-warn {
+    background: #FFF7E8;
+    border-left: 4px solid var(--ag-warning);
+    padding: 12px 16px;
+    border-radius: 4px;
+    margin: 16px 0;
+    font-size: 13px;
+  }
+</style>
+</head>
+<body>
+
+<!-- HERO -->
+<div class="ag-hero">
+  <h1>AudioGraphy</h1>
+  <div class="ag-subtitle">门店录音图谱检索与多级打标系统 · Store Recording Graph Retrieval &amp; Multi-level Tagging</div>
+  <div class="ag-meta">v1.0 · 2026-07 · Engineering Design Document · UI preview (Arco Design Web + AntV G6)</div>
+  <div class="ag-nav-pills">
+    <a href="#sec-arch">总体架构</a>
+    <a href="#sec-dataflow">数据流</a>
+    <a href="#sec-storage">存储分层</a>
+    <a href="#sec-tagversion">标签版本化</a>
+    <a href="#sec-ui">UI 原型</a>
+    <a href="#sec-graph">知识图谱 mock</a>
+    <a href="#sec-eval">评估数据集</a>
+    <a href="#sec-roadmap">路线图</a>
+    <a href="#sec-principles">设计原则</a>
+  </div>
+</div>
+
+<!-- §1 架构总览 -->
+<section class="ag-section" id="sec-arch">
+  <div class="ag-container">
+    <h2>1. 总体架构 <span style="font-size:14px; color:#86909C; font-weight:400;">Overall Architecture</span></h2>
+    <div class="ag-section-en">两层架构：流水线状态层（MySQL） + RAG 引擎层（文件索引），由 recording_id 桥接</div>
+
+    <div class="ag-svg-frame">
+      <object data="./assets/architecture-overview.svg" type="image/svg+xml" style="width:100%; max-width:1000px;"></object>
+    </div>
+
+    <div class="ag-note">
+      <strong>关键洞察：</strong>VideoRAG 喂给知识图谱的文本本来就是 ASR 转写（transcript）。砍掉视觉附属（MiniCPM-V + ImageBind），整个图谱 RAG 内核对音频完全成立，且 transcript 信息密度高于稀疏抽帧 caption，图谱质量更优。
+    </div>
+
+    <div class="ag-grid-3" style="margin-top: 24px;">
+      <div class="ag-card">
+        <div class="ag-card-title">📊 流水线状态层</div>
+        <div class="ag-card-desc">MySQL · 新增<br>recordings / tag_facts ★ / tag_current / tag_stats / prompts / vectors_mysql / tenants · RBAC</div>
+      </div>
+      <div class="ag-card">
+        <div class="ag-card-title">🔍 RAG 引擎层</div>
+        <div class="ag-card-desc">VideoRAG 文件索引 · 复用<br>graph_chunk_entity_relation.graphml ★ / kv_store_llm_response_cache.json ★ / vdb_entities / vdb_chunks</div>
+      </div>
+      <div class="ag-card">
+        <div class="ag-card-title">🎨 前端</div>
+        <div class="ag-card-desc">React + Arco Design Web<br>知识图谱浏览器（AntV G6）· 多级标签看板 · Prompt 版本管理 · 检索溯源链</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- §2 数据流 -->
+<section class="ag-section" id="sec-dataflow">
+  <div class="ag-container">
+    <h2>2. 数据流 <span style="font-size:14px; color:#86909C; font-weight:400;">Dataflow</span></h2>
+    <div class="ag-section-en">索引流水线（14 步）+ 查询流水线（4 阶段）+ LLM 缓存幂等</div>
+
+    <h3>2.1 索引数据流 (Indexing Dataflow)</h3>
+    <div class="ag-svg-frame">
+      <object data="./assets/dataflow-indexing.svg" type="image/svg+xml" style="width:100%; max-width:1000px;"></object>
+    </div>
+    <div class="ag-grid-4" style="margin-top: 16px;">
+      <span class="ag-badge ag-badge-green">🆕 新增/替换</span>
+      <span class="ag-badge ag-badge-red">✗ 砍掉</span>
+      <span class="ag-badge ag-badge-blue">✓ 保留自 VideoRAG</span>
+      <span class="ag-badge ag-badge-purple">→ 服务调用</span>
+    </div>
+
+    <h3>2.2 查询数据流 (Query Dataflow)</h3>
+    <div class="ag-svg-frame">
+      <object data="./assets/dataflow-query.svg" type="image/svg+xml" style="width:100%; max-width:1000px;"></object>
+    </div>
+    <div class="ag-note">
+      <strong>检索质量三亮点（与模态无关）：</strong>图结构排序（relation_counts）· 粗/精两阶段描述 · LLM 重排。AudioRAG 全部保留，且 transcript 上效果更好。
+    </div>
+  </div>
+</section>
+
+<!-- §3 存储 -->
+<section class="ag-section" id="sec-storage">
+  <div class="ag-container">
+    <h2>3. 存储分层 <span style="font-size:14px; color:#86909C; font-weight:400;">Storage Layers</span></h2>
+    <div class="ag-section-en">VideoRAG 文件索引（复用）+ MySQL 状态层（新增）+ BaseStorage 抽象让三类存储可插拔</div>
+
+    <div class="ag-svg-frame">
+      <object data="./assets/storage-layers.svg" type="image/svg+xml" style="width:100%; max-width:1000px;"></object>
+    </div>
+
+    <h3>Phase 1 决策：全 MySQL 暴力余弦</h3>
+    <div class="ag-grid-3">
+      <div class="ag-card" style="border-left: 4px solid var(--ag-primary);">
+        <div class="ag-card-title">KV（kv_store_*.json）→ MySQL</div>
+        <div class="ag-card-desc">✅ 容易且推荐。就是字典行存即可，比 JSON 文件好（可查/并发/统一备份）</div>
+      </div>
+      <div class="ag-card" style="border-left: 4px solid var(--ag-warning);">
+        <div class="ag-card-title">向量库（vdb_*）→ MySQL 暴力</div>
+        <div class="ag-card-desc">⚠️ 看规模。小规模（&lt;10万）暴力 MySQL ≈ NanoVectorDB 无损；大规模需 ANN</div>
+      </div>
+      <div class="ag-card" style="border-left: 4px solid var(--ag-danger);">
+        <div class="ag-card-title">图库（graphml）→ 保留 NetworkX</div>
+        <div class="ag-card-desc">❌ MySQL 不建议。图遍历在关系库痛苦；要上 DB 用 Neo4j（BaseStorage 已支持）</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- §4 标签版本化 -->
+<section class="ag-section" id="sec-tagversion">
+  <div class="ag-container">
+    <h2>4. 标签版本化与增量重算 <span style="font-size:14px; color:#86909C; font-weight:400;">Tag Versioning &amp; Incremental Recompute</span></h2>
+    <div class="ag-section-en">版本是地基 · diff 驱动最小重算 · LLM 缓存驱动的幂等重打</div>
+
+    <div class="ag-svg-frame">
+      <object data="./assets/tag-versioning.svg" type="image/svg+xml" style="width:100%; max-width:1000px;"></object>
+    </div>
+
+    <div class="ag-note">
+      <strong>关键精度：</strong>要版本化的不是"标签值"，而是"<strong>判定本身</strong>"——一条 version 行须带上产生它的配方：
+      <code style="background:#F7F8FA; padding: 2px 6px; border-radius: 3px;">
+        (recording_id, tag_path, tag_value, prompt_version, model_version, source, input_hash, computed_at, confidence)
+      </code>
+    </div>
+  </div>
+</section>
+
+<!-- §5 UI 原型 -->
+<section class="ag-section" id="sec-ui">
+  <div class="ag-container">
+    <h2>5. UI 原型（Arco Design Web） <span style="font-size:14px; color:#86909C; font-weight:400;">UI Prototype</span></h2>
+    <div class="ag-section-en">借鉴火山引擎企业知识引擎控制台 + Arco Pro v2.0 设计语言</div>
+
+    <div id="ui-root"></div>
+  </div>
+</section>
+
+<!-- §6 知识图谱 mock -->
+<section class="ag-section" id="sec-graph">
+  <div class="ag-container">
+    <h2>6. 知识图谱可视化（AntV G6 mock） <span style="font-size:14px; color:#86909C; font-weight:400;">Knowledge Graph Visualization</span></h2>
+    <div class="ag-section-en">中心环节 · 借鉴 Graphify 三件套形态 + edge confidence 染色 + Leiden 社区着色</div>
+
+    <div class="ag-warn">
+      <strong>⚠ 性能策略：</strong>节点 &lt; 2000 直接 G6 force layout；≥ 2000 开 LOD（聚类合并显示）+ Web Worker 计算布局 + 分页加载。
+    </div>
+
+    <div id="graph-root"></div>
+  </div>
+</section>
+
+<!-- §7 评估数据集 -->
+<section class="ag-section" id="sec-eval">
+  <div class="ag-container">
+    <h2>7. 开源评估数据集选型 <span style="font-size:14px; color:#86909C; font-weight:400;">OSS Eval Datasets</span></h2>
+    <div class="ag-section-en">门店录音 = "坐席+客户" 2-4 人中文对话，与会议多人场景高度对齐 · 引入开源集做"基线-先于-业务"评估</div>
+
+    <div class="ag-svg-frame">
+      <object data="./assets/eval-datasets.svg" type="image/svg+xml" style="width:100%; max-width:1000px;"></object>
+    </div>
+
+    <div class="ag-note" style="margin-top: 16px;">
+      <strong>核心策略：</strong>开源测试集给"下限保证"（验证 funASR/CAM++ 通用能力），自建 30-50 chunk 业务金标集给"上限真实"（车型术语/坐席话术/客户口语）。两层缺一不可。
+    </div>
+
+    <div class="ag-grid-3" style="margin-top: 16px;">
+      <div class="ag-card" style="border-top: 4px solid #00B42A;">
+        <div class="ag-card-title">★★★★★ AliMeeting</div>
+        <div class="ag-card-desc">118.75h · ICASSP 2022 M2MeT<br>2-4 说话人重叠 42% · 远场+近场<br><strong>ASR CER + 说话人 DER 双维度</strong></div>
+      </div>
+      <div class="ag-card" style="border-top: 4px solid #165DFF;">
+        <div class="ag-card-title">★★★★ AISHELL-4</div>
+        <div class="ag-card-desc">~120h · 真实会议 · 8 通道<br>与 AliMeeting 互为对照</div>
+      </div>
+      <div class="ag-card" style="border-top: 4px solid #722ED1;">
+        <div class="ag-card-title">★★★ CN-Celeb</div>
+        <div class="ag-card-desc">~130h · 3000 说话人<br><strong>Phase 2 声纹 EER</strong><br>CAM++ 跨录音链接基线</div>
+      </div>
+      <div class="ag-card" style="border-top: 4px solid #FF7D00;">
+        <div class="ag-card-title">★★★★ WenetSpeech</div>
+        <div class="ag-card-desc">22,195 段 · 10 领域<br>含 talk/interview</div>
+      </div>
+      <div class="ag-card" style="border-top: 4px solid #FF7D00;">
+        <div class="ag-card-title">★★★ AISHELL-1/2</div>
+        <div class="ag-card-desc">178h/1000h · 朗读<br>funASR 干净音频上限</div>
+      </div>
+      <div class="ag-card" style="border-top: 4px solid #F53F3F;">
+        <div class="ag-card-title">按需 · TAL_CSASR + KeSpeech</div>
+        <div class="ag-card-desc">中英混读（CS75 Plus）<br>8 官话区方言（跨区域部署）</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- §8 路线图 -->
+<section class="ag-section" id="sec-roadmap">
+  <div class="ag-container">
+    <h2>8. 实施路线图 <span style="font-size:14px; color:#86909C; font-weight:400;">Roadmap</span></h2>
+    <div class="ag-section-en">4 阶段 · 风险递增 · Phase 1 是 go/no-go 关卡</div>
+
+    <div class="ag-timeline">
+      <div class="ag-timeline-item">
+        <div class="ag-timeline-item-title">
+          <span class="ag-badge ag-badge-blue">Phase 1 · 4 周</span>
+          文本图谱 RAG 跑通（Level 1）
+        </div>
+        <div class="ag-timeline-item-meta">1 后端 · go/no-go 关卡</div>
+        <div class="ag-timeline-item-content">VAD+funASR 切分转写 / 中文实体 prompt / 双通道检索（砍视觉） / MySQL 状态层。验收：端到端问答可答，图谱质量达标。</div>
+      </div>
+      <div class="ag-timeline-item">
+        <div class="ag-timeline-item-title">
+          <span class="ag-badge ag-badge-green">Phase 2 · 3 周</span>
+          音频嵌入 + 说话人（Level 2/3）
+        </div>
+        <div class="ag-timeline-item-meta">1 后端</div>
+        <div class="ag-timeline-item-content">CLAP/声纹 替代视觉 / 说话人节点进图 / CAM++ 跨录音链接。验收：声纹驱动跨音频检索可用。</div>
+      </div>
+      <div class="ag-timeline-item">
+        <div class="ag-timeline-item-title">
+          <span class="ag-badge ag-badge-orange">Phase 3 · 6 周</span>
+          生产化治理
+        </div>
+        <div class="ag-timeline-item-meta">1 后端 + 1 前端</div>
+        <div class="ag-timeline-item-content">标签版本化+增量重算 / Promptfoo+RAGAS 评估 / LLM 缓存幂等重打 / 多租户 RBAC / Arco UI 全套。验收：多级打标可重算可审计 / 前端可用。</div>
+      </div>
+      <div class="ag-timeline-item">
+        <div class="ag-timeline-item-title">
+          <span class="ag-badge ag-badge-gray">Phase 4 · 4 周（可选）</span>
+          流式扩展
+        </div>
+        <div class="ag-timeline-item-meta">1 后端</div>
+        <div class="ag-timeline-item-content">滚动窗 ingestion / 双速索引 / 读写锁 / compaction。验收：边录边查延迟达标。</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- §8 设计原则 -->
+<section class="ag-section" id="sec-principles">
+  <div class="ag-container">
+    <h2>9. 设计原则 <span style="font-size:14px; color:#86909C; font-weight:400;">Design Principles</span></h2>
+
+    <div class="ag-grid-2">
+      <div class="ag-principle">
+        <div class="ag-card-title">复用优先 · Reuse First</div>
+        <div class="ag-card-desc">图谱内核、存储抽象、检索-重排逻辑原样继承自 VideoRAG，零改动</div>
+      </div>
+      <div class="ag-principle">
+        <div class="ag-card-title">模态替换 · Modality Swap</div>
+        <div class="ag-card-desc">视觉预处理整体替换为音频预处理（VAD + ASR），不改造内核</div>
+      </div>
+      <div class="ag-principle">
+        <div class="ag-card-title">两层分离 · Two-Layer Separation</div>
+        <div class="ag-card-desc">MySQL 管流水线状态/版本/审计，VideoRAG 文件索引管 RAG 检索，各司其职</div>
+      </div>
+      <div class="ag-principle">
+        <div class="ag-card-title">治理前置 · Governance First</div>
+        <div class="ag-card-desc">标签版本化 + 增量重算 + LLM 缓存幂等重打，从设计期就内建</div>
+      </div>
+      <div class="ag-principle">
+        <div class="ag-card-title">评估驱动 · Evaluation Driven</div>
+        <div class="ag-card-desc">分层评估框架（A0/A1/A2/B），prompt 改动有量化指标，不靠感觉</div>
+      </div>
+      <div class="ag-principle">
+        <div class="ag-card-title">借鉴开源 · Stand on Giants</div>
+        <div class="ag-card-desc">工程产物形态借鉴 Graphify（三件套 + 边置信度）；检索范式借鉴 GraphRAG（社区/分层/DRIFT）</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="ag-footer">
+  <div>AudioGraphy · Engineering Design Document v1.0 · 2026-07</div>
+  <div style="margin-top: 4px;">配套主文档：<code>docs/DESIGN.md</code> · 架构图：<code>docs/assets/*.svg</code></div>
+  <div style="margin-top: 8px; font-size: 11px; opacity: 0.7;">⚠ 本预览页通过 CDN 引入 Arco Design / React / AntV G6，需联网首次打开。</div>
+</div>
+
+<!-- React app for UI prototype -->
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+// 引用全局 Arco
+const Arco = window.arco;
+const { Layout, Menu, Card, Table, Tag, Input, Button, DatePicker, Select, Tree, Statistic, Grid, Breadcrumb, Tabs } = Arco;
+const { Row, Col } = Grid;
+const { Header, Sider, Content } = Layout;
+
+function MockApp() {
+  const [activeMenu, setActiveMenu] = useState('dashboard');
+
+  return (
+    <div className="ag-layout-mock">
+      <div className="ag-layout-mock-header">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <span style={{ fontSize: 18 }}>🎵</span>
+          <span>AudioGraphy</span>
+          <span style={{ color: '#86909C', fontWeight: 400, fontSize: 13 }}>· 华东品牌 / 上海一店</span>
+        </div>
+        <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+          <Input.Search placeholder="搜索录音/实体/标签" style={{ width: 240 }} size="small" />
+          <Tag color="green" size="small">质检员</Tag>
+          <span style={{ width: 32, height: 32, borderRadius: '50%', background: '#165DFF', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13 }}>张</span>
+        </div>
+      </div>
+      <div className="ag-layout-mock-body">
+        <div className="ag-layout-mock-sider">
+          <div className={'ag-menu-item' + (activeMenu==='dashboard'?' active':'')} onClick={() => setActiveMenu('dashboard')}>📊 仪表盘</div>
+          <div className={'ag-menu-item' + (activeMenu==='recordings'?' active':'')} onClick={() => setActiveMenu('recordings')}>🎬 录音管理</div>
+          <div className={'ag-menu-item' + (activeMenu==='graph'?' active':'')} onClick={() => setActiveMenu('graph')}>🕸 知识图谱</div>
+          <div className={'ag-menu-item' + (activeMenu==='tags'?' active':'')} onClick={() => setActiveMenu('tags')}>🏷 标签统计</div>
+          <div className={'ag-menu-item' + (activeMenu==='prompts'?' active':'')} onClick={() => setActiveMenu('prompts')}>📝 Prompt 管理</div>
+          <div className={'ag-menu-item' + (activeMenu==='eval'?' active':'')} onClick={() => setActiveMenu('eval')}>📈 评估报告</div>
+          <div className={'ag-menu-item' + (activeMenu==='admin'?' active':'')} onClick={() => setActiveMenu('admin')}>⚙ 管理</div>
+        </div>
+        <div className="ag-layout-mock-main">
+          {activeMenu === 'dashboard' && <DashboardMock />}
+          {activeMenu === 'recordings' && <RecordingsMock />}
+          {activeMenu === 'tags' && <TagsMock />}
+          {activeMenu === 'prompts' && <PromptsMock />}
+          {activeMenu === 'eval' && <EvalMock />}
+          {activeMenu === 'graph' && <div className="ag-note">📚 知识图谱浏览器详见下方 <strong>§6 知识图谱可视化</strong> 完整 mock。</div>}
+          {activeMenu === 'admin' && <AdminMock />}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DashboardMock() {
+  return (
+    <div>
+      <Breadcrumb style={{ marginBottom: 16 }}><Breadcrumb.Item>首页</Breadcrumb.Item><Breadcrumb.Item>仪表盘</Breadcrumb.Item></Breadcrumb>
+      <Row gutter={16}>
+        <Col span={6}>
+          <Card>
+            <Statistic title="本周新录音" value={142} suffix="条" />
+            <div style={{ color: '#00B42A', fontSize: 12, marginTop: 4 }}>↑ 18% vs 上周</div>
+          </Card>
+        </Col>
+        <Col span={6}>
+          <Card>
+            <Statistic title="待人工复核" value={7} suffix="条" />
+            <div style={{ color: '#FF7D00', fontSize: 12, marginTop: 4 }}>⚠ 等待中</div>
+          </Card>
+        </Col>
+        <Col span={6}>
+          <Card>
+            <Statistic title="重算任务" value={3} suffix="个" />
+            <div style={{ color: '#86909C', fontSize: 12, marginTop: 4 }}>prompt v2 升级中</div>
+          </Card>
+        </Col>
+        <Col span={6}>
+          <Card>
+            <Statistic title="评估分（B 层）" value={4.3} suffix="/ 5" />
+            <div style={{ color: '#00B42A', fontSize: 12, marginTop: 4 }}>↑ 0.2 vs 上版本</div>
+          </Card>
+        </Col>
+      </Row>
+      <Row gutter={16} style={{ marginTop: 16 }}>
+        <Col span={12}>
+          <Card title="最近问答示例">
+            <div style={{ fontSize: 13, color: '#4E5969' }}>
+              <div style={{ marginBottom: 8 }}><strong>Q:</strong> 7月1-15日哪几场接待提了 CS75 Plus + 金融政策？</div>
+              <div><strong>A:</strong> 共 6 场。<a href="#">R001 (07-03)</a> · <a href="#">R008 (07-07)</a> · <a href="#">R015 (07-12)</a> · ...
+                <Tag color="blue" size="small" style={{ marginLeft: 8 }}>置信度 0.87</Tag>
+              </div>
+            </div>
+          </Card>
+        </Col>
+        <Col span={12}>
+          <Card title="标签分布 · 接待.开场">
+            <div style={{ fontSize: 13 }}>
+              <div style={{ marginBottom: 6 }}><Tag color="green">标准</Tag> 42 条 (60%)</div>
+              <div style={{ marginBottom: 6 }}><Tag color="orange">简洁</Tag> 18 条 (26%)</div>
+              <div><Tag color="red">缺失</Tag> 10 条 (14%)</div>
+            </div>
+          </Card>
+        </Col>
+      </Row>
+    </div>
+  );
+}
+
+function RecordingsMock() {
+  const columns = [
+    { title: 'ID', dataIndex: 'id', width: 70 },
+    { title: '门店', dataIndex: 'store', width: 100 },
+    { title: '坐席', dataIndex: 'agent', width: 80 },
+    { title: '录制时间', dataIndex: 'recorded_at', width: 140 },
+    { title: '时长', dataIndex: 'duration', width: 70 },
+    { title: '状态', dataIndex: 'status', width: 100, render: v => {
+      const map = { indexed: ['green','已索引'], queued: ['orange','排队中'], failed: ['red','失败'] };
+      const [c,t] = map[v] || ['gray', v];
+      return <Tag color={c} size="small">{t}</Tag>;
+    }},
+    { title: 'Prompt 版本', dataIndex: 'pv', width: 100, render: v => <Tag size="small">v{v}</Tag> },
+    { title: '操作', render: () => <a href="#">详情 →</a> },
+  ];
+  const data = [
+    { id: 'R001', store: '上海一店', agent: '李娜', recorded_at: '2026-07-15 14:23', duration: '12:34', status: 'indexed', pv: 2, key: '1' },
+    { id: 'R002', store: '上海一店', agent: '王芳', recorded_at: '2026-07-15 13:05', duration: '08:42', status: 'indexed', pv: 2, key: '2' },
+    { id: 'R003', store: '杭州店', agent: '张敏', recorded_at: '2026-07-15 10:18', duration: '15:20', status: 'queued', pv: 1, key: '3' },
+    { id: 'R004', store: '深圳店', agent: '陈静', recorded_at: '2026-07-14 16:45', duration: '09:15', status: 'failed', pv: 1, key: '4' },
+  ];
+  return (
+    <div>
+      <Breadcrumb style={{ marginBottom: 16 }}><Breadcrumb.Item>录音管理</Breadcrumb.Item><Breadcrumb.Item>列表</Breadcrumb.Item></Breadcrumb>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+        <Select placeholder="门店" style={{ width: 140 }} defaultValue="all" options={[{label:'全部',value:'all'},{label:'上海一店',value:'sh1'}]} />
+        <Select placeholder="状态" style={{ width: 120 }} defaultValue="all" />
+        <DatePicker.RangePicker style={{ width: 240 }} />
+        <Input.Search placeholder="搜索坐席/客户" style={{ width: 200 }} />
+        <Button type="primary">批量重打</Button>
+      </div>
+      <Table columns={columns} data={data} pagination={{ pageSize: 10 }} size="small" />
+    </div>
+  );
+}
+
+function TagsMock() {
+  const columns = [
+    { title: '门店', dataIndex: 'store', width: 100 },
+    { title: '坐席', dataIndex: 'agent', width: 80 },
+    { title: '标签路径', dataIndex: 'path', width: 160 },
+    { title: '值', dataIndex: 'value', width: 100, render: v => {
+      const map = { '标准': 'green', '简洁': 'orange', '缺失': 'red', '已试': 'green', '未试': 'red' };
+      return <Tag color={map[v] || 'gray'} size="small">{v}</Tag>;
+    }},
+    { title: '计数', dataIndex: 'count', width: 80 },
+    { title: '占比', dataIndex: 'pct', width: 80, render: v => `${v}%` },
+  ];
+  const data = [
+    { store: '上海一店', agent: '李娜', path: '接待.开场', value: '标准', count: 18, pct: 75, key: '1' },
+    { store: '上海一店', agent: '李娜', path: '接待.开场', value: '简洁', count: 4, pct: 17, key: '2' },
+    { store: '上海一店', agent: '李娜', path: '接待.试乘试驾', value: '已试', count: 12, pct: 50, key: '3' },
+    { store: '上海一店', agent: '王芳', path: '接待.开场', value: '标准', count: 24, pct: 80, key: '4' },
+    { store: '杭州店', agent: '张敏', path: '接待.开场', value: '标准', count: 35, pct: 70, key: '5' },
+  ];
+  return (
+    <div>
+      <Breadcrumb style={{ marginBottom: 16 }}><Breadcrumb.Item>标签统计</Breadcrumb.Item></Breadcrumb>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+        <Select placeholder="下钻维度" style={{ width: 140 }} defaultValue="tenant" options={[
+          {label:'租户',value:'tenant'},{label:'品牌',value:'brand'},{label:'区域',value:'region'},
+          {label:'门店',value:'store'},{label:'坐席',value:'agent'},{label:'标签路径',value:'path'}
+        ]} />
+        <Select placeholder="标签路径" style={{ width: 180 }} defaultValue="接待.开场" />
+        <DatePicker.RangePicker style={{ width: 240 }} />
+        <Button>导出 CSV</Button>
+      </div>
+      <Table columns={columns} data={data} pagination={false} size="small" />
+    </div>
+  );
+}
+
+function PromptsMock() {
+  return (
+    <div>
+      <Breadcrumb style={{ marginBottom: 16 }}><Breadcrumb.Item>Prompt 管理</Breadcrumb.Item></Breadcrumb>
+      <div style={{ display: 'grid', gridTemplateColumns: '240px 1fr', gap: 16 }}>
+        <Card title="版本树" size="small">
+          <div style={{ fontSize: 13 }}>
+            <div style={{ padding: '6px 0', fontWeight: 600 }}>📁 entity_zh</div>
+            <div style={{ padding: '4px 0 4px 16px', color: '#86909C' }}>└ v1 (2026-06-20)</div>
+            <div style={{ padding: '4px 0 4px 16px', color: '#165DFF', fontWeight: 600 }}>└ v2 ★ (2026-07-10 生效)</div>
+            <div style={{ padding: '6px 0', fontWeight: 600, marginTop: 8 }}>📁 tag_开场</div>
+            <div style={{ padding: '4px 0 4px 16px' }}>└ v1 ★ (2026-06-25 生效)</div>
+          </div>
+        </Card>
+        <Card title="entity_zh · v2 (生效中)" size="small" extra={<div><Button size="small" style={{ marginRight: 8 }}>A/B 对比</Button><Button size="small" type="primary">切换为生效</Button></div>}>
+          <div style={{ background: '#1D2129', color: '#E5E6EB', padding: 12, borderRadius: 4, fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 12, minHeight: 240 }}>
+            <div style={{ color: '#7BE188'}}>--- prompt/entity_zh.md (v2)</div>
+            <div style={{ marginTop: 8 }}>你是一位门店接待对话的实体抽取专家。</div>
+            <div style={{ marginTop: 4 }}>请从以下 transcript 中抽取实体（中文输出）。</div>
+            <div style={{ marginTop: 8 }}>实体类型：</div>
+            <div>- 客户 / 坐席 / 车型</div>
+            <div>- 价格方案 / 金融政策 / 优惠权益</div>
+            <div>- 竞品 / 预约事件</div>
+            <div style={{ marginTop: 8, color: '#FFD666'}}>--- v2 新增 few-shot 例子（汽车销售场景）</div>
+            <div style={{ color: '#7BE188'}}>+++ prompt/entity_zh.md (v1)</div>
+            <div style={{ color: '#86909C' }}>(内容略)</div>
+          </div>
+          <div style={{ marginTop: 12, fontSize: 12, color: '#86909C' }}>
+            changelog：v2 新增 1 个中文接待对话 few-shot；实体类型从 4 类扩展到 8 类
+          </div>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+function EvalMock() {
+  const columns = [
+    { title: '层', dataIndex: 'layer', width: 80, render: v => <Tag size="small">{v}</Tag> },
+    { title: '指标', dataIndex: 'metric' },
+    { title: '值', dataIndex: 'value', width: 120, render: v => <strong>{v}</strong> },
+    { title: '基线', dataIndex: 'baseline', width: 120 },
+    { title: 'vs 基线', dataIndex: 'delta', width: 100, render: v => v>0 ? <Tag color="green" size="small">↑ {v}</Tag> : <Tag color="red" size="small">↓ {Math.abs(v)}</Tag> },
+  ];
+  const data = [
+    { layer: 'A0', metric: 'parse 成功率', value: '99.2%', baseline: '98.5%', delta: 0.7, key: '1' },
+    { layer: 'A0', metric: '每 chunk 实体数', value: '6.8', baseline: '5.2', delta: 1.6, key: '2' },
+    { layer: 'A0', metric: '空抽取率', value: '0.8%', baseline: '1.5%', delta: 0.7, key: '3' },
+    { layer: 'A1', metric: '实体 P/R/F1', value: '0.82/0.76/0.79', baseline: '—', delta: 0, key: '4' },
+    { layer: 'A1', metric: '近重名实体率', value: '3.1%', baseline: '7.4%', delta: 4.3, key: '5' },
+    { layer: 'A2', metric: 'LLM-judge 1-5 分', value: '4.2', baseline: '3.8', delta: 0.4, key: '6' },
+    { layer: 'B', metric: 'win-rate vs NaiveRAG', value: '73%', baseline: '50%', delta: 23, key: '7' },
+    { layer: 'B', metric: 'Comprehensiveness', value: '4.4 / 5', baseline: '3.9', delta: 0.5, key: '8' },
+  ];
+  return (
+    <div>
+      <Breadcrumb style={{ marginBottom: 16 }}><Breadcrumb.Item>评估报告</Breadcrumb.Item></Breadcrumb>
+      <div style={{ marginBottom: 12 }}>
+        <Button type="primary" style={{ marginRight: 8 }}>启动评估任务</Button>
+        <Select defaultValue="prompt_v2" style={{ width: 200 }} options={[{label:'entity_zh v2 (生效)',value:'prompt_v2'},{label:'entity_zh v1',value:'prompt_v1'}]} />
+      </div>
+      <Table columns={columns} data={data} pagination={false} size="small" />
+      <div className="ag-note" style={{ marginTop: 16 }}>
+        <strong>5 维 rubric：</strong>Comprehensiveness · Depth · Density · Empowerment · Trustworthiness
+        <br/><strong>位置去偏：</strong>ori + rev 双向跑抵消 LLM judge 位置偏好
+      </div>
+    </div>
+  );
+}
+
+function AdminMock() {
+  const columns = [
+    { title: '用户', dataIndex: 'name', width: 100 },
+    { title: '租户', dataIndex: 'tenant', width: 120 },
+    { title: '角色', dataIndex: 'role', render: v => {
+      const map = { admin:'red', inspector:'green', agent:'blue', viewer:'gray' };
+      return <Tag color={map[v]} size="small">{v}</Tag>;
+    }},
+    { title: '创建时间', dataIndex: 'created', width: 140 },
+  ];
+  const data = [
+    { name: '张质检', tenant: '华东品牌', role: 'inspector', created: '2026-06-20', key: '1' },
+    { name: '王管理', tenant: '华东品牌', role: 'admin', created: '2026-06-15', key: '2' },
+    { name: '李坐席', tenant: '华东品牌', role: 'agent', created: '2026-07-01', key: '3' },
+    { name: '赵观察', tenant: '华南品牌', role: 'viewer', created: '2026-07-10', key: '4' },
+  ];
+  return (
+    <div>
+      <Breadcrumb style={{ marginBottom: 16 }}><Breadcrumb.Item>管理</Breadcrumb.Item><Breadcrumb.Item>用户与租户</Breadcrumb.Item></Breadcrumb>
+      <Button type="primary" style={{ marginBottom: 12 }}>+ 新建用户</Button>
+      <Table columns={columns} data={data} pagination={false} size="small" />
+    </div>
+  );
+}
+
+// Render UI mock
+const root = ReactDOM.createRoot(document.getElementById('ui-root'));
+root.render(<MockApp />);
+
+// ============= Graph mock =============
+function renderGraphMock() {
+  const container = document.getElementById('g6-container');
+  if (!container) return;
+  if (!window.G6) { console.warn('G6 not loaded'); return; }
+
+  // 汽车销售场景 mock 数据
+  const nodes = [
+    // 客户（社区 0）
+    { id: 'C1', label: '客户·王先生', type: '客户', community: 0 },
+    { id: 'C2', label: '客户·李女士', type: '客户', community: 0 },
+    // 坐席（社区 1）
+    { id: 'A1', label: '坐席·张敏', type: '坐席', community: 1 },
+    { id: 'A2', label: '坐席·李娜', type: '坐席', community: 1 },
+    // 车型（社区 2）
+    { id: 'M1', label: 'CS75 Plus', type: '车型', community: 2 },
+    { id: 'M2', label: '长安 UNI-V', type: '车型', community: 2 },
+    { id: 'M3', label: '哈弗 H6', type: '车型', community: 2 },
+    // 价格方案（社区 3）
+    { id: 'P1', label: '全款优惠 5万', type: '价格方案', community: 3 },
+    { id: 'P2', label: '36期分期', type: '价格方案', community: 3 },
+    // 金融政策（社区 3）
+    { id: 'F1', label: '2年免息', type: '金融政策', community: 3 },
+    // 优惠权益（社区 3）
+    { id: 'D1', label: '赠送保养 3次', type: '优惠权益', community: 3 },
+    // 竞品（社区 2）
+    { id: 'X1', label: '博越 L', type: '竞品', community: 2 },
+    // 预约事件（社区 4）
+    { id: 'E1', label: '试驾预约', type: '预约事件', community: 4 },
+  ];
+
+  const edges = [
+    // 客户询问车型
+    { source: 'C1', target: 'M1', relation: '询问', confidence: 'EXTRACTED' },
+    { source: 'C1', target: 'M2', relation: '询问', confidence: 'EXTRACTED' },
+    { source: 'C2', target: 'M1', relation: '询问', confidence: 'EXTRACTED' },
+    // 坐席推荐车型
+    { source: 'A1', target: 'M1', relation: '推荐', confidence: 'EXTRACTED' },
+    { source: 'A1', target: 'M2', relation: '推荐', confidence: 'EXTRACTED' },
+    { source: 'A2', target: 'M1', relation: '推荐', confidence: 'EXTRACTED' },
+    // 客户对比竞品
+    { source: 'C1', target: 'X1', relation: '对比', confidence: 'INFERRED' },
+    { source: 'C2', target: 'M3', relation: '对比', confidence: 'INFERRED' },
+    // 价格方案关联车型
+    { source: 'M1', target: 'P1', relation: '有方案', confidence: 'EXTRACTED' },
+    { source: 'M1', target: 'P2', relation: '有方案', confidence: 'EXTRACTED' },
+    { source: 'M2', target: 'P2', relation: '有方案', confidence: 'EXTRACTED' },
+    // 金融政策关联
+    { source: 'M1', target: 'F1', relation: '可享', confidence: 'EXTRACTED' },
+    { source: 'P2', target: 'F1', relation: '组合', confidence: 'INFERRED' },
+    // 优惠权益
+    { source: 'P1', target: 'D1', relation: '附赠', confidence: 'EXTRACTED' },
+    // 预约
+    { source: 'C1', target: 'E1', relation: '预约', confidence: 'AMBIGUOUS' },
+    { source: 'A1', target: 'E1', relation: '安排', confidence: 'INFERRED' },
+    // 坐席接待客户
+    { source: 'A1', target: 'C1', relation: '接待', confidence: 'EXTRACTED' },
+    { source: 'A2', target: 'C2', relation: '接待', confidence: 'EXTRACTED' },
+  ];
+
+  const communityColors = {
+    0: '#FF7D00',  // 客户 - 橙
+    1: '#165DFF',  // 坐席 - 蓝
+    2: '#00B42A',  // 车型/竞品 - 绿
+    3: '#722ED1',  // 价格/金融/优惠 - 紫
+    4: '#F53F3F',  // 预约 - 红
+  };
+  const typeIcons = {
+    '客户': '👤', '坐席': '💼', '车型': '🚗', '价格方案': '💰',
+    '金融政策': '🏦', '优惠权益': '🎁', '竞品': '⚔', '预约事件': '📅',
+  };
+
+  const edgeStyle = {
+    EXTRACTED: { stroke: '#86909C', lineWidth: 1.5, lineDash: [] },
+    INFERRED: { stroke: '#86909C', lineWidth: 1, lineDash: [4, 4] },
+    AMBIGUOUS: { stroke: '#E5E6EB', lineWidth: 1, lineDash: [2, 2] },
+  };
+
+  try {
+    const graph = new window.G6.Graph({
+      container: 'g6-container',
+      width: container.offsetWidth,
+      height: 560,
+      modes: {
+        default: ['zoom-canvas', 'drag-canvas', 'drag-element'],
+      },
+      layout: {
+        type: 'force',
+        preventOverlap: true,
+        nodeStrength: -150,
+        edgeStrength: 0.7,
+        linkDistance: 140,
+        nodeSize: 60,
+      },
+      defaultNode: {
+        size: 56,
+        style: { radius: 28 },
+        labelCfg: { position: 'bottom', offset: 8, style: { fontSize: 11 } },
+      },
+      defaultEdge: {
+        labelCfg: { style: { fontSize: 9, fill: '#86909C', background: '#FFFFFF', padding: [2,4,2,4] } },
+      },
+      nodeStateStyles: {
+        selected: { shadowBlur: 12, shadowColor: '#165DFF', lineWidth: 3 },
+      },
+    });
+
+    graph.data({
+      nodes: nodes.map(n => ({
+        id: n.id,
+        label: `${typeIcons[n.type] || '•'} ${n.label}`,
+        community: n.community,
+        type: n.type,
+        style: {
+          fill: communityColors[n.community],
+          stroke: '#FFFFFF',
+          lineWidth: 3,
+        },
+        labelCfg: {
+          style: {
+            fill: '#1D2129',
+            fontSize: 11,
+            fontWeight: 500,
+          },
+        },
+      })),
+      edges: edges.map((e, i) => ({
+        source: e.source,
+        target: e.target,
+        label: e.relation,
+        style: edgeStyle[e.confidence],
+        _confidence: e.confidence,
+      })),
+    });
+    graph.render();
+  } catch (err) {
+    console.error('G6 render failed:', err);
+    container.innerHTML = '<div style="padding:40px;text-align:center;color:#86909C;">G6 mock 加载失败。请检查网络或刷新页面。<br/>错误：' + err.message + '</div>';
+  }
+}
+
+// Render graph section
+const graphRoot = document.getElementById('graph-root');
+graphRoot.innerHTML = `
+  <div class="ag-graph-container">
+    <div class="ag-graph-toolbar">
+      <input class="arco-input" placeholder="🔍 关键词筛选节点（如：CS75）" style="padding:6px 12px; border-radius:4px; border:1px solid #E5E6EB; width:200px;">
+      <input class="arco-input" placeholder="定位具体实体（如：客户·王先生）" style="padding:6px 12px; border-radius:4px; border:1px solid #E5E6EB; width:240px;">
+      <select class="arco-input" style="padding:6px 12px; border-radius:4px; border:1px solid #E5E6EB;">
+        <option>全部社区</option>
+        <option>社区 0 · 客户</option>
+        <option>社区 1 · 坐席</option>
+        <option>社区 2 · 车型</option>
+        <option>社区 3 · 价格/金融</option>
+      </select>
+      <input type="text" placeholder="2026-07-01 ~ 2026-07-15" style="padding:6px 12px; border-radius:4px; border:1px solid #E5E6EB; flex:1; min-width:200px;">
+    </div>
+    <div id="g6-container" style="width:100%; height:100%;"></div>
+    <div class="ag-graph-legend">
+      <h4>📋 图例</h4>
+      <div class="ag-legend-row"><span class="ag-color-dot" style="background:#FF7D00"></span> 客户 (community 0)</div>
+      <div class="ag-legend-row"><span class="ag-color-dot" style="background:#165DFF"></span> 坐席 (community 1)</div>
+      <div class="ag-legend-row"><span class="ag-color-dot" style="background:#00B42A"></span> 车型/竞品 (2)</div>
+      <div class="ag-legend-row"><span class="ag-color-dot" style="background:#722ED1"></span> 价格/金融 (3)</div>
+      <div class="ag-legend-row"><span class="ag-color-dot" style="background:#F53F3F"></span> 预约事件 (4)</div>
+      <hr style="border:0; border-top:1px solid #E5E6EB; margin:8px 0;">
+      <div class="ag-legend-row"><span style="display:inline-block; width:18px; border-top:1.5px solid #86909C;"></span> EXTRACTED</div>
+      <div class="ag-legend-row"><span style="display:inline-block; width:18px; border-top:1px dashed #86909C;"></span> INFERRED</div>
+      <div class="ag-legend-row"><span style="display:inline-block; width:18px; border-top:1px dotted #E5E6EB;"></span> AMBIGUOUS</div>
+    </div>
+  </div>
+  <div class="ag-note" style="margin-top: 16px;">
+    <strong>mock 场景：</strong>汽车销售门店录音知识图谱 · 13 个节点 / 18 条边 · 5 个 Leiden 社区着色 · edge confidence 染色（借鉴 Graphify）。
+    <br/><strong>交互：</strong>支持鼠标滚轮缩放 / 拖拽平移 / 拖拽节点。点击节点可在生产版本触发右侧 EntityPropertyPanel。
+  </div>
+`;
+
+// Wait for G6 to load then render
+setTimeout(renderGraphMock, 300);
+</script>
+
+</body>
+</html>

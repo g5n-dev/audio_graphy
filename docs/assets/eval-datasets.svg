@@ -1,0 +1,84 @@
+<svg viewBox="0 0 1000 620" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Helvetica Neue', Arial, sans-serif">
+  <defs>
+    <marker id="d-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#165DFF"/></marker>
+  </defs>
+  <rect width="1000" height="620" fill="#FAFBFC"/>
+  <text x="500" y="32" text-anchor="middle" font-size="20" font-weight="700" fill="#1D2129">开源中文语音测试集选型（OSS Chinese Speech Testsets）</text>
+  <text x="500" y="52" text-anchor="middle" font-size="12" fill="#86909C">按 AudioRAG 评估维度（ASR / Diarization / 声纹 / 实体抽取）映射 · 标 ★ 为强烈推荐</text>
+
+  <!-- 评估维度 -->
+  <text x="40" y="92" font-size="13" font-weight="700" fill="#1D2129">AudioRAG 评估能力</text>
+  <rect x="40" y="105" width="920" height="48" rx="8" fill="#F5E8FF" stroke="#722ED1"/>
+  <g font-size="11">
+    <rect x="55" y="115" width="170" height="28" rx="4" fill="#FFFFFF" stroke="#722ED1"/>
+    <text x="140" y="133" text-anchor="middle" font-weight="700" fill="#5B1DAB">ASR CER（中文准确率）</text>
+    <rect x="240" y="115" width="170" height="28" rx="4" fill="#FFFFFF" stroke="#722ED1"/>
+    <text x="325" y="133" text-anchor="middle" font-weight="700" fill="#5B1DAB">说话人分离 DER</text>
+    <rect x="425" y="115" width="170" height="28" rx="4" fill="#FFFFFF" stroke="#722ED1"/>
+    <text x="510" y="133" text-anchor="middle" font-weight="700" fill="#5B1DAB">声纹 EER（跨录音链接）</text>
+    <rect x="610" y="115" width="170" height="28" rx="4" fill="#FFFFFF" stroke="#722ED1"/>
+    <text x="695" y="133" text-anchor="middle" font-weight="700" fill="#5B1DAB">实体抽取 P/R/F1（下游）</text>
+    <rect x="795" y="115" width="150" height="28" rx="4" fill="#FFFFFF" stroke="#722ED1"/>
+    <text x="870" y="133" text-anchor="middle" font-weight="700" fill="#5B1DAB">中英混读 / 方言</text>
+  </g>
+
+  <!-- 数据集卡片 -->
+  <text x="40" y="180" font-size="13" font-weight="700" fill="#1D2129">推荐开源测试集（按推荐度排序）</text>
+
+  <!-- AliMeeting ★★★★★ -->
+  <rect x="40" y="195" width="920" height="75" rx="8" fill="#E8FFEA" stroke="#00B42A" stroke-width="2"/>
+  <text x="55" y="216" font-size="14" font-weight="700" fill="#0F7A2E">★ AliMeeting (SLR119) · 强烈推荐</text>
+  <text x="55" y="234" font-size="11" fill="#4E5969">118.75h · 阿里 · ICASSP 2022 M2MeT · CC BY-SA 4.0</text>
+  <text x="55" y="251" font-size="11" fill="#4E5969">场景：真实中文多人会议，2-4 说话人重叠 42%，远场 8-ch 麦阵列 + 近场耳机，13 个会议室 8-55m²，RT60 0.3-0.6s</text>
+  <text x="55" y="265" font-size="11" fill="#0E42D2"><tspan font-weight="700">→ 用途：</tspan> ASR CER + 说话人 DER（最贴近门店录音"坐席+客户"对话）· Phase 2/3 评估首选</text>
+  <text x="800" y="216" font-size="10" font-weight="700" fill="#0F7A2E">★★★★★</text>
+  <text x="800" y="234" font-size="10" fill="#4E5969">匹配度：极高</text>
+
+  <!-- AISHELL-4 -->
+  <rect x="40" y="280" width="920" height="65" rx="8" fill="#E8F3FF" stroke="#165DFF" stroke-width="1.5"/>
+  <text x="55" y="301" font-size="14" font-weight="700" fill="#0E42D2">★ AISHELL-4</text>
+  <text x="55" y="319" font-size="11" fill="#4E5969">~120h · 希尔贝壳 · CC BY-NC-ND 4.0 · 8 通道会议</text>
+  <text x="55" y="335" font-size="11" fill="#4E5969">场景：真实会议录制，含重叠语音、自发口语，与 AliMeeting 互补（不同录制风格）</text>
+  <text x="55" y="350" font-size="11" fill="#0E42D2"><tspan font-weight="700">→ 用途：</tspan> 评估 ASR/DER 在不同声学条件下的鲁棒性，作为 AliMeeting 的对照</text>
+  <text x="800" y="301" font-size="10" font-weight="700" fill="#0E42D2">★★★★</text>
+  <text x="800" y="319" font-size="10" fill="#4E5969">匹配度：高</text>
+
+  <!-- WenetSpeech -->
+  <rect x="40" y="355" width="450" height="75" rx="8" fill="#FFF7E8" stroke="#FF7D00" stroke-width="1.5"/>
+  <text x="55" y="376" font-size="14" font-weight="700" fill="#7A4D00">★ WenetSpeech · test_meeting / test_net</text>
+  <text x="55" y="394" font-size="11" fill="#4E5969">22,195 段 · 西工大/wenet · CC BY 4.0</text>
+  <text x="55" y="411" font-size="11" fill="#4E5969">来源 YouTube + Podcast，10 个领域（含 talk/interview）</text>
+  <text x="55" y="425" font-size="11" fill="#0E42D2"><tspan font-weight="700">→ 用途：</tspan> ASR CER 基线（互联网/会议两域）</text>
+  <text x="380" y="376" font-size="10" font-weight="700" fill="#FF7D00">★★★★</text>
+
+  <!-- AISHELL-1/2 -->
+  <rect x="510" y="355" width="450" height="75" rx="8" fill="#FFF7E8" stroke="#FF7D00" stroke-width="1.5"/>
+  <text x="525" y="376" font-size="14" font-weight="700" fill="#7A4D00">AISHELL-1 / AISHELL-2</text>
+  <text x="525" y="394" font-size="11" fill="#4E5969">AISHELL-1: 178h 朗读 · AISHELL-2: 1000h iOS 录制</text>
+  <text x="525" y="411" font-size="11" fill="#4E5969">CC BY-NC-ND 4.0 · 安静室内环境</text>
+  <text x="525" y="425" font-size="11" fill="#0E42D2"><tspan font-weight="700">→ 用途：</tspan> ASR CER 朗读基线（验证 funASR 在干净音频上限）</text>
+  <text x="840" y="376" font-size="10" font-weight="700" fill="#FF7D00">★★★</text>
+
+  <!-- MagicData RAMC -->
+  <rect x="40" y="440" width="450" height="75" rx="8" fill="#F5E8FF" stroke="#722ED1" stroke-width="1.5"/>
+  <text x="55" y="461" font-size="14" font-weight="700" fill="#5B1DAB">MagicData RAMC</text>
+  <text x="55" y="479" font-size="11" fill="#4E5969">23012 测试句 · CC BY-NC-ND</text>
+  <text x="55" y="496" font-size="11" fill="#4E5969">真实对话场景（移动端）· 含打断/重复</text>
+  <text x="55" y="510" font-size="11" fill="#0E42D2"><tspan font-weight="700">→ 用途：</tspan> ASR CER 对话场景（比朗读更贴近门店）</text>
+  <text x="380" y="461" font-size="10" font-weight="700" fill="#5B1DAB">★★★</text>
+
+  <!-- CN-Celeb -->
+  <rect x="510" y="440" width="450" height="75" rx="8" fill="#F5E8FF" stroke="#722ED1" stroke-width="1.5"/>
+  <text x="525" y="461" font-size="14" font-weight="700" fill="#5B1DAB">CN-Celeb · 声纹专用</text>
+  <text x="525" y="479" font-size="11" fill="#4E5969">~130h · 3000 说话人 · CC BY-NC 4.0</text>
+  <text x="525" y="496" font-size="11" fill="#4E5969">中文名人声纹，含不同录制环境/年龄/性别</text>
+  <text x="525" y="510" font-size="11" fill="#0E42D2"><tspan font-weight="700">→ 用途：</tspan> 声纹 EER 评估 · Phase 2 CAM++ 跨录音链接基线</text>
+  <text x="840" y="461" font-size="10" font-weight="700" fill="#5B1DAB">★★★</text>
+
+  <!-- TAL_CSASR + KeSpeech -->
+  <rect x="40" y="525" width="920" height="80" rx="8" fill="#FFF1F0" stroke="#F53F3F" stroke-width="1.5" stroke-dasharray="3,2"/>
+  <text x="55" y="546" font-size="14" font-weight="700" fill="#A8071A">补充场景测试集（按需引入）</text>
+  <text x="55" y="564" font-size="11" fill="#4E5969">· <tspan font-weight="700">TAL_CSASR</tspan>（学而思）— 中英混读，评估"CS75 Plus""Model Y"等中英夹杂识别</text>
+  <text x="55" y="581" font-size="11" fill="#4E5969">· <tspan font-weight="700">KeSpeech</tspan>（19723 句）— 8 大官话区方言，门店坐席/客户跨区域口音评估</text>
+  <text x="55" y="598" font-size="11" fill="#4E5969">· <tspan font-weight="700">自建门店金标集</tspan>（30-50 chunk）— 真实门店录音人工标注，最贴近业务但成本高 · 用作 A1 黄金集</text>
+</svg>
