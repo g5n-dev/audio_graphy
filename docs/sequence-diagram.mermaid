@@ -1,0 +1,149 @@
+%% AudioGraphy M1.4 Sequence Diagrams
+%% Extracted from docs/m1.4-architecture.md §4
+
+%% === Diagram 1: Alembic upgrade head ===
+
+sequenceDiagram
+    participant Dev as Developer
+    participant CLI as alembic CLI
+    participant Env as env.py
+    participant Cfg as Settings
+    participant DB as MySQL 8
+    participant Meta as Base.metadata
+
+    Dev->>CLI: alembic upgrade head
+    CLI->>Env: load env.py
+    Env->>Cfg: get_settings()
+    Cfg-->>Env: Settings(mysql_dsn_sync=...)
+    Env->>CLI: config.set_main_option("sqlalchemy.url", dsn)
+    Env->>Meta: import all model modules
+    Note over Meta: Tenant, User, Recording, Segment,<br/>Chunk, TagFact, TagCurrent, TagStat,<br/>Prompt, VectorEntity, VectorChunk,<br/>AuditLog, LLMCallLog
+    Meta-->>Env: Base.metadata.tables = {13 tables}
+    Env->>CLI: target_metadata = Base.metadata
+    CLI->>DB: CONNECT (mysql_dsn_sync)
+    CLI->>DB: SELECT version_num FROM alembic_version
+    DB-->>CLI: (empty — fresh database)
+    CLI->>DB: BEGIN TRANSACTION
+    CLI->>DB: op.drop_table("_alembic_sentinel") IF EXISTS
+    CLI->>DB: op.create_table("tenants", ...)
+    CLI->>DB: op.create_table("users", ...)
+    CLI->>DB: op.create_table("recordings", ...)
+    CLI->>DB: op.create_table("segments", ...) + FK + UNIQUE + CHECK
+    CLI->>DB: op.create_table("chunks", ...) + FK + UNIQUE + CHECK
+    CLI->>DB: op.create_table("tag_facts", ...) + 2 FK + UNIQUE + 2 CHECK
+    CLI->>DB: op.create_table("tag_current", ...) + FK + UNIQUE + CHECK
+    CLI->>DB: op.create_table("tag_stats", ...) + UNIQUE + CHECK
+    CLI->>DB: op.create_table("prompts", ...) + FK + UNIQUE
+    CLI->>DB: op.create_table("vectors_entity", ...) + INDEX
+    CLI->>DB: op.create_table("vectors_chunk", ...) + FK + UNIQUE
+    CLI->>DB: op.create_table("audit_logs", ...) + FK + INDEX
+    CLI->>DB: op.create_table("llm_call_logs", ...) + INDEX + 2 CHECK
+    CLI->>DB: INSERT INTO alembic_version VALUES ('0001_init')
+    CLI->>DB: COMMIT
+    DB-->>CLI: success
+    CLI-->>Dev: "Running upgrade -> 0001_init"
+
+%% === Diagram 2: Alembic downgrade base ===
+
+sequenceDiagram
+    participant Dev as Developer
+    participant CLI as alembic CLI
+    participant DB as MySQL 8
+
+    Dev->>CLI: alembic downgrade base
+    CLI->>DB: SELECT version_num FROM alembic_version
+    DB-->>CLI: "0001_init"
+    CLI->>DB: BEGIN TRANSACTION
+    CLI->>DB: op.drop_table("llm_call_logs")
+    CLI->>DB: op.drop_table("audit_logs")
+    CLI->>DB: op.drop_table("vectors_chunk")
+    CLI->>DB: op.drop_table("vectors_entity")
+    CLI->>DB: op.drop_table("prompts")
+    CLI->>DB: op.drop_table("tag_stats")
+    CLI->>DB: op.drop_table("tag_current")
+    CLI->>DB: op.drop_table("tag_facts")
+    CLI->>DB: op.drop_table("chunks")
+    CLI->>DB: op.drop_table("segments")
+    CLI->>DB: op.drop_table("recordings")
+    CLI->>DB: op.drop_table("users")
+    CLI->>DB: op.drop_table("tenants")
+    CLI->>DB: DELETE FROM alembic_version WHERE version_num='0001_init'
+    CLI->>DB: COMMIT
+    DB-->>CLI: success
+    CLI-->>Dev: "Running downgrade 0001_init -> base"
+    Note over DB: SHOW TABLES -> empty
+
+%% === Diagram 3: Test — Model creation + constraint validation ===
+
+sequenceDiagram
+    participant Test as pytest
+    participant TC as testcontainers
+    participant DB as MySQL Container
+    participant Session as SQLAlchemy Session
+    participant Model as ORM Model
+
+    Test->>TC: start MySQL 8 container
+    TC-->>DB: docker run mysql:8
+    DB-->>TC: ready (port mapped)
+    TC-->>Test: container url
+
+    Test->>Session: create_engine(url)
+    Test->>Session: Base.metadata.create_all(engine)
+    Note over Session: Creates 13 tables from model definitions
+
+    Test->>Model: Tenant(code="default", name="Default")
+    Test->>Session: session.add(tenant)
+    Test->>Session: session.commit()
+    Session-->>Test: success
+
+    Test->>Model: Tenant(code="default", name="Dup")
+    Test->>Session: session.add(dup_tenant)
+    Test->>Session: session.commit()
+    Session-->>Test: IntegrityError (UNIQUE violation)
+
+    Test->>Model: User(role="hacker")
+    Test->>Session: session.add(user)
+    Test->>Session: session.commit()
+    Session-->>Test: IntegrityError (CHECK violation)
+
+    Test->>Model: Recording(tenant_id="a", ...)
+    Test->>Model: Recording(tenant_id="b", ...)
+    Test->>Session: SELECT * FROM recordings WHERE tenant_id = "a"
+    Session-->>Test: only tenant_a records
+    Note over Test: multi-tenant isolation verified
+
+    Test->>TC: stop container
+
+%% === Diagram 4: Alembic round-trip test ===
+
+sequenceDiagram
+    participant Test as test_alembic_roundtrip
+    participant TC as testcontainers
+    participant DB as MySQL Container
+    participant Alembic as alembic CLI
+    participant Meta as Base.metadata
+
+    Test->>TC: start MySQL 8 container
+    TC-->>Test: container url
+
+    Test->>Alembic: alembic upgrade head
+    Alembic->>DB: CREATE TABLE x 13
+    Alembic-->>Test: exit 0
+
+    Test->>DB: SHOW TABLES
+    DB-->>Test: [13 tables, no _alembic_sentinel]
+    Note over Test: assert 13 tables + sentinel absent
+
+    Test->>Meta: compare metadata.tables with DB
+    Meta-->>Test: 13 Table objects
+    Note over Test: assert DDL alignment
+
+    Test->>Alembic: alembic downgrade base
+    Alembic->>DB: DROP TABLE x 13
+    Alembic-->>Test: exit 0
+
+    Test->>DB: SHOW TABLES
+    DB-->>Test: [empty]
+    Note over Test: assert clean rollback
+
+    Test->>TC: stop container
