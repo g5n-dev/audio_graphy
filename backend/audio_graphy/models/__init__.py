@@ -26,6 +26,7 @@ from audio_graphy.models.enums import (
 )
 from audio_graphy.models.llm_call_log import LLMCallLog
 from audio_graphy.models.prompt import Prompt
+from audio_graphy.models.recompute_task import RecomputeTask
 from audio_graphy.models.recording import Recording
 from audio_graphy.models.segment import Segment
 from audio_graphy.models.tag_current import TagCurrent
@@ -43,6 +44,7 @@ __all__ = [
     "LLMCallLog",
     "PipelineState",
     "Prompt",
+    "RecomputeTask",
     "Recording",
     "RecordingStatus",
     "Segment",

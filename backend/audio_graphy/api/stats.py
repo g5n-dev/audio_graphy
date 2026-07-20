@@ -1,0 +1,60 @@
+"""Stats router — GET /tags/stats.
+
+See: docs/m3-prd.md §4.8.
+"""
+
+from __future__ import annotations
+
+from typing import Literal
+
+from fastapi import APIRouter, Depends, Query, Request
+
+from audio_graphy.api.deps import get_current_user, get_session_factory
+from audio_graphy.auth.middleware import AuthUser
+from audio_graphy.auth.tenants import get_agent_filter, get_tenant_id
+from audio_graphy.schemas.stats import StatsItem, StatsResponse
+from audio_graphy.tags.stats import TagStatsService
+
+router = APIRouter(tags=["stats"])
+
+
+@router.get("/tags/stats", response_model=StatsResponse, summary="Tag statistics aggregation")
+async def get_tag_stats(
+    request: Request,
+    store_id: str | None = Query(default=None),
+    agent_name: str | None = Query(default=None),
+    tag_path: str | None = Query(default=None),
+    tag_value: str | None = Query(default=None),
+    group_by: Literal["store_id", "agent_name", "tag_path", "tag_value"] = Query(
+        default="tag_path"
+    ),
+    _user: AuthUser = Depends(get_current_user),
+) -> StatsResponse:
+    """Get multi-dimensional tag statistics (dashboard).
+
+    Agent role: only sees own data.
+    """
+    tenant_id = get_tenant_id(request)
+    agent_filter = get_agent_filter(request)
+
+    # Agent filter overrides explicit agent_name
+    effective_agent = agent_filter if agent_filter is not None else agent_name
+
+    factory = get_session_factory(request)
+    svc = TagStatsService(factory)
+
+    stats = await svc.get_stats(
+        tenant_id=tenant_id,
+        store_id=store_id,
+        agent_name=effective_agent,
+        tag_path_prefix=tag_path,
+        tag_value=tag_value,
+        group_by=group_by,
+    )
+
+    items = [StatsItem(**s) for s in stats]
+    return StatsResponse(
+        dimensions=[group_by],
+        items=items,
+        total_records=sum(i.tag_count for i in items),
+    )

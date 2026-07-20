@@ -71,7 +71,11 @@ class Settings(BaseSettings):
     # --- Auth (JWT) ---
     jwt_secret: str = Field(default="change-me-to-32-char-random-please", min_length=16)
     jwt_exp_hours: int = 12
+    jwt_refresh_exp_hours: int = 84
     jwt_algorithm: str = "HS256"
+
+    # --- Password hashing ---
+    bcrypt_rounds: int = 12
 
     # --- Pipeline (APScheduler) ---
     pipeline_poll_seconds: int = 5

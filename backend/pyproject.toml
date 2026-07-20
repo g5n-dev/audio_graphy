@@ -24,7 +24,7 @@ dependencies = [
     "httpx>=0.28.0",
     # Auth
     "pyjwt[crypto]>=2.10.0",
-    "passlib[bcrypt]>=1.7.4",
+    "bcrypt>=4.2.0",
     # Graph
     "networkx>=3.4",
     # Scheduling
@@ -50,6 +50,7 @@ dev = [
     "respx>=0.21.1",            # httpx mocking
     "factory-boy>=3.3.0",
     "httpx2>=0.0.20",           # starlette TestClient now expects httpx2
+    "aiosqlite>=0.20.0",        # async SQLite for test DB
     "ruff>=0.8.0",
     "mypy>=1.13.0",
     "pre-commit>=4.0.0",
@@ -99,7 +100,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S", "T20", "N802"]   # tests can use prints, snake_case funcs
+"tests/**" = ["S", "T20", "N802", "RUF012"]   # tests can use prints, snake_case funcs, mutable class attrs
 "alembic/**" = ["N", "E402"]
 "audio_graphy/adapters/mock_data/**" = ["S"]
 # Mock adapters use md5 (for hash keys, not crypto), random (for fake data),
@@ -110,6 +111,12 @@ ignore = [
 # This is the same pattern as MockLLMAdapter.compute_prompt_hash.
 "audio_graphy/core/*.py" = ["S324"]
 "audio_graphy/storage/*.py" = ["S324"]
+"audio_graphy/api/*.py" = ["S324", "S106"]
+"audio_graphy/tags/*.py" = ["S324"]
+"audio_graphy/services/*.py" = ["S324", "ASYNC240"]
+"audio_graphy/auth/*.py" = ["S106", "S105"]
+"audio_graphy/errors.py" = ["S105", "N818"]
+"audio_graphy/schemas/*.py" = ["UP046"]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -138,10 +145,6 @@ plugins = ["pydantic.mypy"]
 module = [
     "apscheduler.*",
     "networkx.*",
-    "mutagen.*",
-    "passlib.*",
-    "testcontainers.*",
-    "respx.*",
 ]
 ignore_missing_imports = true
 
@@ -191,6 +194,7 @@ filterwarnings = [
 [tool.coverage.run]
 source = ["audio_graphy"]
 branch = true
+concurrency = ["thread", "greenlet"]
 omit = [
     "*/tests/*",
     "*/alembic/*",
