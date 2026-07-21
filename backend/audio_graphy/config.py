@@ -110,6 +110,39 @@ class Settings(BaseSettings):
     # to 0.90 (strict, max precision).
     entity_fuzzy_threshold: float = 0.85
 
+    # --- M7 Phase 2 — adapter modes (CLAP audio embed + CAM++ voiceprint) ---
+    adapter_audio_embed_mode: AdapterMode = "mock"
+    adapter_voiceprint_mode: AdapterMode = "mock"
+
+    # --- M7 Phase 2 — service URLs ---
+    clap_service_url: str = "http://clap-service:8006"
+    campplus_service_url: str = "http://campplus-service:8007"
+
+    # --- M7 Phase 2 — speaker linker thresholds (L9 / Q2) ---
+    # voiceprint_cosine_threshold: minimum cosine for cross-recording merge
+    # via Layer-1 voiceprint matching (SpeakerLinker). Below this, speakers
+    # are NOT merged by voiceprint. Range [0.0, 1.0].
+    voiceprint_cosine_threshold: float = 0.5
+    # voiceprint_ambiguous_threshold: cosine ≥ this → unambiguous merge
+    # (ambiguity_tag=None). Below this but ≥ voiceprint_cosine_threshold →
+    # merge with ambiguity_tag="AMBIGUOUS". Range [0.0, 1.0].
+    voiceprint_ambiguous_threshold: float = 0.7
+
+    # --- M7 Phase 2 — GPU strategy flags ---
+    clap_force_gpu: bool = True  # L8 enforced at clap-service startup
+    campplus_prefer_gpu: bool = False
+
+    # --- M7 Phase 2 — PIPL cascade ---
+    # When True (default), DSAR erasure + retention sweep cascade-delete
+    # voiceprint_vectors / speaker_nodes / speaker_links for the recording.
+    # Disabling is for emergency forensic hold only.
+    voiceprint_retention_cascade: bool = True
+
+    # --- M7 Phase 2 — three-channel rerank weights (Q1 locked) ---
+    # Order: (text, graph, audio). Sum must be ~1.0 (validator enforces).
+    # M7 WS-3 implements rerank; field is reserved here.
+    rerank_channel_weights: tuple[float, float, float] = (0.5, 0.3, 0.2)
+
     # --- Feature flags ---
     enable_clap: bool = False
     enable_voiceprint: bool = False
@@ -196,7 +229,50 @@ class Settings(BaseSettings):
                 "REAL adapter ON but JWT_SECRET is placeholder — set a strong JWT_SECRET"
             )
 
+        # M7 — speaker linker thresholds sanity (no crossover).
+        if self.voiceprint_cosine_threshold > self.voiceprint_ambiguous_threshold:
+            raise ValueError(
+                "VOICEPRINT_COSINE_THRESHOLD must be ≤ "
+                f"VOICEPRINT_AMBIGUOUS_THRESHOLD (got {self.voiceprint_cosine_threshold} "
+                f"> {self.voiceprint_ambiguous_threshold})"
+            )
+
         return self
+
+    # ----------------------------------------------------------
+    # M7 Phase 2 — per-field validators
+    # ----------------------------------------------------------
+    @field_validator("voiceprint_cosine_threshold")
+    @classmethod
+    def _validate_vp_cosine_threshold(cls, v: float) -> float:
+        if not 0.0 <= v <= 1.0:
+            raise ValueError(
+                f"VOICEPRINT_COSINE_THRESHOLD must be in [0, 1], got {v}"
+            )
+        return v
+
+    @field_validator("voiceprint_ambiguous_threshold")
+    @classmethod
+    def _validate_vp_ambiguous_threshold(cls, v: float) -> float:
+        if not 0.0 <= v <= 1.0:
+            raise ValueError(
+                f"VOICEPRINT_AMBIGUOUS_THRESHOLD must be in [0, 1], got {v}"
+            )
+        return v
+
+    @field_validator("rerank_channel_weights")
+    @classmethod
+    def _validate_rerank_weights(
+        cls, v: tuple[float, float, float]
+    ) -> tuple[float, float, float]:
+        total = sum(v)
+        if not 0.99 <= total <= 1.01:
+            raise ValueError(
+                f"RERANK_CHANNEL_WEIGHTS must sum to 1.0, got {v} (sum={total})"
+            )
+        if not all(0.0 <= x <= 1.0 for x in v):
+            raise ValueError(f"All weights must be in [0, 1], got {v}")
+        return v
 
 
 @functools.lru_cache(maxsize=1)

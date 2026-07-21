@@ -253,3 +253,40 @@ export interface StatsResponse {
   items: StatsItem[];
   total_records: number;
 }
+
+// ============================================================
+// Speakers (M7 T12)
+// ============================================================
+
+export interface SpeakerListItem {
+  id: number;
+  tenant_id: string;
+  display_name: string;
+  /** Truncated voiceprint hash: vp_xxxxxxxx (PIPL-compliant). */
+  voiceprint_hash: string;
+  speaker_role: "agent" | "customer" | "unknown";
+  recordings_count: number;
+  first_seen: string | null;
+  total_speech_sec: number;
+  merge_confidence: number;
+  merge_strategy: "voiceprint" | "fuzzy" | "manual" | "single_recording";
+  ambiguity_tag: "AMBIGUOUS" | "PENDING_REVIEW" | null;
+}
+
+export interface SpeakerListResponse {
+  items: SpeakerListItem[];
+  total: number;
+}
+
+export interface SpeakerRecordingRef {
+  recording_id: number;
+  voiceprint_id: string;
+  duration_sec: number;
+  strategy: string;
+  ambiguity_tag: "AMBIGUOUS" | "PENDING_REVIEW" | null;
+}
+
+export interface SpeakerDetailResponse extends SpeakerListItem {
+  recordings_list: number[];
+  related_recordings: SpeakerRecordingRef[];
+}

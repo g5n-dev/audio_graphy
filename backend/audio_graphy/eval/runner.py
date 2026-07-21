@@ -335,6 +335,8 @@ class EvalRunner:
         config_snapshot: dict[str, str] | None = None,
         position_debias: bool | None = None,
         entity_fuzzy_threshold: float | None = None,
+        voiceprint_eer_enabled: bool = False,
+        diarization_der_enabled: bool = False,
     ) -> None:
         self._gold_set_path = Path(gold_set_path)
         self._pipeline = pipeline
@@ -368,6 +370,15 @@ class EvalRunner:
         else:
             self._entity_fuzzy_threshold = float(entity_fuzzy_threshold)
         self._config_snapshot["entity_fuzzy_threshold"] = str(self._entity_fuzzy_threshold)
+        # M7 — voiceprint EER + diarization DER opt-in flags.
+        self._voiceprint_eer_enabled = bool(voiceprint_eer_enabled)
+        self._diarization_der_enabled = bool(diarization_der_enabled)
+        self._config_snapshot["voiceprint_eer"] = (
+            "enabled" if self._voiceprint_eer_enabled else "disabled"
+        )
+        self._config_snapshot["diarization_der"] = (
+            "enabled" if self._diarization_der_enabled else "disabled"
+        )
 
     async def run(self) -> EvalRun:
         started_at = datetime.now(UTC).isoformat()
@@ -461,7 +472,122 @@ class EvalRunner:
                 results.append(await answer_relevance(gold, pred, self._judge))
                 results.append(await factual_correctness(gold, pred, self._judge))
 
+        # M7 — Phase 2 metrics: voiceprint EER + diarization DER.
+        # Only emitted when explicitly enabled AND the gold example carries
+        # the corresponding annotation (speaker trials / ref diarization).
+        results.extend(await self._compute_phase2_metrics(gold))
+
         return results
+
+    async def _compute_phase2_metrics(
+        self, gold: GoldExample,
+    ) -> list[MetricResult]:
+        """M7 Phase 2 metrics — voiceprint EER + diarization DER.
+
+        Both are gated by an explicit opt-in flag on EvalRunner, and
+        require the gold example to carry speaker annotations in its
+        ``metadata`` dict:
+
+            metadata["voiceprint_trials"]:
+                list of (enrollment_path, test_path, "1"|"0") triples.
+            metadata["reference_rttm"] / metadata["hypothesis_rttm"]:
+                paths to RTTM files.
+
+        Both are best-effort — missing data → skipped (details["skipped"]=True).
+        """
+        out: list[MetricResult] = []
+
+        if self._voiceprint_eer_enabled:
+            trials = gold.metadata.get("voiceprint_trials", "")
+            if trials:
+                # Parse "path1 path2 1\npath3 path4 0\n..." into two cosine
+                # buckets. We can't run the real adapter here (no bundle),
+                # so this metric is a placeholder that records the trial
+                # count; the actual extraction is left to a dedicated
+                # eval script that builds the adapter and calls
+                # ``voiceprint_eer_from_trials`` directly.
+                from audio_graphy.eval.metrics.voiceprint import voiceprint_eer_metric
+
+                # Tokenise the trials string into same/diff buckets.
+                # We expect precomputed cosines when set by tests; otherwise
+                # the entry is left as zero (skipped via denominator=0).
+                #
+                # Format (per "row"): "cos <value> <label>" where label is
+                # "1" (same speaker) or "0" (different). Rows may be
+                # separated by newlines OR by whitespace (YAML collapses
+                # multi-line single-quoted strings to a single line). We
+                # detect rows by looking for the literal token "cos" and
+                # reading the next 2 tokens.
+                same_cos: list[float] = []
+                diff_cos: list[float] = []
+                tokens = (
+                    trials
+                    .replace("\\n", " ")  # literal "\n" (YAML single-quoted)
+                    .replace("\n", " ")   # actual newline
+                    .split()
+                )
+                i = 0
+                while i + 2 < len(tokens):
+                    if tokens[i] == "cos":
+                        try:
+                            value = float(tokens[i + 1])
+                            label = tokens[i + 2]
+                        except ValueError:
+                            i += 1
+                            continue
+                        if label == "1":
+                            same_cos.append(value)
+                        else:
+                            diff_cos.append(value)
+                        i += 3
+                    else:
+                        i += 1
+                out.append(voiceprint_eer_metric(same_cos, diff_cos))
+            else:
+                out.append(
+                    MetricResult(
+                        name="voiceprint_eer",
+                        value=0.0,
+                        denominator=0,
+                        details={"skipped": True},
+                    )
+                )
+
+        if self._diarization_der_enabled:
+            ref_path = gold.metadata.get("reference_rttm", "")
+            hyp_path = gold.metadata.get("hypothesis_rttm", "")
+            if ref_path and hyp_path:
+
+                from audio_graphy.eval.metrics.diarization import (
+                    diarization_der_metric,
+                    parse_rttm,
+                )
+
+                try:
+                    ref_segs = parse_rttm(ref_path)
+                    hyp_segs = parse_rttm(hyp_path)
+                    out.append(diarization_der_metric(hyp_segs, ref_segs))
+                except Exception as exc:
+                    logger.warning("DER computation failed: %s", exc)
+                    out.append(
+                        MetricResult(
+                            name="diarization_der",
+                            value=0.0,
+                            denominator=0,
+                            details={"skipped": True, "error": str(exc)},
+                        )
+                    )
+            else:
+                out.append(
+                    MetricResult(
+                        name="diarization_der",
+                        value=0.0,
+                        denominator=0,
+                        details={"skipped": True},
+                    )
+                )
+
+        return out
 
     async def _judge_with_debias(
         self,

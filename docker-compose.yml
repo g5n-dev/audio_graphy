@@ -307,6 +307,75 @@ services:
     networks:
       - audiography_net
 
+  # ============================================================
+  # M7 — Phase 2 audio + speaker services (opt-in via `--profile real`)
+  # ============================================================
+  # clap-service: GPU mandatory (L8). laion_clap HTSAT-base, 512-d.
+  # campplus-service: CPU default, GPU optional. CAM++ 192-d L2-normalized.
+  #
+  # Build context = ./docker/{clap,campplus}-service to keep the Dockerfile
+  # tree self-contained. services/*.py are copied in at build time.
+  # ============================================================
+  clap-service:
+    build:
+      context: ./backend
+      dockerfile: ../docker/clap-service/Dockerfile
+    container_name: audiography-clap-service
+    profiles: ["real"]
+    restart: unless-stopped
+    environment:
+      CUDA_VISIBLE_DEVICES: 0
+    volumes:
+      - clap_cache:/root/.cache/torch
+    command: ["uvicorn", "audio_graphy.services.clap_service:app", "--host", "0.0.0.0", "--port", "8006"]
+    working_dir: /app
+    ports:
+      - "8006:8006"
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8006/health', timeout=2).status==200 else 1)\""
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 180s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+          memory: 4g
+    networks:
+      - audiography_net
+
+  campplus-service:
+    build:
+      context: ./backend
+      dockerfile: ../docker/campplus-service/Dockerfile
+    container_name: audiography-campplus-service
+    profiles: ["real"]
+    restart: unless-stopped
+    environment:
+      CAMPPLUS_DEVICE: ${CAMPPLUS_DEVICE:-cpu}
+    volumes:
+      - campplus_cache:/root/.cache/modelscope
+    command: ["uvicorn", "audio_graphy.services.campplus_service:app", "--host", "0.0.0.0", "--port", "8007"]
+    working_dir: /app
+    ports:
+      - "8007:8007"
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8007/health', timeout=2).status==200 else 1)\""
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 90s
+    networks:
+      - audiography_net
+
 volumes:
   mysql_data:
     name: audiography_mysql_data
@@ -320,6 +389,11 @@ volumes:
   # M5 — funASR model cache.
   funasr_cache:
     name: audiography_funasr_cache
+  # M7 — CLAP / CAM++ model caches.
+  clap_cache:
+    name: audiography_clap_cache
+  campplus_cache:
+    name: audiography_campplus_cache
 
 networks:
   audiography_net:

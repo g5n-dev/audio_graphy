@@ -661,3 +661,60 @@ class EntityExtractor:
             ensure_ascii=False,
         )
         return hashlib.md5(payload.encode("utf-8")).hexdigest()
+
+
+# ============================================================
+# M7 — speaker entity injection helpers
+# ============================================================
+
+
+def build_speaker_entities_from_segments(
+    segment_speakers: Sequence[tuple[int, str | None, int]],
+    *,
+    ambiguity_map: dict[str, str | None] | None = None,
+) -> list[tuple[str, str, str]]:
+    """Build (name, type, description) triples for each distinct speaker.
+
+    Used by the indexing service after chunker produces ``SegmentRecord.speaker``
+    values. The resulting triples are merged into ``ExtractionResult.entities``
+    so the graph builder creates SPEAKER nodes alongside LLM-extracted entities.
+
+    Args:
+        segment_speakers: ``(segment_idx, speaker_id, recording_id)`` tuples.
+            ``speaker_id`` may be ``None`` (no diarization) — those entries
+            produce no entity.
+        ambiguity_map: Optional ``speaker_id → ambiguity_tag`` mapping from
+            SpeakerLinker. When present, the tag is embedded into the
+            description so the NetworkX ``entity.attrs`` carries it forward
+            (Q2 decision: AMBIGUOUS label入图).
+
+    Returns:
+        List of ``(name, type, description)`` triples — one per distinct
+        non-None ``speaker_id``. ``type`` is always ``"说话人"`` (DEFAULT_ENTITY_TYPES).
+    """
+    if not segment_speakers:
+        return []
+    amap = ambiguity_map or {}
+    seen: dict[str, tuple[str, str, str]] = {}
+    for _seg_idx, spk, _rec_id in segment_speakers:
+        if spk is None:
+            continue
+        if spk in seen:
+            continue
+        ambiguity_tag = amap.get(spk)
+        description = f"speaker label={spk}"
+        if ambiguity_tag == "AMBIGUOUS":
+            description += " (AMBIGUOUS — voiceprint merge below 0.7 threshold)"
+        elif ambiguity_tag == "PENDING_REVIEW":
+            description += " (PENDING_REVIEW — admin hold)"
+        seen[spk] = (spk, "说话人", description)
+    return list(seen.values())
+
+
+__all__ = [
+    "EntityExtractor",
+    "ExtractedEntity",
+    "ExtractedRelation",
+    "ExtractionResult",
+    "build_speaker_entities_from_segments",
+]

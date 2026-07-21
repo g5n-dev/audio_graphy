@@ -1,7 +1,7 @@
 """Metadata introspection tests for the models package.
 
-These tests verify that Base.metadata contains all 13 tables and that
-the models package exports all 13 model classes.
+These tests verify that Base.metadata contains all 20 tables and that
+the models package exports all 20 model classes.
 """
 
 from __future__ import annotations
@@ -21,6 +21,8 @@ from audio_graphy.models import (
     Recording,
     RecordingStatus,
     Segment,
+    SpeakerLink,
+    SpeakerNode,
     TagCurrent,
     TagFact,
     TagSource,
@@ -29,8 +31,10 @@ from audio_graphy.models import (
     TenantScopedBase,
     User,
     UserRole,
+    VectorAudio,
     VectorChunk,
     VectorEntity,
+    VoiceprintVector,
 )
 
 EXPECTED_TABLES = {
@@ -50,6 +54,11 @@ EXPECTED_TABLES = {
     "recompute_tasks",
     "eval_runs",
     "entity_aliases",
+    # M7
+    "speaker_nodes",
+    "speaker_links",
+    "vectors_voiceprint",
+    "vectors_audio",
 }
 
 EXPECTED_MODELS = {
@@ -69,15 +78,20 @@ EXPECTED_MODELS = {
     RecomputeTask,
     EvalRunORM,
     EntityAlias,
+    # M7
+    SpeakerNode,
+    SpeakerLink,
+    VoiceprintVector,
+    VectorAudio,
 }
 
 
 @pytest.mark.integration
 class TestMetadata:
-    """Verify Base.metadata contains all 16 tables (13 original + recompute_tasks + eval_runs + entity_aliases)."""
+    """Verify Base.metadata contains all 20 tables (M3 13 + M5 recompute_tasks + M6 eval_runs/entity_aliases + M7 4)."""
 
     def test_metadata_has_13_tables(self) -> None:
-        assert len(Base.metadata.tables) == 16
+        assert len(Base.metadata.tables) == 20
 
     def test_metadata_table_names(self) -> None:
         assert set(Base.metadata.tables.keys()) == EXPECTED_TABLES

@@ -1,14 +1,27 @@
-"""Dual-channel retriever — naive text + graph retrieval with time filtering.
+"""Three-channel retriever — text + graph + audio retrieval with time filtering.
 
-Four-stage pipeline (DESIGN.md §3.3 stages 1-2):
+M7 architecture §10.1.
+
+Five-stage pipeline (DESIGN.md §3.3 stages 1-2 + M7 audio channel):
     1a. Query rewrite + keyword extraction (weak_llm, cached)
     1b. Query embedding (embed adapter)
     2.  Naive channel: vector_store.search_chunks() → cosine top-k
     3.  Graph channel: keyword → entity match → 1-hop neighbors → reverse-lookup chunks
-    4.  Union dedup (by chunk_id, score=max) + time filter + sort by recorded_at
+    4.  Audio channel (M7): CLAP query vector → vectors_audio cosine top-k
+        — skipped when ``enable_audio_channel=False`` or no audio_query_path
+    5.  Union dedup (by chunk_id, score=max) + time filter + sort by recorded_at
 
 The graph channel uses ``relation_counts`` (graph-structure signal) rather
 than pure vector similarity — this is one of VideoRAG's three key innovations.
+
+M7 additions:
+    - ``ThreeChannelRetriever`` (subclass of ``DualChannelRetriever``).
+    - ``RetrievalResult`` now carries ``audio_hits`` (default 0).
+    - Single-channel failure does NOT block others — failed channel returns
+      empty + warning (§17.5).
+    - When ``enable_audio_channel=False`` (or no audio_query_path), audio
+      channel is skipped and behaviour is identical to ``DualChannelRetriever``
+      (zero regression on M3-M6 callers).
 """
 
 from __future__ import annotations
@@ -34,6 +47,7 @@ from audio_graphy.models.recording import Recording
 if TYPE_CHECKING:
     from audio_graphy.storage.file_index import FileIndex
     from audio_graphy.storage.graph_networkx import NetworkXGraphStore
+    from audio_graphy.storage.mysql_audio_vector import MySQLAudioVectorStore
     from audio_graphy.storage.mysql_vector import MySQLVectorStore
 
 logger = logging.getLogger(__name__)
@@ -77,6 +91,7 @@ class RetrievalResult:
         naive_hits: Number of candidates from the naive channel.
         graph_hits: Number of candidates from the graph channel.
         filtered_by_time: Number of candidates removed by time filter.
+        audio_hits: Number of candidates from the audio channel (M7, default 0).
     """
 
     query: str
@@ -84,6 +99,7 @@ class RetrievalResult:
     naive_hits: int
     graph_hits: int
     filtered_by_time: int
+    audio_hits: int = 0
 
 
 # ============================================================
@@ -629,3 +645,236 @@ class DualChannelRetriever:
             ensure_ascii=False,
         )
         return hashlib.md5(payload.encode("utf-8")).hexdigest()
+
+
+# ============================================================
+# Three-channel retriever (M7 — §10.1)
+# ============================================================
+
+
+class ThreeChannelRetriever(DualChannelRetriever):
+    """Three-channel retrieval (M7 supersedes ``DualChannelRetriever``).
+
+    Adds an audio channel (CLAP query vector → ``vectors_audio`` cosine
+    top-k) running in parallel with the existing text/graph channels via
+    ``asyncio.gather``. Single-channel failure does NOT block others —
+    failed channels return empty + warning (§17.5).
+
+    Args:
+        bundle: AdapterBundle (uses ``weak_llm`` + ``embed`` + ``audio_embed``).
+        vector_store: MySQLVectorStore for naive channel.
+        graph_store: NetworkXGraphStore for graph channel.
+        session_factory: Optional async session factory for chunk detail lookup.
+        file_index: Optional FileIndex for chunk detail lookup (fallback).
+        audio_vector_store: Optional ``MySQLAudioVectorStore``. When ``None``,
+            audio channel is silently skipped (zero side-effects).
+        enable_audio_channel: Master flag. When ``False``, audio channel is
+            skipped entirely — behaviour identical to ``DualChannelRetriever``.
+    """
+
+    def __init__(
+        self,
+        bundle: AdapterBundle,
+        vector_store: MySQLVectorStore,
+        graph_store: NetworkXGraphStore,
+        *,
+        session_factory: async_sessionmaker[AsyncSession] | None = None,
+        file_index: FileIndex | None = None,
+        audio_vector_store: MySQLAudioVectorStore | None = None,
+        enable_audio_channel: bool = False,
+    ) -> None:
+        super().__init__(
+            bundle=bundle,
+            vector_store=vector_store,
+            graph_store=graph_store,
+            session_factory=session_factory,
+            file_index=file_index,
+        )
+        self._audio_vector_store = audio_vector_store
+        self._enable_audio_channel = bool(enable_audio_channel)
+
+    async def retrieve(
+        self,
+        query: str,
+        *,
+        tenant_id: str = "default",
+        top_k: int = 10,
+        time_range: tuple[datetime, datetime] | None = None,
+        audio_query_path: str | None = None,
+    ) -> RetrievalResult:
+        """Execute three-channel retrieval in parallel.
+
+        Args:
+            query: Natural language query (for text + graph channels).
+            tenant_id: Tenant scope.
+            top_k: Max candidates per channel.
+            time_range: Optional (start, end) for recorded_at filtering.
+            audio_query_path: Optional audio file path for query-by-audio.
+                When provided AND audio channel enabled, the audio channel
+                embeds this file with CLAP and runs cosine search against
+                ``vectors_audio``. When ``None`` or audio disabled, audio
+                channel returns empty.
+
+        Returns:
+            RetrievalResult with merged, filtered, and sorted candidates.
+        """
+        import asyncio
+
+        # Step 1: Query embedding + keyword extraction (sequential — both
+        # feed the parallel stage).
+        query_vec = await self._embed_query(query)
+        keywords = await self._extract_keywords(query)
+
+        # Step 2: Three channels in parallel. Failed channels return [].
+        naive_task = self._naive_channel(query_vec, tenant_id, top_k)
+        graph_task = self._graph_channel(keywords, tenant_id, top_k)
+        audio_task = self._audio_channel(audio_query_path, tenant_id, top_k)
+
+        naive_candidates, graph_candidates, audio_candidates = await asyncio.gather(
+            naive_task, graph_task, audio_task,
+        )
+
+        # Step 3: Union + dedup across all three channels.
+        merged = self._union_dedup_3(naive_candidates, graph_candidates, audio_candidates)
+
+        # Step 4: Time filter
+        filtered, removed_count = self._filter_by_time(merged, time_range)
+
+        # Step 5: Sort by recorded_at
+        sorted_candidates = self._sort_by_time(filtered)
+
+        return RetrievalResult(
+            query=query,
+            candidates=sorted_candidates,
+            naive_hits=len(naive_candidates),
+            graph_hits=len(graph_candidates),
+            filtered_by_time=removed_count,
+            audio_hits=len(audio_candidates),
+        )
+
+    # ------------------------------------------------------------------
+    # Audio channel (M7)
+    # ------------------------------------------------------------------
+
+    async def _audio_channel(
+        self,
+        audio_query_path: str | None,
+        tenant_id: str,
+        top_k: int,
+    ) -> list[CandidateSegment]:
+        """Audio channel: CLAP query vector → ``vectors_audio`` cosine top-k.
+
+        Skipped (returns ``[]``) when ANY of these is true:
+            - ``enable_audio_channel=False`` (feature flag off)
+            - ``audio_vector_store`` is ``None`` (no DI)
+            - ``audio_query_path`` is ``None`` or empty
+            - ``bundle.audio_embed`` is ``None`` (CLAP adapter not built)
+
+        Errors are logged + swallowed (§17.5: single-channel failure does
+        not block others).
+
+        Args:
+            audio_query_path: Path to the query audio file.
+            tenant_id: Tenant scope.
+            top_k: Max results.
+
+        Returns:
+            List of CandidateSegment with ``source_channel="audio"``. Empty
+            on skip or failure.
+        """
+        if (
+            not self._enable_audio_channel
+            or self._audio_vector_store is None
+            or not audio_query_path
+            or self._bundle.audio_embed is None
+        ):
+            return []
+
+        try:
+            embeds = await self._bundle.audio_embed.embed_audio([audio_query_path])
+            if not embeds:
+                return []
+            query_vec = embeds[0].vector
+            hits = await self._audio_vector_store.search_audio(
+                tenant_id, query_vec, top_k=top_k,
+            )
+        except Exception as exc:
+            logger.warning("Audio channel failed: %s", exc)
+            return []
+
+        if not hits:
+            return []
+
+        # Reverse-lookup chunk details via segment_id → chunk mapping.
+        # We look up by chunk_id when it exists (M7 stores chunk_id on
+        # vectors_audio); otherwise we synthesise minimal CandidateSegment
+        # entries without text (downstream rerank can still score by audio).
+        chunk_ids: list[int] = []
+        for h in hits:
+            if isinstance(h.id, int):
+                chunk_ids.append(h.id)
+        chunk_details = await self._lookup_chunks(chunk_ids) if chunk_ids else {}
+
+        candidates: list[CandidateSegment] = []
+        for h in hits:
+            if not isinstance(h.id, int):
+                continue
+            detail = chunk_details.get(h.id)
+            if detail is not None:
+                candidates.append(
+                    CandidateSegment(
+                        chunk_id=h.id,
+                        recording_id=detail["recording_id"],
+                        segment_ids=detail["segment_ids"],
+                        text=detail["text"],
+                        recorded_at=detail["recorded_at"],
+                        score=h.score,
+                        source_channel="audio",
+                    )
+                )
+            else:
+                # No chunk detail — synthesise minimal entry. chunk_id is
+                # the segment_id (we use segment_id as the unique key when
+                # chunk_id linkage is absent).
+                candidates.append(
+                    CandidateSegment(
+                        chunk_id=h.id,
+                        recording_id=0,
+                        segment_ids=[h.id],
+                        text="",
+                        recorded_at=None,
+                        score=h.score,
+                        source_channel="audio",
+                    )
+                )
+        return candidates
+
+    # ------------------------------------------------------------------
+    # Union + dedup across three channels
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _union_dedup_3(
+        text: list[CandidateSegment],
+        graph: list[CandidateSegment],
+        audio: list[CandidateSegment],
+    ) -> list[CandidateSegment]:
+        """Merge three channels, dedup by chunk_id, score = max across channels.
+
+        Args:
+            text: Naive text channel candidates.
+            graph: Graph channel candidates.
+            audio: Audio channel candidates.
+
+        Returns:
+            Merged candidate list (no duplicate chunk_ids).
+        """
+        merged: dict[int, CandidateSegment] = {}
+        for c in text + graph + audio:
+            existing = merged.get(c.chunk_id)
+            if existing is None or c.score > existing.score:
+                merged[c.chunk_id] = c
+        return list(merged.values())
+
+
+__all__ = ["CandidateSegment", "DualChannelRetriever", "RetrievalResult", "ThreeChannelRetriever"]

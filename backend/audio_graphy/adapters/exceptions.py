@@ -199,6 +199,96 @@ class ASRTimeoutError(ASRAdapterError):
     __module__ = "audio_graphy.adapters.exceptions"
 
 
+# ============================================================
+# M7 — Phase 2: CLAP audio embedding + CAM++ voiceprint
+# ============================================================
+
+
+class AudioEmbedAdapterError(Exception):
+    """Base for all audio-embedding (CLAP) adapter failures / M7 CLAP 错误基类.
+
+    Carries ``url`` (redacted by callers via ``_redact``) and ``status_code``
+    (optional) for triage. Subclasses correspond to HTTP status codes or
+    semantic failures (timeout / dim mismatch).
+    """
+
+    __module__ = "audio_graphy.adapters.exceptions"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        url: str | None = None,
+        status_code: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.url = url
+        self.status_code = status_code
+
+
+class CLAPRequestError(AudioEmbedAdapterError):
+    """HTTP 400 / 422 — bad audio format / missing file / unsupported model."""
+
+    __module__ = "audio_graphy.adapters.exceptions"
+
+
+class CLAPTooLargeError(AudioEmbedAdapterError):
+    """HTTP 413 — audio payload exceeds clap-service limit."""
+
+    __module__ = "audio_graphy.adapters.exceptions"
+
+
+class CLAPTimeoutError(AudioEmbedAdapterError):
+    """httpx.TimeoutException or HTTP 504 — clap-service timed out."""
+
+    __module__ = "audio_graphy.adapters.exceptions"
+
+
+class CLAPServerError(AudioEmbedAdapterError):
+    """HTTP 5xx — clap-service inference fault / non-JSON / dim != 512."""
+
+    __module__ = "audio_graphy.adapters.exceptions"
+
+
+class VoiceprintAdapterError(Exception):
+    """Base for all voiceprint (CAM++) adapter failures / M7 CAM++ 错误基类.
+
+    Covers both the diarization endpoint and the voiceprint extraction
+    endpoint. Subclasses mirror the ASR / VAD exception mapping matrix.
+    """
+
+    __module__ = "audio_graphy.adapters.exceptions"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        url: str | None = None,
+        status_code: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.url = url
+        self.status_code = status_code
+
+
+class VoiceprintRequestError(VoiceprintAdapterError):
+    """HTTP 400 / 422 — bad audio / missing file / invalid diarize params."""
+
+    __module__ = "audio_graphy.adapters.exceptions"
+
+
+class VoiceprintTimeoutError(VoiceprintAdapterError):
+    """httpx.TimeoutException — diarize / extract_voiceprint timed out."""
+
+    __module__ = "audio_graphy.adapters.exceptions"
+
+
+class VoiceprintServerError(VoiceprintAdapterError):
+    """HTTP 5xx / transport error / malformed JSON / dim != 192 / not L2-normed."""
+
+    __module__ = "audio_graphy.adapters.exceptions"
+
+
 __all__ = [
     "ASRAdapterError",
     "ASRAuthError",
@@ -207,6 +297,11 @@ __all__ = [
     "ASRServerError",
     "ASRTimeoutError",
     "ASRTooLargeError",
+    "AudioEmbedAdapterError",
+    "CLAPRequestError",
+    "CLAPServerError",
+    "CLAPTimeoutError",
+    "CLAPTooLargeError",
     "EmbedAdapterError",
     "EmbedDimMismatchError",
     "EmbedServerError",
@@ -221,5 +316,9 @@ __all__ = [
     "VADServerError",
     "VADTimeoutError",
     "VADTooLargeError",
+    "VoiceprintAdapterError",
+    "VoiceprintRequestError",
+    "VoiceprintServerError",
+    "VoiceprintTimeoutError",
     "_redact",
 ]

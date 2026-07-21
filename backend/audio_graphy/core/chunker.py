@@ -28,7 +28,7 @@ import tiktoken
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from audio_graphy.adapters.bundle import AdapterBundle
-from audio_graphy.adapters.protocols import VADSegment
+from audio_graphy.adapters.protocols import DiarizationSegment, VADSegment
 from audio_graphy.models.chunk import Chunk
 from audio_graphy.models.segment import Segment
 
@@ -112,6 +112,11 @@ class Chunker:
         overlap_tokens: Overlap tokens between chunks (default 0, streaming reserved).
         session_factory: Optional async session factory for MySQL writes.
         file_index: Optional FileIndex for working_dir JSON writes.
+        enable_voiceprint: When ``True`` AND ``bundle.voiceprint`` is set,
+            Chunker calls CAM++ diarize once per file and tags each VAD
+            segment with the matching speaker_id (replacing the M3-M6
+            ``speaker=None`` hardcode). When ``False`` (default), all M3-M6
+            tests run unchanged (speaker is always None).
     """
 
     def __init__(
@@ -123,6 +128,7 @@ class Chunker:
         session_factory: async_sessionmaker[AsyncSession] | None = None,
         file_index: FileIndex | None = None,
         encoding_name: str = "cl100k_base",
+        enable_voiceprint: bool = False,
     ) -> None:
         self._bundle = bundle
         self._token_budget = token_budget
@@ -131,6 +137,7 @@ class Chunker:
         self._file_index = file_index
         self._encoding_name = encoding_name
         self._enc = tiktoken.get_encoding(encoding_name)
+        self._enable_voiceprint = enable_voiceprint
 
     async def process_recording(
         self,
@@ -192,22 +199,39 @@ class Chunker:
         vad_segments: Sequence[VADSegment],
         audio_path: str,
     ) -> list[SegmentRecord]:
-        """Transcribe each VAD segment via ASR.
+        """Transcribe each VAD segment via ASR, optionally tag speaker via diarization.
 
-        Passes VAD segment boundaries to the ASR adapter (W12 fix) so that
-        real ASR services can transcribe specific time ranges. Mock adapters
-        ignore the segments parameter and transcribe the whole file.
+        M7: When ``enable_voiceprint=True`` and ``bundle.voiceprint`` is set,
+        Chunker calls CAM++ ``diarize`` once on the full audio, then matches
+        each VAD segment to its overlapping speaker. When ``enable_voiceprint=False``
+        (default), ``speaker`` is ``None`` for every segment — exactly the
+        M3-M6 behaviour.
 
         ASR failures on a single segment set transcript="" but don't block
-        the rest (PRD §4.1 error handling).
+        the rest (PRD §4.1 error handling). Diarization failures fall back
+        to ``speaker=None`` for the whole file (warning logged).
 
         Args:
             vad_segments: VAD output segments.
-            audio_path: Path to the audio file (passed to ASR).
+            audio_path: Path to the audio file (passed to ASR + CAM++).
 
         Returns:
             List of SegmentRecord objects.
         """
+        # Optional diarization — M7 enable_voiceprint flag gate.
+        diar_timeline: list[DiarizationSegment] = []
+        if self._enable_voiceprint and self._bundle.voiceprint is not None:
+            try:
+                diar = await self._bundle.voiceprint.diarize(audio_path)
+                diar_timeline = list(diar.segments)
+            except Exception as exc:
+                logger.warning(
+                    "Diarization failed for %s, falling back to speaker=None: %s",
+                    audio_path,
+                    exc,
+                )
+                diar_timeline = []
+
         records: list[SegmentRecord] = []
         for idx, seg in enumerate(vad_segments):
             transcript = ""
@@ -226,17 +250,51 @@ class Chunker:
                     exc,
                 )
 
+            # M7: speaker assignment via diarization timeline overlap.
+            # When diarization is disabled or empty, speaker remains None
+            # (preserves M3-M6 back-compat — grep `speaker=None` returns
+            # only this fallback branch + the enable_voiceprint=False default).
+            speaker_id = self._match_speaker(seg, diar_timeline)
+
             records.append(
                 SegmentRecord(
                     idx=idx,
                     start_sec=seg.start_sec,
                     end_sec=seg.end_sec,
                     transcript=transcript,
-                    speaker=None,  # M2: no speaker diarization
+                    speaker=speaker_id,  # M7: no longer hard-coded None
                     vad_conf=seg.confidence,
                 )
             )
         return records
+
+    @staticmethod
+    def _match_speaker(
+        vad_seg: VADSegment,
+        timeline: list[DiarizationSegment],
+    ) -> str | None:
+        """Match VAD segment to diarization speaker via midpoint, then max-overlap.
+
+        Strategy:
+            1. Compute VAD midpoint; if a diarization segment contains it, return its speaker_id.
+            2. Otherwise pick the diarization segment with max time-overlap.
+            3. Empty timeline → ``None`` (preserves enable_voiceprint=False behaviour).
+        """
+        if not timeline:
+            return None
+        midpoint = (vad_seg.start_sec + vad_seg.end_sec) / 2.0
+        for d in timeline:
+            if d.start_sec <= midpoint <= d.end_sec:
+                return d.speaker_id
+        # No midpoint match — pick max overlap.
+        best_spk: str | None = None
+        best_overlap = 0.0
+        for d in timeline:
+            ov = min(vad_seg.end_sec, d.end_sec) - max(vad_seg.start_sec, d.start_sec)
+            if ov > best_overlap:
+                best_overlap = ov
+                best_spk = d.speaker_id
+        return best_spk
 
     # ------------------------------------------------------------------
     # Token budget packing

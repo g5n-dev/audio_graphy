@@ -61,6 +61,83 @@ class EmbeddingResult:
 
 
 # ============================================================
+# M7 Phase 2 — Audio embedding + voiceprint result dataclasses
+# ============================================================
+
+
+@dataclass(frozen=True, slots=True)
+class AudioEmbeddingResult:
+    """CLAP audio embedding for one segment.
+
+    Attributes:
+        vector: 512-dim L2-normalized CLAP embedding (float32).
+        dim: Always 512 for laion_clap HTSAT-base (L1 locked).
+        model: Model identifier (e.g. ``"clap-htsat-base-2022"``).
+        segment_id: Optional segment index this embedding corresponds to.
+        duration_sec: Audio duration in seconds (for metrics).
+    """
+
+    vector: tuple[float, ...]
+    dim: int
+    model: str
+    segment_id: int | None = None
+    duration_sec: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class DiarizationSegment:
+    """One segment from CAM++ diarization, tagged with a speaker label.
+
+    Attributes:
+        start_sec / end_sec: Time window (file-relative).
+        speaker_id: Stable per-file speaker label (e.g. ``"spk_0"``).
+            NOT cross-recording linked yet — ``SpeakerLinker`` does that.
+        confidence: Diarization confidence in [0.0, 1.0].
+    """
+
+    start_sec: float
+    end_sec: float
+    speaker_id: str
+    confidence: float = 1.0
+
+
+@dataclass(frozen=True, slots=True)
+class DiarizationResult:
+    """Full diarization timeline output by VoiceprintAdapter.diarize.
+
+    Attributes:
+        segments: Tuple of DiarizationSegment (ordered by start_sec).
+        num_speakers: Count of distinct speaker IDs in ``segments``.
+        model: Model identifier reported by the service.
+        duration_sec: Audio duration in seconds.
+    """
+
+    segments: tuple[DiarizationSegment, ...]
+    num_speakers: int
+    model: str
+    duration_sec: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class VoiceprintResult:
+    """192-d L2-normalized CAM++ speaker voiceprint.
+
+    Attributes:
+        vector: 192-dim CAM++ embedding (L2-normalized → cosine == dot product).
+        dim: Always 192 for iic/speech_campplus_sv_zh-cn_16k-common (L2 locked).
+        model: Model identifier.
+        speaker_id: Same speaker_id as the source diarization segment (if any).
+        duration_sec: Audio duration used for extraction (quality signal).
+    """
+
+    vector: tuple[float, ...]
+    dim: int
+    model: str
+    speaker_id: str = ""
+    duration_sec: float = 0.0
+
+
+# ============================================================
 # Protocols
 # ============================================================
 
@@ -118,6 +195,73 @@ class EmbedAdapter(Protocol):
         self,
         texts: Sequence[str],
     ) -> Sequence[EmbeddingResult]: ...
+
+
+# ============================================================
+# M7 Phase 2 — Audio embedding + voiceprint Protocols
+# ============================================================
+
+
+@runtime_checkable
+class AudioEmbedAdapter(Protocol):
+    """Audio embedding — encodes audio segments into vectors for similarity search.
+
+    M7 default impl: CLAP HTSAT-base (laion_clap), 48 kHz mono, 512-d output.
+    The backing service is responsible for resampling to 48 kHz before model
+    inference; clients submit the original audio file.
+
+    Implementations MUST satisfy the contract:
+
+    - ``embed_audio([path1, path2, ...])`` returns one ``AudioEmbeddingResult``
+      per input path (positional correspondence).
+    - Output vectors are L2-normalized so cosine similarity == dot product.
+    """
+
+    model: str
+    dim: int  # always 512 (L1 locked)
+
+    async def embed_audio(
+        self,
+        audio_paths: Sequence[str],
+        *,
+        segment_ids: Sequence[int | None] | None = None,
+    ) -> Sequence[AudioEmbeddingResult]: ...
+
+
+@runtime_checkable
+class VoiceprintAdapter(Protocol):
+    """Speaker voiceprint extraction + diarization (CAM++).
+
+    M7 default impl: ``iic/speech_campplus_sv_zh-cn_16k-common`` (192-d,
+    L2-normalized). The backing service is responsible for resampling to
+    16 kHz mono; clients submit the original audio file.
+
+    ``diarize`` and ``extract_voiceprint`` are two independent endpoints —
+    callers may invoke either or both. ``diarize`` produces a timeline of
+    speaker-tagged segments for a full file; ``extract_voiceprint``
+    produces a single 192-d voiceprint for an audio file (optionally
+    cropped to ``[start_sec, end_sec]`` server-side).
+    """
+
+    model: str
+    dim: int  # always 192 (L2 locked)
+
+    async def diarize(
+        self,
+        audio_path: str,
+        *,
+        min_segment_sec: float = 0.5,
+        max_speakers: int = 10,
+    ) -> DiarizationResult: ...
+
+    async def extract_voiceprint(
+        self,
+        audio_path: str,
+        *,
+        speaker_id: str = "",
+        start_sec: float | None = None,
+        end_sec: float | None = None,
+    ) -> VoiceprintResult: ...
 
 
 # ============================================================

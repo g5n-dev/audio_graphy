@@ -69,6 +69,22 @@ def build_parser() -> argparse.ArgumentParser:
         default=5,
         help="Cutoff k for context_precision_at_k (default: 5).",
     )
+    parser.add_argument(
+        "--voiceprint-eer",
+        action="store_true",
+        help=(
+            "Enable voiceprint EER metric (M7). Reads 'voiceprint_trials' "
+            "metadata from each gold example."
+        ),
+    )
+    parser.add_argument(
+        "--diarization-der",
+        action="store_true",
+        help=(
+            "Enable diarization DER metric (M7). Reads reference_rttm / "
+            "hypothesis_rttm paths from each gold example's metadata."
+        ),
+    )
     return parser
 
 
@@ -144,6 +160,8 @@ def main(argv: list[str] | None = None) -> int:
         settings=settings,
         k=args.k,
         config_snapshot=config_snapshot,
+        voiceprint_eer_enabled=args.voiceprint_eer,
+        diarization_der_enabled=args.diarization_der,
     )
 
     try:

@@ -9,6 +9,8 @@
  *   /graph        — graph explorer (AntV G6)
  *   /query        — natural language query
  *   /stats        — tag statistics
+ *   /speakers     — speaker profile list (M7)
+ *   /speakers/:id — speaker profile detail (M7)
  *   /prompts      — prompt management
  */
 
@@ -21,6 +23,7 @@ import {
   IconBranch,
   IconMessage,
   IconStorage,
+  IconUser,
 } from "@arco-design/web-react/icon";
 import { useAuthStore } from "@/stores/auth";
 import LoginPage from "@/pages/LoginPage";
@@ -30,6 +33,8 @@ import RecordingDetailPage from "@/pages/RecordingDetailPage";
 import GraphExplorerPage from "@/pages/GraphExplorerPage";
 import QueryPage from "@/pages/QueryPage";
 import StatsPage from "@/pages/StatsPage";
+import SpeakerProfileListPage from "@/pages/SpeakerProfile";
+import SpeakerProfileDetailPage from "@/pages/SpeakerProfile/Detail";
 
 const { Header, Sider, Content } = Layout;
 const { Title } = Typography;
@@ -39,6 +44,7 @@ const menuItems = [
   { key: "/recordings", icon: <IconFileAudio />, label: "录音管理" },
   { key: "/graph", icon: <IconBranch />, label: "知识图谱" },
   { key: "/query", icon: <IconMessage />, label: "智能问答" },
+  { key: "/speakers", icon: <IconUser />, label: "说话人" },
   { key: "/stats", icon: <IconStorage />, label: "标签统计" },
 ];
 
@@ -120,6 +126,8 @@ function AppLayout() {
             <Route path="/recordings/:id" element={<RecordingDetailPage />} />
             <Route path="/graph" element={<GraphExplorerPage />} />
             <Route path="/query" element={<QueryPage />} />
+            <Route path="/speakers" element={<SpeakerProfileListPage />} />
+            <Route path="/speakers/:id" element={<SpeakerProfileDetailPage />} />
             <Route path="/stats" element={<StatsPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

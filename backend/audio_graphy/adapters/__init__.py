@@ -17,6 +17,10 @@ from audio_graphy.adapters.bundle import (
 from audio_graphy.adapters.protocols import (
     ASRAdapter,
     ASRResult,
+    AudioEmbedAdapter,
+    AudioEmbeddingResult,
+    DiarizationResult,
+    DiarizationSegment,
     EdgeConfidence,
     EmbedAdapter,
     EmbeddingResult,
@@ -24,12 +28,18 @@ from audio_graphy.adapters.protocols import (
     LLMResponse,
     VADAdapter,
     VADSegment,
+    VoiceprintAdapter,
+    VoiceprintResult,
 )
 
 __all__ = [
     "ASRAdapter",
     "ASRResult",
     "AdapterBundle",
+    "AudioEmbedAdapter",
+    "AudioEmbeddingResult",
+    "DiarizationResult",
+    "DiarizationSegment",
     "EdgeConfidence",
     "EmbedAdapter",
     "EmbeddingResult",
@@ -37,6 +47,8 @@ __all__ = [
     "LLMResponse",
     "VADAdapter",
     "VADSegment",
+    "VoiceprintAdapter",
+    "VoiceprintResult",
     "build_hybrid_bundle",
     "build_mock_bundle",
 ]

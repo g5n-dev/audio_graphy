@@ -1,0 +1,7 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
+laion-clap==1.1.7
+librosa>=0.10
+torch>=2.0
+numpy>=1.24

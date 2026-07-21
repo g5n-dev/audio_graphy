@@ -47,8 +47,23 @@ DEFAULT_ENTITY_TYPES: tuple[str, ...] = (
     "优惠权益",
     "竞品",
     "预约事件",
+    # M7 — speaker entity (LLM-extracted when Chunker populates speaker labels).
+    # Treated identically to other entities for graph merging; SpeakerLinker
+    # (§8) handles the cross-recording voiceprint linkage separately.
+    "说话人",
 )
 """Default entity types for the car-sales domain (DESIGN.md §5.1)."""
+
+# M7 — speaker-specific edge relations (architecture §7.2).
+SPEAKER_EDGE_SPEAKS_IN = "speaks_in"
+SPEAKER_EDGE_MENTIONS = "mentions"
+SPEAKER_EDGE_RECOMMENDS = "recommends"
+SPEAKER_EDGE_ASKS = "asks"
+
+# M7 — speaker ambiguity tag values (architecture §7.4).
+AMBIGUITY_TAG_NONE: str | None = None
+AMBIGUITY_TAG_AMBIGUOUS = "AMBIGUOUS"
+AMBIGUITY_TAG_PENDING = "PENDING_REVIEW"
 
 # ============================================================
 # Shared dataclasses (frozen + slots, consistent with adapters.protocols)

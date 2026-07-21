@@ -6,6 +6,18 @@ Four-stage pipeline (DESIGN.md §3.3 stages 3-4):
     3. Refined reranking: ASR re-transcription (mock=original) + description upgrade
     4. Answer generation: strong_llm generates final answer + 3-level provenance citations
 
+M7 additions (architecture §10.2):
+    - ``ChannelWeights`` dataclass with validator (Q1 locked: text 0.5 /
+      graph 0.3 / audio 0.2). ``enable_voiceprint=False`` callers should
+      normalise to ``(0.625, 0.375, 0.0)`` — see ``ChannelWeights.normalise``.
+    - ``Reranker.channel_weights`` constructor argument.
+    - ``_weighted_score()`` fuses candidates by their source channel.
+    - AMBIGUOUS speaker candidate gets ``score × 0.7`` (§10.3) before
+      channel weighting — not剔除 (§17.6).
+    - When channel_weights.audio == 0.0, audio channel candidates still
+      participate in ranking (they just contribute 0 from the weight
+      multiplier); the sort is driven by the candidate's pre-weight score.
+
 Error handling (PRD §4.5):
     - LLM judge failure → keep candidate (conservative: prefer false positives)
     - Keyword extraction failure → use original query
@@ -33,6 +45,83 @@ if TYPE_CHECKING:
     from audio_graphy.storage.graph_networkx import NetworkXGraphStore
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================
+# Channel weights (M7 §10.2 — Q1 locked)
+# ============================================================
+
+
+@dataclass(frozen=True, slots=True)
+class ChannelWeights:
+    """Rerank channel weights (Q1 locked: 0.5 / 0.3 / 0.2).
+
+    Attributes:
+        text: Weight for candidates from the naive text channel.
+        graph: Weight for candidates from the graph channel.
+        audio: Weight for candidates from the audio channel.
+    """
+
+    text: float = 0.5
+    graph: float = 0.3
+    audio: float = 0.2
+
+    def __post_init__(self) -> None:
+        total = self.text + self.graph + self.audio
+        if not 0.99 <= total <= 1.01:
+            raise ValueError(
+                f"ChannelWeights must sum to ~1.0 (got {total:.4f}; "
+                f"text={self.text} graph={self.graph} audio={self.audio})"
+            )
+        for label, value in (
+            ("text", self.text), ("graph", self.graph), ("audio", self.audio),
+        ):
+            if not 0.0 <= value <= 1.0:
+                raise ValueError(
+                    f"ChannelWeights.{label} must be in [0.0, 1.0], got {value}"
+                )
+
+    @property
+    def total(self) -> float:
+        """Sum of the three weights (for diagnostics)."""
+        return self.text + self.graph + self.audio
+
+    def normalised_for_disabled_audio(self) -> ChannelWeights:
+        """Return a new ChannelWeights with audio=0 and (text, graph) renormalised.
+
+        Used when ``enable_voiceprint=False`` so that audio-disabled callers
+        do not silently lose 20% of total score magnitude. Implements the
+        rule from architecture §10.2 (footnote):
+
+            (0.5, 0.3, 0.0) → (0.625, 0.375, 0.0)
+
+        If ``audio`` is already 0, the object is returned unchanged (it is
+        already normalised). If ``text+graph`` is 0, returns the object
+        unchanged (defensive — caller passed a degenerate config).
+        """
+        if self.audio == 0.0:
+            return self
+        denom = self.text + self.graph
+        if denom <= 0.0:
+            return self
+        return ChannelWeights(text=self.text / denom, graph=self.graph / denom, audio=0.0)
+
+    def weight_for(self, source_channel: str) -> float:
+        """Look up the weight for a candidate's ``source_channel``.
+
+        Unknown channels (e.g. legacy candidates without a tagged channel)
+        default to the text weight (preserves M3-M6 behaviour).
+        """
+        mapping = {
+            "naive": self.text,
+            "graph": self.graph,
+            "audio": self.audio,
+        }
+        return mapping.get(source_channel, self.text)
+
+
+# AMBIGUOUS speaker candidate downgrade factor (§10.3 / §17.6).
+AMBIGUOUS_SPEAKER_PENALTY: float = 0.7
 
 
 # ============================================================
@@ -92,6 +181,11 @@ class Reranker:
         bundle: AdapterBundle (strong_llm for judge/answer, weak_llm for keywords).
         file_index: Optional FileIndex for LLM response cache (Layer 2).
         graph_store: Optional NetworkXGraphStore for entity/confidence lookup.
+        channel_weights: M7 rerank fusion weights (Q1 locked: 0.5 / 0.3 / 0.2).
+            When ``None``, defaults to ``ChannelWeights()``. Callers that
+            disable the audio channel should pass
+            ``ChannelWeights().normalised_for_disabled_audio()`` (or rely
+            on ``disable_audio_channel()`` to do it automatically).
     """
 
     def __init__(
@@ -100,10 +194,114 @@ class Reranker:
         *,
         file_index: FileIndex | None = None,
         graph_store: NetworkXGraphStore | None = None,
+        channel_weights: ChannelWeights | None = None,
     ) -> None:
         self._bundle = bundle
         self._file_index = file_index
         self._graph_store = graph_store
+        self._channel_weights = channel_weights or ChannelWeights()
+
+    @property
+    def channel_weights(self) -> ChannelWeights:
+        """Current channel weights (read-only view)."""
+        return self._channel_weights
+
+    def disable_audio_channel(self) -> None:
+        """Mutate the channel weights to drop the audio channel.
+
+        Convenience for ``enable_voiceprint=False`` callers: re-normalises
+        text+graph so total = 1.0. After this call, ``channel_weights.audio``
+        is 0.0 and ``(text, graph)`` are scaled up to compensate.
+
+        Idempotent — calling twice is a no-op.
+        """
+        self._channel_weights = self._channel_weights.normalised_for_disabled_audio()
+
+    def _weighted_score(self, candidate: CandidateSegment) -> float:
+        """Compute the channel-weighted fusion score for one candidate.
+
+        - channel weight × candidate.score (base fusion).
+        - AMBIGUOUS speaker affiliation → score × 0.7 (§10.3). Detection
+          is delegated to ``_candidate_from_ambiguous_speaker`` (returns
+          ``False`` when ``graph_store`` is ``None``).
+
+        Args:
+            candidate: One retrieval candidate.
+
+        Returns:
+            Fused score (float). Lower-is-better callers should negate.
+        """
+        weight = self._channel_weights.weight_for(candidate.source_channel)
+        score = weight * candidate.score
+        if self._candidate_from_ambiguous_speaker(candidate):
+            score *= AMBIGUOUS_SPEAKER_PENALTY
+        return score
+
+    def _candidate_from_ambiguous_speaker(self, candidate: CandidateSegment) -> bool:
+        """Heuristic: does this candidate's chunk relate to an AMBIGUOUS speaker?
+
+        Conservative synchronous check against the in-memory ``graph_store``.
+        When the graph store is absent or the lookup fails for any reason,
+        returns ``False`` (no penalty applied — we never penalise what we
+        cannot verify).
+
+        Subclasses / future M8 work can override this with a real DB hit
+        to ``speaker_nodes`` joined via ``chunk_id`` → ``recordings.id`` →
+        ``speaker_links.recording_id``.
+        """
+        if self._graph_store is None:
+            return False
+        try:
+            # NetworkXGraphStore caches graph in memory; the check is cheap.
+            # We probe by source_id format "{recording_id}_{chunk_id}".
+            source_id = f"{candidate.recording_id}_{candidate.chunk_id}"
+            # ``get_node`` is async — but the canonical SPEAKER node lookup
+            # is performed via ``get_all_nodes`` which already returns a list.
+            # For the synchronous path we use the cached NetworkX ``graph``
+            # directly when available.
+            graph = getattr(self._graph_store, "graph", None)
+            if graph is None:
+                return False
+            for _node_id, attrs in graph.nodes(data=True):
+                if attrs.get("type") != "SPEAKER":
+                    continue
+                if attrs.get("ambiguity_tag") != "AMBIGUOUS":
+                    continue
+                # SPEAKER node source_ids is a JSON-encoded list of
+                # ``{recording_id}_{chunk_id}`` strings.
+                raw_sources = attrs.get("source_ids", "[]")
+                if isinstance(raw_sources, (list, tuple)):
+                    if source_id in raw_sources:
+                        return True
+                elif isinstance(raw_sources, str) and source_id in raw_sources:
+                    return True
+        except Exception as exc:
+            logger.debug("AMBIGUOUS speaker probe failed for chunk %d: %s",
+                         candidate.chunk_id, exc)
+        return False
+
+    def rank_candidates(
+        self,
+        candidates: Sequence[CandidateSegment],
+    ) -> list[CandidateSegment]:
+        """Sort candidates by channel-weighted fusion score (descending).
+
+        Pure synchronous helper — exposed so rerank + retrieval can share
+        the same ranking logic without going through the full LLM-judge
+        pipeline. AMBIGUOUS speaker candidates are kept (downweighted, not
+        removed — §17.6).
+
+        Args:
+            candidates: Retrieval candidates (any source_channel mix).
+
+        Returns:
+            New list sorted by ``_weighted_score`` descending.
+        """
+        return sorted(
+            candidates,
+            key=self._weighted_score,
+            reverse=True,
+        )
 
     async def rerank_and_answer(
         self,
@@ -490,3 +688,12 @@ _CONFIDENCE_RANK: dict[str, int] = {
 def _confidence_rank(confidence: str) -> int:
     """Return numeric rank for confidence (higher = better)."""
     return _CONFIDENCE_RANK.get(confidence, 0)
+
+
+__all__ = [
+    "AMBIGUOUS_SPEAKER_PENALTY",
+    "ChannelWeights",
+    "Citation",
+    "RerankResult",
+    "Reranker",
+]

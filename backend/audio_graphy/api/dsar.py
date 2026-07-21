@@ -275,6 +275,15 @@ async def erase_recording(
         await s.execute(delete(Recording).where(Recording.id == recording_id))
         await s.commit()
 
+    # M7 — voiceprint cascade (must run AFTER recordings delete so FK CASCADE
+    # has cleaned up speaker_links; we still need to manually handle the
+    # speaker_node aggregation decrement).
+    try:
+        await _cascade_voiceprint_after_erase(factory, recording_id, user.tenant_id)
+    except Exception:
+        # Voiceprint cascade is best-effort — the main erase has succeeded.
+        pass
+
     # GraphML — best-effort.
     graph_stores: dict[str, Any] | None = getattr(request.app.state, "graph_stores", None)
     if graph_stores is not None:
@@ -354,11 +363,6 @@ async def list_audit_logs(
     )
 
 
-# ------------------------------------------------------------------
-# ZIP helpers
-# ------------------------------------------------------------------
-
-
 async def _build_export_bundle(
     factory: Any,
     rec: Recording,
@@ -384,6 +388,32 @@ async def _build_export_bundle(
             .order_by(AuditLog.occurred_at.desc())
         )
         audit_rows = list(audit_result.scalars().all())
+
+        # M7 — voiceprint metadata (NO raw vectors per PIPL §14.3).
+        voiceprints_meta: list[dict[str, Any]] = []
+        try:
+            from audio_graphy.models.voiceprint_vector import VoiceprintVector
+
+            vp_result = await s.execute(
+                select(VoiceprintVector).where(
+                    VoiceprintVector.recording_id == rec.id,
+                    VoiceprintVector.tenant_id == str(rec.tenant_id),
+                )
+            )
+            for vp in vp_result.scalars().all():
+                voiceprints_meta.append(
+                    {
+                        "voiceprint_id": vp.voiceprint_id,
+                        "speaker_entity_id": vp.speaker_entity_id,
+                        "duration_sec": vp.duration_sec,
+                        "created_at": vp.created_at.isoformat()
+                        if vp.created_at
+                        else None,
+                    }
+                )
+        except Exception:
+            # voiceprint table may be absent (enable_voiceprint=False) — skip.
+            pass
 
     # Audio bytes — decrypt if encryption is enabled, else read raw path.
     audio_bytes: bytes | None = None
@@ -418,6 +448,7 @@ async def _build_export_bundle(
         "tags": tags,
         "audit_rows": audit_rows,
         "recording": rec,
+        "voiceprints_meta": voiceprints_meta,
     }
 
 
@@ -505,6 +536,13 @@ def _render_export_zip(
             json.dumps(tags_data, ensure_ascii=False, indent=2, default=str),
         )
 
+        # M7 — voiceprints metadata only (PIPL §14.3: NO raw vectors).
+        voiceprints_meta = bundle.get("voiceprints_meta") or []
+        zf.writestr(
+            f"{prefix}/voiceprints.json",
+            json.dumps(voiceprints_meta, ensure_ascii=False, indent=2, default=str),
+        )
+
         # Audit history CSV.
         csv_buf = io.StringIO()
         writer = csv.writer(csv_buf)
@@ -529,3 +567,46 @@ def _render_export_zip(
 
 
 __all__ = ["router"]
+
+
+# ------------------------------------------------------------------
+# M7 helpers
+# ------------------------------------------------------------------
+
+
+async def _cascade_voiceprint_after_erase(
+    factory: Any,
+    recording_id: int,
+    tenant_id: str,
+) -> None:
+    """M7 PIPL §14.3 cascade after DSAR erase.
+
+    The recordings FK CASCADE already cleaned up:
+        - vectors_voiceprint (FK on recording_id CASCADE)
+        - speaker_links (FK on recording_id CASCADE)
+    What remains is the ``speaker_nodes.recordings_list`` denormalised
+    aggregation: we must drop the recording from each affected speaker's
+    list and delete the speaker_node when the list becomes empty.
+    """
+    from sqlalchemy import select
+
+    from audio_graphy.models.speaker_node import SpeakerNode
+
+    async with factory() as s:
+        # Find speaker_nodes whose recordings_list still contains this recording.
+        # JSON containment is DB-specific; here we load all tenant speakers
+        # and filter in Python (typical N ≤ 10^3 per tenant).
+        stmt = select(SpeakerNode).where(SpeakerNode.tenant_id == tenant_id)
+        nodes = list((await s.execute(stmt)).scalars().all())
+
+        for node in nodes:
+            rids = list(node.recordings_list or [])
+            if recording_id not in rids:
+                continue
+            rids.remove(recording_id)
+            if not rids:
+                await s.delete(node)
+            else:
+                node.recordings_list = rids
+                node.recordings_count = len(rids)
+        await s.commit()
