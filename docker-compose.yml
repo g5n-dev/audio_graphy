@@ -283,15 +283,27 @@ services:
       - audiography_net
 
   funasr:
-    # M5 placeholder — NOT wired to backend in M4 (adapter_asr_mode=real is
-    # rejected by the Settings validator). Kept so SRE can pre-pull the image.
-    image: registry.cn-hangzhou.aliyuncs.com/funasr_recog/funasr-runtime-sdk-online-cpu-0.1.12
+    # Official funASR server image with OpenAI-compatible HTTP API.
+    # 镜像 tag 锁定 funasr/server:1.0.5（齐活林 Q1 locked）。
+    image: funasr/server:1.0.5
     container_name: audiography-funasr
     profiles: ["real"]
     restart: unless-stopped
+    environment:
+      FUNASR_MODEL: ${FUNASR_MODEL:-fun-asr-nano}
+      FUNASR_DEVICE: ${FUNASR_DEVICE:-cpu}
     ports:
-      - "10095:10095"
-    # No healthcheck in M4 — funASR SDK has no /health endpoint. Add in M5.
+      # Host 10095 → container 8000: backwards compat with M4 host port.
+      # Container internal 8000 matches funasr/server:1.0.5 OpenAI-compat default.
+      - "10095:8000"
+    volumes:
+      - funasr_cache:/root/.cache/funasr
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/v1/models', timeout=2).read()\""]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
     networks:
       - audiography_net
 
@@ -305,6 +317,9 @@ volumes:
     name: audiography_vllm_cache
   tei_cache:
     name: audiography_tei_cache
+  # M5 — funASR model cache.
+  funasr_cache:
+    name: audiography_funasr_cache
 
 networks:
   audiography_net:

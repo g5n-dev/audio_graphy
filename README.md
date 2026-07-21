@@ -8,6 +8,21 @@
 
 基于 [VideoRAG](https://github.com/HKUDS/VideoRAG)（KDD 2026, HKUDS）的图谱内核做音频化改造——保留内核，替换模态预处理（VAD + ASR），砍掉视觉附属（MiniCPM-V + ImageBind）。
 
+## M5 Status (2026-07-21)
+
+Real **funASR** adapter shipped (OpenAI-compatible `/v1/audio/transcriptions`).
+`ADAPTER_ASR_MODE=real` is now supported; image pinned to `funasr/server:1.0.5`
+(host port `10095` → container `8000`).
+
+Evaluation subsystem shipped — `audio_graphy.eval`:
+- 8 metrics (5 RAG-standard + 3 AudioGraphy-specific), all pure functions.
+- LLM-as-judge reuses `LLMOpenAIAdapter(strong)` — no new model service.
+- CLI: `python -m audio_graphy.eval --gold-set examples/eval/smoke.yaml`
+- Reports: Markdown + JSON, with explicit `MockPipeline` banner.
+- Zero new pip dependencies.
+
+See [`docs/m5-eval.md`](./docs/m5-eval.md) for the eval user guide.
+
 ## M4 Status (2026-07-21)
 
 Real adapter scaffolding is **code-ready** (no live GPU runs yet).

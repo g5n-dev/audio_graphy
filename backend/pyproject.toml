@@ -111,6 +111,11 @@ ignore = [
 # and use synchronous file IO for typical small audio payloads (<100 MB) — both
 # intentional and safe in this single-process request context.
 "audio_graphy/adapters/real/*.py" = ["S324", "ASYNC230", "ASYNC240"]
+# eval/judge.py uses md5 to mirror LLMOpenAIAdapter.compute_prompt_hash
+# (cache-key parity, not crypto).
+"audio_graphy/eval/judge.py" = ["S324"]
+# eval/cli.py is a CLI entry — prints to stderr are legitimate user-facing output.
+"audio_graphy/eval/cli.py" = ["T20"]
 # Exception base class names (LLMBadRequest, etc.) follow the architecture spec
 # in docs/m4-architecture.md §3.1 — names without "Error" suffix are deliberate.
 "audio_graphy/adapters/exceptions.py" = ["N818"]
@@ -152,6 +157,7 @@ plugins = ["pydantic.mypy"]
 module = [
     "apscheduler.*",
     "networkx.*",
+    "yaml.*",
 ]
 ignore_missing_imports = true
 

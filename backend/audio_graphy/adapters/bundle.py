@@ -58,8 +58,7 @@ def build_hybrid_bundle(settings: Settings) -> AdapterBundle:
 
     构造混合 bundle：每个 adapter 独立根据自身 mode 字段选择 mock/real 实现。
 
-    ASR is always mock in M4 (funASR lands in M5; the `Settings` validator
-    already rejects ``adapter_asr_mode="real"``).
+    M5: ASR real mode is now supported via ``FunASRAdapter`` (OpenAI-compat API).
 
     Callers SHOULD ensure ``aclose()`` is invoked on the returned adapters at
     application shutdown — real adapters own httpx pools; mock adapters are
@@ -78,8 +77,18 @@ def build_hybrid_bundle(settings: Settings) -> AdapterBundle:
     else:
         vad = MockVADAdapter()
 
-    # ASR — always mock in M4 (validator already rejects real)
-    asr: ASRAdapter = MockASRAdapter(flaky=settings.mock_asr_flaky)
+    # ASR — M5 unblocks real mode via FunASRAdapter.
+    if settings.adapter_asr_mode == "real":
+        from audio_graphy.adapters.real.funasr import FunASRAdapter
+
+        asr: ASRAdapter = FunASRAdapter(
+            url=settings.funasr_url,
+            model=settings.funasr_model,
+            api_key=settings.openai_api_key,
+            language="zh",
+        )
+    else:
+        asr = MockASRAdapter(flaky=settings.mock_asr_flaky)
 
     # LLM strong/weak share mode; differ in base_url + model
     if settings.adapter_llm_mode == "real":
