@@ -84,6 +84,7 @@ class RetentionEnforcer:
         *,
         retention_days: int | None = None,
         batch_size: int = 500,
+        cascade_voiceprint: bool = True,
     ) -> None:
         self._session_factory = session_factory
         self._crypto = crypto
@@ -91,6 +92,7 @@ class RetentionEnforcer:
         self._graph_store_factory = graph_store_factory
         self._retention_days_override = retention_days
         self._batch_size = batch_size
+        self._cascade_voiceprint = cascade_voiceprint
 
     async def run_sweep(self) -> RetentionReport:
         """Run one retention sweep. Called by APScheduler daily cron."""
@@ -179,7 +181,28 @@ class RetentionEnforcer:
         M6 uses explicit deletes (not ORM cascade) for auditability:
         every removed table is named in code so reviewers can reason
         about what was deleted.
+
+        M7 adds an optional voiceprint cascade when ``cascade_voiceprint``
+        is enabled (default True). The cascade:
+            1. Looks up ``vectors_voiceprint`` rows for this recording.
+            2. For each row's speaker_entity_id:
+                a. Drops the recording from speaker_node.recordings_list.
+                b. If this was the only recording for the speaker, hard-deletes
+                   the speaker_node (FK cascade handles speaker_links).
+            3. Hard-deletes the vectors_voiceprint rows.
         """
+        # 0. (M7) voiceprint cascade — must run BEFORE recordings row is
+        # deleted so we can still query speaker_node aggregations cleanly.
+        if self._cascade_voiceprint:
+            try:
+                await self._cascade_voiceprint_for_recording(rec)
+            except Exception as exc:
+                logger.warning(
+                    "Retention: voiceprint cascade failed for recording %d: %s",
+                    rec.id,
+                    exc,
+                )
+
         # 1. Audio file on disk (encrypted_path preferred; fallback to path).
         cipher_path = (
             rec.audio_encrypted_path if rec.audio_encrypted_path else str(rec.path)
@@ -225,6 +248,74 @@ class RetentionEnforcer:
             logger.warning(
                 "GraphML cleanup failed for recording %d: %s", rec.id, exc
             )
+
+    async def _cascade_voiceprint_for_recording(self, rec: Recording) -> None:
+        """M7 PIPL §14.3 cascade: voiceprint_vectors + speaker_nodes cleanup.
+
+        See class docstring for the full decision tree. Failure-tolerant:
+        logs warnings + writes audit entries; does not abort the main delete.
+        """
+        # Local imports to keep this module importable without M7 models.
+        from audio_graphy.models.speaker_link import SpeakerLink
+        from audio_graphy.models.speaker_node import SpeakerNode
+        from audio_graphy.models.voiceprint_vector import VoiceprintVector
+
+        async with self._session_factory() as session:
+            # 1. Find all voiceprint rows for this recording.
+            vp_rows = list(
+                (
+                    await session.execute(
+                        select(VoiceprintVector).where(
+                            VoiceprintVector.recording_id == rec.id,
+                            VoiceprintVector.tenant_id == str(rec.tenant_id),
+                        )
+                    )
+                ).scalars().all()
+            )
+            if not vp_rows:
+                return
+
+            affected_speaker_ids: set[int] = set()
+            for vp in vp_rows:
+                affected_speaker_ids.add(vp.speaker_entity_id)
+
+            # 2. For each affected speaker_node, decrement / delete.
+            for speaker_id in affected_speaker_ids:
+                node = await session.get(SpeakerNode, speaker_id)
+                if node is None:
+                    continue
+                recordings_list = list(node.recordings_list or [])
+                if rec.id in recordings_list:
+                    recordings_list.remove(rec.id)
+                if not recordings_list:
+                    # Hard delete — speaker_links cascade via FK.
+                    await session.delete(node)
+                else:
+                    node.recordings_list = recordings_list
+                    node.recordings_count = len(recordings_list)
+
+            # 3. Hard delete the voiceprint rows.
+            await session.execute(
+                delete(VoiceprintVector).where(
+                    VoiceprintVector.recording_id == rec.id
+                )
+            )
+            # 4. Drop speaker_links rows referencing this recording.
+            await session.execute(
+                delete(SpeakerLink).where(SpeakerLink.recording_id == rec.id)
+            )
+
+            await session.commit()
+
+        # Audit the cascade.
+        await self._audit.record(
+            tenant_id=str(rec.tenant_id),
+            user_id=None,
+            action="recording_voiceprint_cascade",
+            target=f"recording:{rec.id}",
+            before={"voiceprint_rows": len(vp_rows)},
+            after={},
+        )
 
     @staticmethod
     async def _delete_tag_current(

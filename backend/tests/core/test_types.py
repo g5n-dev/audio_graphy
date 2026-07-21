@@ -52,8 +52,9 @@ class TestGraphRAGDelimiters:
 class TestDefaultEntityTypes:
     """Default entity types for car-sales domain."""
 
-    def test_contains_8_types(self) -> None:
-        assert len(DEFAULT_ENTITY_TYPES) == 8
+    def test_contains_9_types(self) -> None:
+        # M7 adds 说话人 (speaker) — see core/types.py.
+        assert len(DEFAULT_ENTITY_TYPES) == 9
 
     def test_contains_car_sales_types(self) -> None:
         assert "客户" in DEFAULT_ENTITY_TYPES
@@ -64,6 +65,7 @@ class TestDefaultEntityTypes:
         assert "优惠权益" in DEFAULT_ENTITY_TYPES
         assert "竞品" in DEFAULT_ENTITY_TYPES
         assert "预约事件" in DEFAULT_ENTITY_TYPES
+        assert "说话人" in DEFAULT_ENTITY_TYPES  # M7 speaker entity
 
 
 @pytest.mark.unit

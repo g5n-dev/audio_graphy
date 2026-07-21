@@ -31,13 +31,17 @@ from audio_graphy.models.prompt import Prompt
 from audio_graphy.models.recompute_task import RecomputeTask
 from audio_graphy.models.recording import Recording
 from audio_graphy.models.segment import Segment
+from audio_graphy.models.speaker_link import SpeakerLink
+from audio_graphy.models.speaker_node import SpeakerNode
 from audio_graphy.models.tag_current import TagCurrent
 from audio_graphy.models.tag_fact import TagFact
 from audio_graphy.models.tag_stat import TagStat
 from audio_graphy.models.tenant import Tenant
 from audio_graphy.models.user import User
+from audio_graphy.models.vector_audio import VectorAudio
 from audio_graphy.models.vector_chunk import VectorChunk
 from audio_graphy.models.vector_entity import VectorEntity
+from audio_graphy.models.voiceprint_vector import VoiceprintVector
 
 __all__ = [
     "AuditLog",
@@ -52,6 +56,8 @@ __all__ = [
     "Recording",
     "RecordingStatus",
     "Segment",
+    "SpeakerLink",
+    "SpeakerNode",
     "TagCurrent",
     "TagFact",
     "TagSource",
@@ -60,6 +66,8 @@ __all__ = [
     "TenantScopedBase",
     "User",
     "UserRole",
+    "VectorAudio",
     "VectorChunk",
     "VectorEntity",
+    "VoiceprintVector",
 ]

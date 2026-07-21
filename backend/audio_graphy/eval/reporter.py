@@ -109,6 +109,19 @@ def _render_markdown(run: EvalRun) -> str:
         lines.append("_(no per-example results)_")
     lines.append("")
 
+    # --- M7 Phase 2 metrics (voiceprint EER + diarization DER) ---
+    phase2 = _collect_phase2_metrics(ok_examples)
+    if phase2:
+        lines.append("## M7 Phase 2 Metrics")
+        lines.append("")
+        lines.append("| Example | Voiceprint EER | Diarization DER |")
+        lines.append("|---|---|---|")
+        for ex_id, eer, der in phase2:
+            eer_v = f"{eer:.3f}" if eer is not None else "—"
+            der_v = f"{der:.3f}" if der is not None else "—"
+            lines.append(f"| `{ex_id}` | {eer_v} | {der_v} |")
+        lines.append("")
+
     # --- Errors ---
     if errors:
         lines.append("## Errors")
@@ -150,6 +163,29 @@ def _worst_examples(
         return 1.0
 
     return sorted(examples, key=key)[:count]
+
+
+def _collect_phase2_metrics(
+    examples: list[EvalExampleResult],
+) -> list[tuple[str, float | None, float | None]]:
+    """Extract (example_id, voiceprint_eer, diarization_der) for M7 reporting.
+
+    Only includes examples where at least one of the two metrics is present
+    and not skipped.
+    """
+    out: list[tuple[str, float | None, float | None]] = []
+    for ex in examples:
+        eer = _find_metric(ex.metrics, "voiceprint_eer")
+        der = _find_metric(ex.metrics, "diarization_der")
+        eer_v = (
+            float(eer.value) if eer and not eer.details.get("skipped") else None
+        )
+        der_v = (
+            float(der.value) if der and not der.details.get("skipped") else None
+        )
+        if eer_v is not None or der_v is not None:
+            out.append((ex.example_id, eer_v, der_v))
+    return out
 
 
 __all__ = ["to_json", "to_markdown"]

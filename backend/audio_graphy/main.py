@@ -26,6 +26,7 @@ from audio_graphy.api.prompts import router as prompts_router
 from audio_graphy.api.query import router as query_router
 from audio_graphy.api.recordings import router as recordings_router
 from audio_graphy.api.segments import router as segments_router
+from audio_graphy.api.speakers import router as speakers_router
 from audio_graphy.api.stats import router as stats_router
 from audio_graphy.api.tags import router as tags_router
 from audio_graphy.auth.jwt_utils import JWTManager
@@ -351,6 +352,7 @@ def create_app() -> FastAPI:
     app.include_router(stats_router, prefix=API_PREFIX)
     app.include_router(dsar_router, prefix=API_PREFIX)
     app.include_router(eval_router, prefix=API_PREFIX)
+    app.include_router(speakers_router, prefix=API_PREFIX)
 
     # Root redirect
     @app.get("/", tags=["meta"])

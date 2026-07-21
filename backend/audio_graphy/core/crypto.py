@@ -36,6 +36,7 @@ import secrets
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from cryptography.fernet import Fernet, InvalidToken
 
@@ -281,6 +282,124 @@ class AudioCrypto:
         raise NotImplementedError(
             "Master key rotation lands in M7+ (see docs/m6-pipl.md)."
         )
+
+    # ------------------------------------------------------------------
+    # M7 — byte-level encrypt / decrypt (voiceprint vectors)
+    # ------------------------------------------------------------------
+    def encrypt_bytes(
+        self,
+        plaintext: bytes,
+        *,
+        context: str = "voiceprint",
+    ) -> tuple[bytes, dict[str, Any]]:
+        """Encrypt an in-memory byte payload (e.g. voiceprint vector).
+
+        Uses the same envelope as ``encrypt_file`` but skips the on-disk
+        write — the ciphertext + header are returned directly so the caller
+        can store them in a JSON column (e.g. ``vectors_voiceprint.encryption_meta``)
+        alongside the binary ciphertext.
+
+        Args:
+            plaintext: Raw bytes to encrypt (e.g. struct-packed floats).
+            context: Free-form context tag recorded in the audit header
+                (default ``"voiceprint"``).
+
+        Returns:
+            ``(ciphertext_bytes, encryption_meta_json_dict)``.
+        """
+        fernet = self._get_fernet()
+        sha256 = hashlib.sha256(plaintext).hexdigest()
+        size_bytes = len(plaintext)
+
+        data_key = Fernet.generate_key()
+        data_key_fernet = Fernet(data_key)
+        data_key_enc = fernet.encrypt(data_key).decode("ascii")
+        nonce = secrets.token_bytes(_NONCE_BYTES)
+        data_key_id = secrets.token_hex(8)
+
+        cipher_body = data_key_fernet.encrypt(plaintext)
+        header = {
+            "version": _HEADER_VERSION,
+            "algo": _HEADER_ALGO,
+            "context": context,
+            "master_key_id": self._master_key_id,
+            "data_key_id": data_key_id,
+            "data_key_enc": data_key_enc,
+            "nonce": base64.b64encode(nonce).decode("ascii"),
+            "size_bytes": size_bytes,
+            "sha256": sha256,
+        }
+        # Prepend a header line so the on-disk format stays identical to
+        # encrypt_file (a future admin tool can dump vectors_voiceprint rows
+        # to disk for offline decryption). For the in-memory return, both
+        # the header line + cipher body go into ciphertext_bytes.
+        header_line = json.dumps(header, ensure_ascii=False, separators=(",", ":"))
+        ciphertext = header_line.encode("utf-8") + b"\n" + cipher_body
+        return ciphertext, header
+
+    def decrypt_bytes(
+        self,
+        ciphertext: bytes,
+        encryption_meta: dict[str, Any],
+    ) -> bytes:
+        """Decrypt bytes produced by ``encrypt_bytes``.
+
+        Accepts either:
+            - The combined ``ciphertext`` (header line + cipher body) returned
+              by ``encrypt_bytes``; ``encryption_meta`` is ignored.
+            - A raw Fernet body where the header is passed separately via
+              ``encryption_meta`` (e.g. when the caller split them).
+
+        Verifies SHA-256 + size and raises ``ValueError`` on mismatch.
+
+        Args:
+            ciphertext: Encrypted bytes.
+            encryption_meta: Header dict from ``encrypt_bytes`` return.
+
+        Returns:
+            Plaintext bytes.
+        """
+        # Determine if ciphertext has an inline header line.
+        newline_idx = ciphertext.find(b"\n")
+        if newline_idx >= 0:
+            try:
+                header = json.loads(ciphertext[:newline_idx].decode("utf-8"))
+                body = ciphertext[newline_idx + 1 :]
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                header = encryption_meta
+                body = ciphertext
+        else:
+            header = encryption_meta
+            body = ciphertext
+
+        if not isinstance(header, dict) or header.get("algo") != _HEADER_ALGO:
+            raise ValueError("decrypt_bytes: header malformed or algo mismatch")
+
+        data_key_enc = header.get("data_key_enc")
+        if not isinstance(data_key_enc, str):
+            raise ValueError("decrypt_bytes: missing data_key_enc")
+
+        fernet = self._get_fernet()
+        try:
+            data_key = fernet.decrypt(data_key_enc.encode("ascii"))
+        except InvalidToken as exc:
+            raise ValueError("decrypt_bytes: HMAC failed on data key") from exc
+        try:
+            plaintext = Fernet(data_key).decrypt(body)
+        except InvalidToken as exc:
+            raise ValueError("decrypt_bytes: HMAC failed on body") from exc
+
+        expected_size = header.get("size_bytes")
+        if isinstance(expected_size, int) and len(plaintext) != expected_size:
+            raise ValueError(
+                f"decrypt_bytes: size mismatch ({len(plaintext)} != {expected_size})"
+            )
+        expected_sha = header.get("sha256")
+        if isinstance(expected_sha, str):
+            actual_sha = hashlib.sha256(plaintext).hexdigest()
+            if actual_sha != expected_sha:
+                raise ValueError("decrypt_bytes: sha256 mismatch")
+        return plaintext
 
     # ------------------------------------------------------------------
     # Internal helpers

@@ -38,6 +38,16 @@ EXPECTED_TABLES = {
     "vectors_chunk",
     "audit_logs",
     "llm_call_logs",
+    # M6 WS-3
+    "entity_aliases",
+    # M6 WS-2
+    "eval_runs",
+    "recompute_tasks",
+    # M7 WS-2
+    "speaker_nodes",
+    "speaker_links",
+    "vectors_voiceprint",
+    "vectors_audio",
 }
 
 
