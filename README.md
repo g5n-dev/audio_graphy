@@ -8,6 +8,32 @@
 
 基于 [VideoRAG](https://github.com/HKUDS/VideoRAG)（KDD 2026, HKUDS）的图谱内核做音频化改造——保留内核，替换模态预处理（VAD + ASR），砍掉视觉附属（MiniCPM-V + ImageBind）。
 
+## M6 Status (2026-07-21)
+
+PIPL §14.3 compliance + Eval REST + rapidfuzz entity clustering shipped.
+
+- **PIPL end-to-end**: AES envelope encryption for audio at rest (master + per-file data key),
+  6-category PII scrubbing (phone / id_card / bank_card / email / ipv4 / landline), daily
+  03:00 retention sweep with hard-delete, 3 admin-only DSAR endpoints (`/api/v1/dsar/*`),
+  fire-and-forget `audit_logs` writer.
+- **Eval REST API**: 4 async endpoints under `/api/v1/eval/runs*` (POST create → 202 → poll →
+  report download); backed by `eval_runs` table + APScheduler polling worker.
+- **`RAGPipeline` + position de-bias**: real `QueryService`-backed pipeline replaces the M5
+  stub; each LLM-judge metric runs twice (original + reversed context) and is averaged.
+- **rapidfuzz Chinese entity clustering**: `core/entity_merger.py` — 3-layer flow
+  (DB alias → rapidfuzz WRatio ≥ 0.85 → new canonical). Tenant-scoped `entity_aliases`
+  table; both `entity_f1_strict` and `entity_f1_fuzzy` reported in every eval run.
+- **Parenting prompt v1.1**: new `entity_zh_parenting.md` (parenting_consulting scenario)
+  registered alongside v1.0 automotive_sales — A/B-able via `POST /prompts/{id}/activate`.
+- **Prometheus `/metrics`**:.Counter / Histogram set exposed on port 8000;
+  `audiography_http_requests_total`, `audiography_audit_log_written_total`, etc.
+- **Root `.env.example`**: mirrors all `config.py` fields with M6 additions
+  (`MASTER_KEY_PATH`, `ENTITY_FUZZY_THRESHOLD`, `EVAL_POSITION_DEBIAS`).
+- New deps: `rapidfuzz>=3.0`, `prometheus_client>=0.20`, `cryptography>=42.0`.
+
+See [`docs/m6-pipl.md`](./docs/m6-pipl.md) for PIPL compliance guide and
+[`docs/m6-eval.md`](./docs/m6-eval.md) for eval REST API reference.
+
 ## M5 Status (2026-07-21)
 
 Real **funASR** adapter shipped (OpenAI-compatible `/v1/audio/transcriptions`).

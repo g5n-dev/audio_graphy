@@ -12,6 +12,8 @@ from audio_graphy.models import (
     AuditLog,
     Base,
     Chunk,
+    EntityAlias,
+    EvalRunORM,
     LLMCallLog,
     PipelineState,
     Prompt,
@@ -46,6 +48,8 @@ EXPECTED_TABLES = {
     "audit_logs",
     "llm_call_logs",
     "recompute_tasks",
+    "eval_runs",
+    "entity_aliases",
 }
 
 EXPECTED_MODELS = {
@@ -63,15 +67,17 @@ EXPECTED_MODELS = {
     AuditLog,
     LLMCallLog,
     RecomputeTask,
+    EvalRunORM,
+    EntityAlias,
 }
 
 
 @pytest.mark.integration
 class TestMetadata:
-    """Verify Base.metadata contains all 14 tables (13 original + recompute_tasks)."""
+    """Verify Base.metadata contains all 16 tables (13 original + recompute_tasks + eval_runs + entity_aliases)."""
 
     def test_metadata_has_13_tables(self) -> None:
-        assert len(Base.metadata.tables) == 14
+        assert len(Base.metadata.tables) == 16
 
     def test_metadata_table_names(self) -> None:
         assert set(Base.metadata.tables.keys()) == EXPECTED_TABLES
@@ -158,6 +164,7 @@ class TestInheritanceHierarchy:
             VectorChunk,
             AuditLog,
             LLMCallLog,
+            EntityAlias,
         }
         for model in tsb_models:
             assert issubclass(model, TenantScopedBase)

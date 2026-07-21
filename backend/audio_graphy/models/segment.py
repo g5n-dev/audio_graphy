@@ -45,6 +45,9 @@ class Segment(TenantScopedBase):
     start_sec: Mapped[float] = mapped_column(Float, nullable=False)
     end_sec: Mapped[float] = mapped_column(Float, nullable=False)
     transcript: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # M6 PIPL: PII-scrubbed transcript (populated going forward; NULL for
+    # legacy M5 rows, which fall back to runtime PIIScrubber.scrub).
+    text_scrubbed: Mapped[str | None] = mapped_column(Text, nullable=True)
     speaker: Mapped[str | None] = mapped_column(String(64), nullable=True)
     vad_conf: Mapped[float | None] = mapped_column(Float, nullable=True)
 

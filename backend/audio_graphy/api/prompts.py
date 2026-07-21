@@ -5,6 +5,7 @@ See: docs/m3-prd.md §4.7.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request
@@ -26,7 +27,36 @@ from audio_graphy.schemas.prompts import (
     PromptResponse,
 )
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/prompts", tags=["prompts"])
+
+
+async def _write_audit(
+    request: Request,
+    *,
+    tenant_id: str,
+    user_id: int,
+    action: str,
+    target: str,
+    before: dict[str, Any] | None = None,
+    after: dict[str, Any] | None = None,
+) -> None:
+    """Fire-and-forget audit record via AuditWriter (if configured)."""
+    writer = getattr(request.app.state, "audit_writer", None)
+    if writer is None:
+        return
+    try:
+        await writer.record(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            action=action,
+            target=target,
+            before=before,
+            after=after,
+        )
+    except Exception as exc:
+        logger.warning("Audit write failed (action=%s): %s", action, exc)
 
 
 @router.get("", response_model=PromptListResponse, summary="List prompts")
@@ -154,18 +184,19 @@ async def get_prompt(
 
 
 @router.post(
-    "/{prompt_id}/activate", response_model=ActivateResponse, summary="Activate prompt version"
+    "/{prompt_id}/activate", response_model=ActivateResponse, summary="Activate prompt version",
+    dependencies=[Depends(require_admin())],
 )
 async def activate_prompt(
     prompt_id: int,
     request: Request,
     body: ActivateRequest,
     db: AsyncSession = Depends(get_db),
-    _user: AuthUser = Depends(require_admin()),
+    current_user: AuthUser = Depends(get_current_user),
 ) -> ActivateResponse:
     """Switch the active prompt version (optionally trigger recompute).
 
-    Role: admin only.
+    Role: admin only. Writes audit_log(action="prompt.activate").
     """
     # Get the prompt
     result = await db.execute(select(Prompt).where(Prompt.id == prompt_id))
@@ -244,6 +275,21 @@ async def activate_prompt(
 
         # Execute inline
         await svc.execute_task(task.task_id)
+
+    # ---- Audit log (fire-and-forget; Q2 quick win PIPL §14.3) ----
+    await _write_audit(
+        request,
+        tenant_id=get_tenant_id(request),
+        user_id=current_user.id,
+        action="prompt.activate",
+        target=f"prompt:{prompt.id}",
+        before={"previous_active_id": prev_active_id},
+        after={
+            "new_active_id": prompt.id,
+            "version": prompt.version,
+            "trigger_recompute": bool(recompute_task_id),
+        },
+    )
 
     return ActivateResponse(
         prompt_id=prompt.id,

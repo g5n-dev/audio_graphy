@@ -50,6 +50,33 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["tags"])
 
 
+async def _write_audit(
+    request: Request,
+    *,
+    tenant_id: str,
+    user_id: int,
+    action: str,
+    target: str,
+    before: dict[str, Any] | None = None,
+    after: dict[str, Any] | None = None,
+) -> None:
+    """Fire-and-forget audit record via AuditWriter (if configured)."""
+    writer = getattr(request.app.state, "audit_writer", None)
+    if writer is None:
+        return
+    try:
+        await writer.record(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            action=action,
+            target=target,
+            before=before,
+            after=after,
+        )
+    except Exception as exc:
+        logger.warning("Audit write failed (action=%s): %s", action, exc)
+
+
 @router.get(
     "/recordings/{recording_id}/tags",
     response_model=TagsListResponse,
@@ -334,15 +361,16 @@ async def _handle_manual_tag(
     "/tags/recompute",
     response_model=Any,
     summary="Trigger batch recompute",
+    dependencies=[Depends(require_admin())],
 )
 async def recompute(
     request: Request,
     body: RecomputeRequest,
-    _user: AuthUser = Depends(require_admin()),
+    current_user: AuthUser = Depends(get_current_user),
 ) -> Any:
     """Trigger batch tag recompute (prompt version switch).
 
-    Role: admin only.
+    Role: admin only. Writes audit_log(action="tags.recompute").
     """
     tenant_id = get_tenant_id(request)
     factory = get_session_factory(request)
@@ -375,6 +403,20 @@ async def recompute(
 
     # Execute inline (in production, this would be async via scheduler)
     await svc.execute_task(task.task_id)
+
+    # ---- Audit log (fire-and-forget; Q2 quick win PIPL §14.3) ----
+    await _write_audit(
+        request,
+        tenant_id=tenant_id,
+        user_id=current_user.id,
+        action="tags.recompute",
+        target=f"task:{task.task_id}",
+        after={
+            "prompt_version": body.prompt_version,
+            "total": task.total,
+            "changed": task.changed,
+        },
+    )
 
     return RecomputeCreateResponse(
         dry_run=False,

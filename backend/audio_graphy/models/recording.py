@@ -10,9 +10,10 @@ Inherits: TenantScopedBase
 from __future__ import annotations
 
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import CheckConstraint, DateTime, Index, String
+from sqlalchemy.dialects.mysql import JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from audio_graphy.models.base import TenantScopedBase
@@ -61,6 +62,14 @@ class Recording(TenantScopedBase):
     recorded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     prompt_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     indexed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # M6 PIPL §14.3 — audio envelope encryption at rest.
+    # When audio_encrypted_path is NULL, the recording reverts to plaintext
+    # behaviour (read `path` directly, e.g. legacy M5 rows).
+    audio_encrypted_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    audio_encryption_meta: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON, nullable=True
+    )
 
     # ORM relationships (lazy-loaded, cascade delete for children)
     segments: Mapped[list[Segment]] = relationship(

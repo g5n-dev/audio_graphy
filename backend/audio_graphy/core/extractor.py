@@ -39,6 +39,7 @@ from audio_graphy.core.types import (
 )
 
 if TYPE_CHECKING:
+    from audio_graphy.core.entity_merger import EntityMerger
     from audio_graphy.storage.file_index import FileIndex
 
 logger = logging.getLogger(__name__)
@@ -144,6 +145,13 @@ class EntityExtractor:
         max_gleaning_retry: Max retries for Gleaning LLM call (default 2).
         file_index: Optional FileIndex for LLM response cache (Layer 2).
         aliases: Entity name alias table for Chinese normalisation.
+            Used as Layer-3 fallback when ``entity_merger`` is None.
+            Ignored when ``entity_merger`` is provided.
+        entity_merger: Optional ``EntityMerger`` instance for 3-layer
+            normalisation (DB alias → rapidfuzz → new canonical). When
+            provided, replaces the legacy ``aliases`` dict path. Caller
+            is responsible for the merger's lifecycle (typically
+            constructed per-tenant in the ingestion service).
     """
 
     def __init__(
@@ -156,6 +164,7 @@ class EntityExtractor:
         max_gleaning_retry: int = 2,
         file_index: FileIndex | None = None,
         aliases: dict[str, str] | None = None,
+        entity_merger: EntityMerger | None = None,
     ) -> None:
         self._bundle = bundle
         self._prompt_template = prompt_template
@@ -164,6 +173,7 @@ class EntityExtractor:
         self._max_gleaning_retry = max_gleaning_retry
         self._file_index = file_index
         self._aliases = aliases if aliases is not None else dict(_DEFAULT_ALIASES)
+        self._entity_merger = entity_merger
 
     async def extract_from_chunk(
         self,
@@ -215,7 +225,7 @@ class EntityExtractor:
             relations.extend(new_relations)
 
         # Step 3: Chinese entity normalisation
-        entities = self._normalize_entities(entities)
+        entities = await self._normalize_entities(entities)
         relations = self._normalize_relations(relations, entities)
 
         return ExtractionResult(
@@ -518,8 +528,8 @@ class EntityExtractor:
     # Chinese entity normalisation
     # ------------------------------------------------------------------
 
-    def _normalize_entities(self, entities: list[ExtractedEntity]) -> list[ExtractedEntity]:
-        """Normalise entity names using alias table and edit-distance clustering.
+    async def _normalize_entities(self, entities: list[ExtractedEntity]) -> list[ExtractedEntity]:
+        """Normalise entity names using alias table or 3-layer ``EntityMerger``.
 
         Args:
             entities: Raw extracted entities.
@@ -527,6 +537,25 @@ class EntityExtractor:
         Returns:
             Entities with normalised names.
         """
+        if not entities:
+            return entities
+
+        # M6: prefer 3-layer EntityMerger (DB alias → rapidfuzz → new canonical).
+        if self._entity_merger is not None:
+            pairs = [(e.name, e.type) for e in entities]
+            merged_pairs = await self._entity_merger.merge(pairs)
+            return [
+                ExtractedEntity(
+                    name=merged_pairs[i][0],
+                    type=ent.type,
+                    description=ent.description,
+                    chunk_id=ent.chunk_id,
+                    recording_id=ent.recording_id,
+                )
+                for i, ent in enumerate(entities)
+            ]
+
+        # Legacy fallback (M5): hard-coded _DEFAULT_ALIASES dict.
         normalised: list[ExtractedEntity] = []
         for ent in entities:
             normalised_name = self._aliases.get(ent.name, ent.name)

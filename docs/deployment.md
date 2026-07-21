@@ -120,6 +120,64 @@ docker compose --profile real run --rm backend python -m audio_graphy.eval \
 
 See [`docs/m5-eval.md`](./m5-eval.md) for the full CLI reference.
 
+### 2.5 M6: PIPL §14.3 + Prometheus metrics + rapidfuzz
+
+M6 adds three optional-but-recommended capabilities. All are
+**opt-in via env vars** and have safe defaults for mock-mode dev:
+
+```bash
+cp .env.example .env
+# Edit .env — M6 section:
+#   MASTER_KEY_PATH=/run/secrets/audiography_master.key    # PIPL audio encryption
+#   ENTITY_FUZZY_THRESHOLD=0.85                            # rapidfuzz threshold
+#   EVAL_POSITION_DEBIAS=true                              # judge de-bias
+
+# Provision the master key (one-time, per environment):
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())" \
+  > /run/secrets/audiography_master.key
+chmod 0600 /run/secrets/audiography_master.key
+
+# Start normally — PIPL is auto-enabled when the key file exists.
+docker compose up -d
+
+# Verify PIPL:
+curl http://localhost:8000/health                            # backend up
+curl http://localhost:8000/metrics | grep audiography_audit  # prometheus exposes audit counter
+```
+
+**What M6 enables:**
+- AES envelope encryption for audio files at rest (`core/crypto.py`).
+- PII scrubbing for 6 categories in transcripts + LLM answers (`core/pii.py`).
+- Daily 03:00 cron hard-deletes recordings past `RECORDING_RETENTION_DAYS`.
+- 3 admin-only DSAR endpoints (`/api/v1/dsar/{export,erase,audit}`).
+- Prometheus `/metrics` endpoint on port 8000 (Q4 locked — main app reused).
+- rapidfuzz WRatio ≥ 0.85 clusters near-dup Chinese entities (`core/entity_merger.py`).
+- 4 async eval REST endpoints (`/api/v1/eval/runs*`) — replaces eval CLI for prod.
+- Position de-bias for LLM-judge metrics (run twice, original + reversed).
+
+See [`docs/m6-pipl.md`](./m6-pipl.md) for the PIPL compliance guide and
+[`docs/m6-eval.md`](./m6-eval.md) for the eval REST API reference.
+
+### 2.6 Prometheus scraping
+
+The `/metrics` endpoint is unauthenticated and lives on the main FastAPI
+port (8000). Add a scrape job to your `prometheus.yml`:
+
+```yaml
+scrape_configs:
+  - job_name: audiography
+    scrape_interval: 15s
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["audiography-backend:8000"]
+```
+
+Key metrics to alert on (M6):
+- `audiography_audit_log_written_total{action}` — compliance dashboard.
+- `audiography_retention_deletes_total` — retention health.
+- `audiography_http_requests_total{status="500"}` — error budget.
+- `audiography_pipeline_seconds{stage="request"}` — p99 latency.
+
 ---
 
 ## 3. Model download

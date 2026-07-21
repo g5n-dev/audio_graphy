@@ -5,7 +5,9 @@ See: docs/m3-prd.md §4.2.
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
+from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,7 +28,36 @@ from audio_graphy.schemas.recordings import (
 )
 from audio_graphy.services.ingestion import IngestionService
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/recordings", tags=["recordings"])
+
+
+async def _write_audit(
+    request: Request,
+    *,
+    tenant_id: str,
+    user_id: int,
+    action: str,
+    target: str,
+    before: dict[str, Any] | None = None,
+    after: dict[str, Any] | None = None,
+) -> None:
+    """Fire-and-forget audit record via AuditWriter (if configured)."""
+    writer = getattr(request.app.state, "audit_writer", None)
+    if writer is None:
+        return
+    try:
+        await writer.record(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            action=action,
+            target=target,
+            before=before,
+            after=after,
+        )
+    except Exception as exc:
+        logger.warning("Audit write failed (action=%s): %s", action, exc)
 
 
 @router.post(
@@ -188,16 +219,18 @@ async def get_recording_status(
     )
 
 
-@router.post("/{recording_id}/reindex", response_model=ReindexResponse, summary="Trigger re-index")
+@router.post("/{recording_id}/reindex", response_model=ReindexResponse, summary="Trigger re-index",
+    dependencies=[Depends(require_admin())],
+)
 async def reindex_recording(
     recording_id: int,
     request: Request,
     body: ReindexRequest | None = None,
-    _user: AuthUser = Depends(require_admin()),
+    current_user: AuthUser = Depends(get_current_user),
 ) -> ReindexResponse:
     """Trigger re-indexing of a recording (reset to queued).
 
-    Role: admin only.
+    Role: admin only. Writes audit_log(action="recording.reindex").
     """
     tenant_id = get_tenant_id(request)
     factory = get_session_factory(request)
@@ -205,6 +238,16 @@ async def reindex_recording(
 
     force = body.force if body is not None else False
     recording = await svc.trigger_reindex(recording_id, tenant_id, force=force)
+
+    # ---- Audit log (fire-and-forget; Q2 quick win PIPL §14.3) ----
+    await _write_audit(
+        request,
+        tenant_id=tenant_id,
+        user_id=current_user.id,
+        action="recording.reindex",
+        target=f"recording:{recording.id}",
+        after={"force": force, "status": recording.status},
+    )
 
     return ReindexResponse(
         id=recording.id,

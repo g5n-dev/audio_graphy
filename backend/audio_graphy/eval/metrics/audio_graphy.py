@@ -5,6 +5,8 @@ common Chinese/case/fullwidth-halfwidth variants.
 
 Formulas (PRD §5.3.2):
 - Entity F1: F1 over ``(entity_text, entity_type)`` set after NFKC normalize.
+  Supports both ``strict`` (exact set match) and ``fuzzy`` (rapidfuzz WRatio
+  ≥ threshold) modes — EvalRunner calls it twice and reports both.
 - Edge P/C: per-layer (EXTRACTED / INFERRED / AMBIGUOUS) precision; reported as
   macro-mean of non-empty pred layers.
 - Tag Accuracy: (# tags where path+value match) / len(gold_tags).
@@ -17,6 +19,7 @@ Edge cases (PRD §5.3.3):
 from __future__ import annotations
 
 import unicodedata
+from typing import Any
 
 from audio_graphy.eval.types import (
     EdgeConfidence,
@@ -38,34 +41,68 @@ def _norm(s: str) -> str:
 
 
 # ============================================================
-# Entity F1
+# Entity F1 (strict + fuzzy dual mode)
 # ============================================================
 
 
-def entity_f1(gold: GoldExample, pred: PredictedResult) -> MetricResult:
+def entity_f1(
+    gold: GoldExample,
+    pred: PredictedResult,
+    *,
+    fuzzy_threshold: float = 1.0,
+) -> MetricResult:
     """Entity F1 over ``(normalized_entity_text, entity_type)`` sets.
 
     Per architecture A.2: strict set equality after NFKC + lowercase, no
     character-level Jaccard. ``both_empty`` returns 1.0 (PRD §5.3.3).
+
+    Args:
+        gold: Gold example.
+        pred: Predicted result.
+        fuzzy_threshold: ``1.0`` (default) → strict exact-match mode.
+            ``< 1.0`` → fuzzy mode: a (gold, pred) pair counts as a true
+            positive when their entity types match AND
+            ``rapidfuzz.fuzz.WRatio(gold_text, pred_text) >= threshold*100``.
+            The metric name is suffixed with ``"_fuzzy"`` in fuzzy mode
+            so callers can disambiguate in aggregate reports.
     """
+    fuzzy_mode = fuzzy_threshold < 1.0
+    metric_name = "entity_f1_fuzzy" if fuzzy_mode else "entity_f1"
+
     gold_set = {(_norm(text), etype) for text, etype in gold.gold_entities}
     pred_set = {(_norm(text), etype) for text, etype in pred.entities}
 
     if not gold_set and not pred_set:
         return MetricResult(
-            name="entity_f1",
+            name=metric_name,
             value=1.0,
             denominator=1,
-            details={"reason": "both_empty", "gold_count": 0, "pred_count": 0, "tp": 0},
+            details={
+                "reason": "both_empty",
+                "gold_count": 0,
+                "pred_count": 0,
+                "tp": 0,
+                "fuzzy_threshold": fuzzy_threshold,
+            },
         )
 
-    tp = len(gold_set & pred_set)
-    precision = tp / len(pred_set) if pred_set else 0.0
-    recall = tp / len(gold_set) if gold_set else 0.0
+    if fuzzy_mode:
+        tp = _fuzzy_tp_count(gold_set, pred_set, fuzzy_threshold)
+        matched_gold: set[Any] = set()  # populated by _fuzzy_tp_count via aliasing
+        # Re-compute matched sets for precision/recall denominators.
+        matched_gold = _fuzzy_matched_gold(gold_set, pred_set, fuzzy_threshold)
+        matched_pred_count = tp
+    else:
+        matched_gold = gold_set & pred_set
+        tp = len(matched_gold)
+        matched_pred_count = tp
+
+    precision = matched_pred_count / len(pred_set) if pred_set else 0.0
+    recall = len(matched_gold) / len(gold_set) if gold_set else 0.0
     value = 0.0 if precision + recall <= 0.0 else 2 * precision * recall / (precision + recall)
 
     return MetricResult(
-        name="entity_f1",
+        name=metric_name,
         value=value,
         denominator=1,
         details={
@@ -74,8 +111,49 @@ def entity_f1(gold: GoldExample, pred: PredictedResult) -> MetricResult:
             "tp": tp,
             "precision": precision,
             "recall": recall,
+            "fuzzy_threshold": fuzzy_threshold,
         },
     )
+
+
+def _fuzzy_tp_count(
+    gold_set: set[tuple[str, str]],
+    pred_set: set[tuple[str, str]],
+    threshold: float,
+) -> int:
+    """Count fuzzy true positives: gold entity matched by some pred entity."""
+    from rapidfuzz import fuzz
+
+    cutoff = threshold * 100
+    count = 0
+    for g_text, g_type in gold_set:
+        for p_text, p_type in pred_set:
+            if g_type != p_type:
+                continue
+            if fuzz.WRatio(g_text, p_text) >= cutoff:
+                count += 1
+                break
+    return count
+
+
+def _fuzzy_matched_gold(
+    gold_set: set[tuple[str, str]],
+    pred_set: set[tuple[str, str]],
+    threshold: float,
+) -> set[tuple[str, str]]:
+    """Return the subset of ``gold_set`` that has a fuzzy match in ``pred_set``."""
+    from rapidfuzz import fuzz
+
+    cutoff = threshold * 100
+    matched: set[tuple[str, str]] = set()
+    for g_text, g_type in gold_set:
+        for p_text, p_type in pred_set:
+            if g_type != p_type:
+                continue
+            if fuzz.WRatio(g_text, p_text) >= cutoff:
+                matched.add((g_text, g_type))
+                break
+    return matched
 
 
 # ============================================================
