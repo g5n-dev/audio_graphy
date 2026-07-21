@@ -107,6 +107,13 @@ ignore = [
 # and os.path in async functions (single-process mock, no concurrency concern).
 # All flagged issues are intentional and safe in mock context.
 "audio_graphy/adapters/mock_*.py" = ["S311", "S324", "ASYNC240"]
+# Real adapters use md5 for LLM cache-key parity with MockLLMAdapter (not crypto),
+# and use synchronous file IO for typical small audio payloads (<100 MB) — both
+# intentional and safe in this single-process request context.
+"audio_graphy/adapters/real/*.py" = ["S324", "ASYNC230", "ASYNC240"]
+# Exception base class names (LLMBadRequest, etc.) follow the architecture spec
+# in docs/m4-architecture.md §3.1 — names without "Error" suffix are deliberate.
+"audio_graphy/adapters/exceptions.py" = ["N818"]
 # Core and storage modules use hashlib.md5 for LLM cache keys (not crypto).
 # This is the same pattern as MockLLMAdapter.compute_prompt_hash.
 "audio_graphy/core/*.py" = ["S324"]

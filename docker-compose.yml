@@ -82,6 +82,18 @@ services:
       - .env
     environment:
       ADAPTER_MODE: ${ADAPTER_MODE:-mock}
+      # M4 per-adapter modes — default "mock" preserves M3 behavior.
+      # Set to "real" + `docker compose --profile real up` to enable.
+      ADAPTER_ASR_MODE: ${ADAPTER_ASR_MODE:-mock}
+      ADAPTER_VAD_MODE: ${ADAPTER_VAD_MODE:-mock}
+      ADAPTER_LLM_MODE: ${ADAPTER_LLM_MODE:-mock}
+      ADAPTER_EMBED_MODE: ${ADAPTER_EMBED_MODE:-mock}
+      # Real-mode endpoints (only consulted when the corresponding mode is "real").
+      SILERO_VAD_URL: ${SILERO_VAD_URL:-http://silero-vad:8002}
+      BGE_M3_URL: ${BGE_M3_URL:-http://bge-m3:8080}
+      OPENAI_BASE_URL_STRONG: ${OPENAI_BASE_URL_STRONG:-http://vllm-strong:8000/v1}
+      OPENAI_BASE_URL_WEAK: ${OPENAI_BASE_URL_WEAK:-http://vllm-weak:8001/v1}
+      HF_TOKEN: ${HF_TOKEN:-}
       MYSQL_HOST: mysql
       MYSQL_PORT: 3306
       WORKING_DIR: /data/working_dir
@@ -136,11 +148,163 @@ services:
       - audiography_net
     command: pnpm dev --host 0.0.0.0
 
+  # ============================================================
+  # M4 real-adapter services — opt-in via `--profile real`
+  #   docker compose --profile real up -d
+  #   docker compose --profile real config        # YAML validation
+  # ============================================================
+  # NOTE: services below are GPU-heavy. CPU-only CI does NOT run them.
+  # Silero VAD image (jetresearch/silero-vad-server) is community-maintained
+  # and NOT affiliated with the official Silero project — audit before prod.
+  # ============================================================
+
+  vllm-strong:
+    image: vllm/vllm-openai:v0.7.2
+    container_name: audiography-vllm-strong
+    profiles: ["real"]
+    restart: unless-stopped
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+      VLLM_API_KEY: dummy
+    volumes:
+      - vllm_cache:/root/.cache/huggingface
+    ports:
+      - "8000:8000"
+    healthcheck:
+      # Image ships Python but no curl — use urllib.
+      test:
+        - "CMD-SHELL"
+        - "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).status==200 else 1)\""
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 300s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    command: >
+      --model Qwen/Qwen3.6-27B
+      --served-model-name qwen3.6-27b
+      --host 0.0.0.0 --port 8000
+      --tensor-parallel-size 1
+      --gpu-memory-utilization 0.90
+    networks:
+      - audiography_net
+
+  vllm-weak:
+    image: vllm/vllm-openai:v0.7.2
+    container_name: audiography-vllm-weak
+    profiles: ["real"]
+    restart: unless-stopped
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+      VLLM_API_KEY: dummy
+    volumes:
+      - vllm_cache:/root/.cache/huggingface
+    ports:
+      - "8001:8000"
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).status==200 else 1)\""
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 300s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    command: >
+      --model Qwen/Qwen3.6-35B-A3B
+      --served-model-name qwen3.6-35b-a3b
+      --host 0.0.0.0 --port 8000
+      --tensor-parallel-size 1
+      --gpu-memory-utilization 0.90
+    networks:
+      - audiography_net
+
+  silero-vad:
+    # Community-maintained, not Silero official. Audit before production use.
+    image: jetresearch/silero-vad-server:latest
+    container_name: audiography-silero-vad
+    profiles: ["real"]
+    restart: unless-stopped
+    ports:
+      - "8002:8000"
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).status==200 else 1)\""
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    networks:
+      - audiography_net
+
+  bge-m3:
+    image: ghcr.io/huggingface/text-embeddings-inference:1.5
+    container_name: audiography-bge-m3
+    profiles: ["real"]
+    restart: unless-stopped
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+    volumes:
+      - tei_cache:/data
+    ports:
+      - "8080:80"
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:80/health', timeout=2).status==200 else 1)\""
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 120s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    command: >
+      --model-id BAAI/bge-m3
+      --max-batch-tokens 16384
+    networks:
+      - audiography_net
+
+  funasr:
+    # M5 placeholder — NOT wired to backend in M4 (adapter_asr_mode=real is
+    # rejected by the Settings validator). Kept so SRE can pre-pull the image.
+    image: registry.cn-hangzhou.aliyuncs.com/funasr_recog/funasr-runtime-sdk-online-cpu-0.1.12
+    container_name: audiography-funasr
+    profiles: ["real"]
+    restart: unless-stopped
+    ports:
+      - "10095:10095"
+    # No healthcheck in M4 — funASR SDK has no /health endpoint. Add in M5.
+    networks:
+      - audiography_net
+
 volumes:
   mysql_data:
     name: audiography_mysql_data
   working_dir:
     name: audiography_working_dir
+  # M4 — model cache volumes for real-adapter services.
+  vllm_cache:
+    name: audiography_vllm_cache
+  tei_cache:
+    name: audiography_tei_cache
 
 networks:
   audiography_net:

@@ -5,9 +5,15 @@ Public API:
         VADAdapter, ASRAdapter, LLMAdapter, EmbedAdapter,
         VADSegment, ASRResult, LLMResponse, EmbeddingResult,
         AdapterBundle, EdgeConfidence,
+        build_mock_bundle, build_hybrid_bundle,
     )
 """
 
+from audio_graphy.adapters.bundle import (
+    AdapterBundle,
+    build_hybrid_bundle,
+    build_mock_bundle,
+)
 from audio_graphy.adapters.protocols import (
     ASRAdapter,
     ASRResult,
@@ -31,4 +37,6 @@ __all__ = [
     "LLMResponse",
     "VADAdapter",
     "VADSegment",
+    "build_hybrid_bundle",
+    "build_mock_bundle",
 ]
