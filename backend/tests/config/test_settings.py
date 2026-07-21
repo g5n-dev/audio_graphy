@@ -80,13 +80,52 @@ class TestBuildAdapters:
     def test_real_mode_raises_not_implemented(
         self, fresh_settings, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """M4: legacy ADAPTER_MODE=real no longer raises — it's a no-op.
+
+        Per-adapter fields (`ADAPTER_*_MODE`) are the sole source of truth;
+        the legacy global field is consulted only for the JWT warning.
+        See docs/m4-architecture.md §1.6 (Q5 locked).
+        """
         monkeypatch.setenv("ADAPTER_MODE", "real")
         from audio_graphy.config import build_adapters, get_settings
 
         get_settings.cache_clear()
         s = get_settings()
-        with pytest.raises(NotImplementedError, match="ADAPTER_MODE=real"):
-            build_adapters(s)
+        # ADAPTER_MODE=real alone (with all per-adapter modes mock) → mock bundle.
+        bundle = build_adapters(s)
+        from audio_graphy.adapters.mock_vad import MockVADAdapter
+
+        assert isinstance(bundle.vad, MockVADAdapter)
+
+    @pytest.mark.unit
+    def test_asr_real_rejected_in_m4(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """M4 invariant: ADAPTER_ASR_MODE=real is hard-rejected (funASR lands in M5)."""
+        monkeypatch.setenv("ADAPTER_ASR_MODE", "real")
+        from audio_graphy.config import get_settings
+
+        get_settings.cache_clear()
+        with pytest.raises(ValueError, match="ADAPTER_ASR_MODE=real"):
+            get_settings()
+
+    @pytest.mark.unit
+    def test_per_adapter_mode_real_routes_to_real_adapters(
+        self, fresh_settings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Setting ADAPTER_VAD_MODE=real builds a hybrid bundle with SileroVADAdapter."""
+        monkeypatch.setenv("ADAPTER_VAD_MODE", "real")
+        monkeypatch.setenv("SILERO_VAD_URL", "http://silero-vad.test")
+        from audio_graphy.config import build_adapters, get_settings
+
+        get_settings.cache_clear()
+        s = get_settings()
+        bundle = build_adapters(s)
+        from audio_graphy.adapters.real.vad_silero import SileroVADAdapter
+
+        assert isinstance(bundle.vad, SileroVADAdapter)
+        # Other adapters still mock.
+        from audio_graphy.adapters.mock_llm import MockLLMAdapter
+
+        assert isinstance(bundle.strong_llm, MockLLMAdapter)
 
     @pytest.mark.unit
     def test_strong_and_weak_llm_have_different_models(self, fresh_settings) -> None:

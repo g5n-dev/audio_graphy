@@ -135,7 +135,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         with contextlib.suppress(asyncio.CancelledError):
             await worker_task
 
-    await engine.dispose()
+    # Close real adapter httpx clients (mock adapters have no aclose()).
+    # Real adapters (Silero/LLM/BGE) own httpx.AsyncClient pools; failing to
+    # close them triggers an event-loop warning on shutdown.
+    for adapter in (bundle.vad, bundle.asr, bundle.strong_llm, bundle.weak_llm, bundle.embed):
+        aclose = getattr(adapter, "aclose", None)
+        if aclose is not None:
+            with contextlib.suppress(Exception):
+                await aclose()
+
+    if app.state.engine is not None:
+        await app.state.engine.dispose()
     logger.info("AudioGraphy M3 backend shutting down")
 
 

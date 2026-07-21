@@ -8,6 +8,18 @@
 
 基于 [VideoRAG](https://github.com/HKUDS/VideoRAG)（KDD 2026, HKUDS）的图谱内核做音频化改造——保留内核，替换模态预处理（VAD + ASR），砍掉视觉附属（MiniCPM-V + ImageBind）。
 
+## M4 Status (2026-07-21)
+
+Real adapter scaffolding is **code-ready** (no live GPU runs yet).
+3 real adapters implemented: VAD (Silero) / LLM (vLLM OpenAI-compatible, strong+weak) /
+Embedding (bge-m3). ASR stays mock — funASR lands in M5. To enable:
+
+1. Edit `.env`: set `ADAPTER_{VAD,LLM,EMBED}_MODE=real` + override `JWT_SECRET`.
+2. `docker compose --profile real up -d`
+3. Verify: `curl http://localhost:8000/health`
+
+See [`docs/deployment.md`](./docs/deployment.md) for hardware requirements and FAQ.
+
 ## 📐 设计文档
 
 | 文件 | 说明 |

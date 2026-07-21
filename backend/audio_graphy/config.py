@@ -1,13 +1,14 @@
 """Application configuration.
 
 Loads from environment (or .env file). Exposes a cached `Settings` singleton
-via `get_settings()` and an `build_adapters()` factory that picks mock vs real
-adapters based on `ADAPTER_MODE`.
+via `get_settings()` and a `build_adapters()` factory that picks mock vs real
+adapters based on the four per-adapter mode fields (`ADAPTER_{ASR,VAD,LLM,EMBED}_MODE`).
 
-Design (per docs/DESIGN.md §15.3):
-- All env vars documented in `.env.example`
-- `ADAPTER_MODE=mock` (default) returns deterministic mock adapters
-- `ADAPTER_MODE=real` would wire to vLLM/funASR/bge-m3 (out of scope for this sprint)
+设计说明（docs/DESIGN.md §15.3 + docs/m4-architecture.md §4）：
+- All env vars documented in `.env.example`.
+- The legacy `ADAPTER_MODE` field is retained only for back-compat with M3 `.env`
+  files; it no longer drives mode resolution. Set the 4 per-adapter fields instead.
+- ASR real mode is rejected by the validator (funASR lands in M5).
 """
 
 from __future__ import annotations
@@ -39,7 +40,15 @@ class Settings(BaseSettings):
     )
 
     # --- Adapter mode ---
+    # Legacy global default — retained for M3 back-compat; does NOT drive mode
+    # resolution (Q5 locked: per-adapter fields below are the sole source of truth).
     adapter_mode: AdapterMode = "mock"
+    # Per-adapter modes (M4). Default "mock" preserves M3 all-mock behavior.
+    # Set to "real" to enable the corresponding service via docker-compose `--profile real`.
+    adapter_asr_mode: AdapterMode = "mock"   # M4: MUST be "mock" (funASR lands in M5)
+    adapter_vad_mode: AdapterMode = "mock"
+    adapter_llm_mode: AdapterMode = "mock"
+    adapter_embed_mode: AdapterMode = "mock"
 
     # --- Database (MySQL 8) ---
     mysql_host: str = "mysql"
@@ -58,7 +67,7 @@ class Settings(BaseSettings):
 
     # --- ASR / VAD / Embedding (real mode only) ---
     funasr_url: str = "http://funasr:10095"
-    silero_vad_url: str = "http://silero-vad:8001"
+    silero_vad_url: str = "http://silero-vad:8002"  # compose maps 8002:8000
     bge_m3_url: str = "http://bge-m3:8080"
     embedding_dim: int = 1024
 
@@ -142,14 +151,34 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _validate_combinations(self) -> Settings:
-        """Cross-field validation."""
+        """Cross-field validation / 跨字段校验."""
+        # M3 back-compat: legacy global field still triggers JWT warning.
         if self.adapter_mode == "real" and self.jwt_secret.startswith("change-me"):
             logger.warning(
-                "ADAPTER_MODE=real but JWT_SECRET is still the placeholder — "
-                "production deployments must override JWT_SECRET."
+                "ADAPTER_MODE=real but JWT_SECRET is placeholder — "
+                "this field is retained for compatibility; effective modes are "
+                "ADAPTER_{ASR,VAD,LLM,EMBED}_MODE."
             )
         if self.mock_llm_error_rate < 0 or self.mock_llm_error_rate > 1:
             raise ValueError("MOCK_LLM_ERROR_RATE must be in [0.0, 1.0]")
+
+        # M4 — hard reject ASR real (funASR adapter lands in M5).
+        if self.adapter_asr_mode == "real":
+            raise ValueError(
+                "ADAPTER_ASR_MODE=real is not supported in M4 (funASR lands in M5)"
+            )
+
+        # M4 — JWT warning if ANY real adapter mode enabled.
+        real_modes = [
+            self.adapter_vad_mode,
+            self.adapter_llm_mode,
+            self.adapter_embed_mode,
+        ]
+        if "real" in real_modes and self.jwt_secret.startswith("change-me"):
+            logger.warning(
+                "REAL adapter ON but JWT_SECRET is placeholder — set a strong JWT_SECRET"
+            )
+
         return self
 
 
@@ -165,23 +194,35 @@ def get_settings() -> Settings:
 def build_adapters(settings: Settings) -> AdapterBundle:
     """Factory that returns the appropriate adapter bundle.
 
-    M1.5: returns mock bundle unconditionally (real impl lands in Phase 2+).
-    The Protocol contract is defined in `audio_graphy.adapters.protocols`.
+    工厂函数：依据 4 个 per-adapter mode 字段选择 bundle。
+
+    Resolution rule (Q5 locked, docs/m4-architecture.md §1.6):
+    - Per-adapter fields (`adapter_asr_mode` / `_vad_mode` / `_llm_mode` / `_embed_mode`)
+      are the SOLE source of truth.
+    - Legacy `adapter_mode` is consulted only for the JWT warning in the validator.
+    - If all 4 are "mock" → ``build_mock_bundle`` (fast path, M3 behavior preserved).
+    - Else → ``build_hybrid_bundle``.
 
     Args:
         settings: application settings
 
     Returns:
-        AdapterBundle with 4 adapters (asr / strong_llm / weak_llm / embed / vad)
+        AdapterBundle with 5 adapters (vad / asr / strong_llm / weak_llm / embed)
     """
-    from audio_graphy.adapters.bundle import build_mock_bundle
+    from audio_graphy.adapters.bundle import build_hybrid_bundle, build_mock_bundle
 
-    if settings.adapter_mode == "mock":
-        logger.info("Building MOCK adapter bundle")
+    all_mock = all(m == "mock" for m in (
+        settings.adapter_asr_mode,
+        settings.adapter_vad_mode,
+        settings.adapter_llm_mode,
+        settings.adapter_embed_mode,
+    ))
+    if all_mock:
+        logger.info("Building MOCK adapter bundle (all-mock)")
         return build_mock_bundle(settings)
-
-    # Real mode — not implemented in this sprint.
-    raise NotImplementedError(
-        "ADAPTER_MODE=real is not implemented in M1. "
-        "Real adapters land in a follow-up sprint with vLLM/funASR services."
+    logger.info(
+        "Building HYBRID adapter bundle (asr=%s vad=%s llm=%s embed=%s)",
+        settings.adapter_asr_mode, settings.adapter_vad_mode,
+        settings.adapter_llm_mode, settings.adapter_embed_mode,
     )
+    return build_hybrid_bundle(settings)
