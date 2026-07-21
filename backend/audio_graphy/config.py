@@ -75,6 +75,8 @@ class Settings(BaseSettings):
     # --- Eval subsystem (M5 — WS-2) ---
     judge_llm_model: str = ""  # empty → fallback to llm_strong_model
     eval_concurrency: int = 4
+    # M6: position de-bias toggle (run judge twice on orig + reversed context).
+    eval_position_debias: bool = True
 
     # --- Storage ---
     working_dir: Path = Path("/data/working_dir")
@@ -97,6 +99,16 @@ class Settings(BaseSettings):
 
     # --- Retention ---
     recording_retention_days: int = 90
+
+    # --- PIPL §14.3 (M6) — audio encryption ---
+    master_key_path: str = "/run/secrets/audiography_master.key"
+
+    # --- Entity fuzzy matching (M6 WS-3) ---
+    # rapidfuzz fuzz.WRatio threshold for clustering near-duplicate entity
+    # names. 0.85 (default) catches ``CS75 Plus`` ↔ ``CS75PLUS`` and similar
+    # Chinese variants without over-merging. Range: 0.80 (loose, max recall)
+    # to 0.90 (strict, max precision).
+    entity_fuzzy_threshold: float = 0.85
 
     # --- Feature flags ---
     enable_clap: bool = False

@@ -6,4 +6,12 @@ prompts:
     v1.0:
       file: entity_zh.md
       changelog: "初始版本，汽车销售领域，GraphRAG 分隔符协议 + few-shot + Gleaning"
+      scenario: automotive_sales
       active: true
+
+  entity_zh_parenting:
+    v1.1:
+      file: entity_zh_parenting.md
+      changelog: "育儿咨询场景（家长 / 顾问 / 月龄 / 育儿方法），与 v1.0 共存可 A/B"
+      scenario: parenting_consulting
+      active: false

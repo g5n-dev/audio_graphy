@@ -25,6 +25,12 @@ dependencies = [
     # Auth
     "pyjwt[crypto]>=2.10.0",
     "bcrypt>=4.2.0",
+    # Crypto (M6 PIPL — Fernet envelope encryption for audio at rest)
+    "cryptography>=42.0",
+    # Entity fuzzy matching (M6 WS-3 — rapidfuzz WRatio for Chinese near-dup clustering)
+    "rapidfuzz>=3.0",
+    # Prometheus metrics (M6 Q3 — /metrics endpoint + middleware)
+    "prometheus_client>=0.20",
     # Graph
     "networkx>=3.4",
     # Scheduling
@@ -126,6 +132,12 @@ ignore = [
 "audio_graphy/api/*.py" = ["S324", "S106"]
 "audio_graphy/tags/*.py" = ["S324"]
 "audio_graphy/services/*.py" = ["S324", "ASYNC240"]
+# M6 PIPL modules use synchronous file IO for typical small audio payloads
+# (<100 MB) in single-process request context — same justification as services/.
+# core/crypto.py / core/retention.py / api/dsar.py are explicitly sync-IO.
+"audio_graphy/core/crypto.py" = ["ASYNC240"]
+"audio_graphy/core/retention.py" = ["ASYNC240"]
+"audio_graphy/api/dsar.py" = ["ASYNC240", "S110"]
 "audio_graphy/auth/*.py" = ["S106", "S105"]
 "audio_graphy/errors.py" = ["S105", "N818"]
 "audio_graphy/schemas/*.py" = ["UP046"]

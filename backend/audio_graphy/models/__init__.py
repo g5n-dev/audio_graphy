@@ -18,12 +18,14 @@ from __future__ import annotations
 from audio_graphy.models.audit_log import AuditLog
 from audio_graphy.models.base import Base, TenantScopedBase
 from audio_graphy.models.chunk import Chunk
+from audio_graphy.models.entity_alias import EntityAlias
 from audio_graphy.models.enums import (
     PipelineState,
     RecordingStatus,
     TagSource,
     UserRole,
 )
+from audio_graphy.models.eval_run import EvalRunORM
 from audio_graphy.models.llm_call_log import LLMCallLog
 from audio_graphy.models.prompt import Prompt
 from audio_graphy.models.recompute_task import RecomputeTask
@@ -41,6 +43,8 @@ __all__ = [
     "AuditLog",
     "Base",
     "Chunk",
+    "EntityAlias",
+    "EvalRunORM",
     "LLMCallLog",
     "PipelineState",
     "Prompt",
