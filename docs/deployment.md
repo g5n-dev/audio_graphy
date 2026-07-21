@@ -1,7 +1,7 @@
 # AudioGraphy Deployment Guide
 
 > 部署指南 — covers mock mode (zero-dependency dev) and real mode (GPU-backed
-> vLLM + Silero + bge-m3). M4 code-ready; M5 will add funASR.
+> vLLM + Silero + bge-m3 + funASR). M5 code-ready.
 
 | Section | What you get |
 |---|---|
@@ -32,7 +32,7 @@
 | `vllm-weak` (Qwen3.6-35B-A3B FP16) | `vllm/vllm-openai:v0.7.2` | ~70 GB | MoE — only 3B activated parameters per token |
 | `bge-m3` | `ghcr.io/huggingface/text-embeddings-inference:1.5` | ~3 GB | small but required |
 | `silero-vad` | `jetresearch/silero-vad-server:latest` | <1 GB | CPU-only OK |
-| `funasr` (M5 placeholder) | `funasr-runtime-sdk-online-cpu-0.1.12` | — | CPU image, M4 does NOT call it |
+| `funasr` (M5) | `funasr/server:1.0.5` | ~2 GB CPU / ~6 GB GPU | OpenAI-compat HTTP API; CPU works for `fun-asr-nano` |
 
 > **Single-GPU alternative**: run `vllm-strong` and `vllm-weak` sequentially
 > with `--tensor-parallel-size 1` and `--gpu-memory-utilization 0.45` each,
@@ -78,8 +78,47 @@ docker compose --profile real ps       # wait until all "healthy"
 curl http://localhost:8000/health
 ```
 
-> **`ADAPTER_ASR_MODE=real` is rejected by the backend validator** — funASR
-> lands in M5. Leave it `mock`.
+> **`ADAPTER_ASR_MODE=real` is enabled in M5** — set it to `real` along with
+> `FUNASR_URL=http://funasr:8000` to call the funASR OpenAI-compat API. The
+> M4 placeholder image (`funasr-runtime-sdk-online-cpu-0.1.12`) is no longer
+> used; switch to `funasr/server:1.0.5` (already in compose).
+
+### 2.3 M5: real ASR (funASR only)
+
+```bash
+cp .env.example .env
+# Edit .env:
+#   ADAPTER_ASR_MODE=real
+#   FUNASR_URL=http://funasr:8000
+#   FUNASR_MODEL=fun-asr-nano        # CPU-friendly; set fun-asr-large for GPU
+#   JWT_SECRET=<32+ random chars>
+
+docker compose --profile real up -d funasr backend
+```
+
+funASR runs on CPU with `fun-asr-nano` (about 2 GB RAM, ~40s cold start). For
+GPU inference switch to `fun-asr-large` and set `FUNASR_DEVICE=cuda` plus the
+`deploy.resources` GPU stanza (see compose comments).
+
+### 2.4 Evaluation CLI (M5)
+
+The eval CLI is one-shot — no new compose service. Run it inside the backend
+container so it can reach vLLM over the internal network:
+
+```bash
+# Mock judge (CI / no GPU available)
+docker compose run --rm backend python -m audio_graphy.eval \
+  --gold-set examples/eval/smoke.yaml \
+  --report-dir reports/ \
+  --no-judge
+
+# Real judge (requires vllm-strong healthy)
+docker compose --profile real run --rm backend python -m audio_graphy.eval \
+  --gold-set examples/eval/smoke.yaml \
+  --report-dir reports/
+```
+
+See [`docs/m5-eval.md`](./m5-eval.md) for the full CLI reference.
 
 ---
 
@@ -123,7 +162,7 @@ them at startup — see `backend/audio_graphy/config.py`.
 | Silero VAD | `ADAPTER_VAD_MODE=real` | `silero-vad` |
 | vLLM strong+weak LLM | `ADAPTER_LLM_MODE=real` | `vllm-strong`, `vllm-weak` |
 | bge-m3 embedding | `ADAPTER_EMBED_MODE=real` | `bge-m3` |
-| funASR (M5) | `ADAPTER_ASR_MODE=real` | **rejected in M4** |
+| funASR (M5) | `ADAPTER_ASR_MODE=real` | `funasr` (`funasr/server:1.0.5`, port `10095:8000`) |
 
 > **Important**: `ADAPTER_MODE` (legacy global) does **not** auto-propagate to
 > the per-adapter fields. You must set each of the 4 fields explicitly.
@@ -166,7 +205,7 @@ calls `build_hybrid_bundle()` which constructs each adapter independently:
 | Adapter | mock | real |
 |---|---|---|
 | VAD | `MockVADAdapter` | `SileroVADAdapter` (url from `SILERO_VAD_URL`) |
-| ASR | `MockASRAdapter` | **always mock in M4** |
+| ASR | `MockASRAdapter` | `FunASRAdapter` (url from `FUNASR_URL`; reuses `OPENAI_API_KEY` as Bearer) |
 | LLM strong+weak | `MockLLMAdapter` × 2 | `LLMOpenAIAdapter` × 2 (urls from `OPENAI_BASE_URL_*`) |
 | Embed | `MockEmbedAdapter` | `BGEEmbedAdapter` (url from `BGE_M3_URL`) |
 
@@ -251,17 +290,22 @@ declare both. Don't `docker compose down -v` (the `-v` flag wipes volumes).
 | Var | Default | Purpose |
 |---|---|---|
 | `ADAPTER_MODE` | `mock` | legacy global — does NOT drive resolution (M4) |
-| `ADAPTER_ASR_MODE` | `mock` | M4 — must be `mock` (funASR lands in M5) |
+| `ADAPTER_ASR_MODE` | `mock` | M5: `real` → `funasr` service (OpenAI-compat port `:8000`) |
 | `ADAPTER_VAD_MODE` | `mock` | `real` → `silero-vad` service |
 | `ADAPTER_LLM_MODE` | `mock` | `real` → `vllm-strong` + `vllm-weak` |
 | `ADAPTER_EMBED_MODE` | `mock` | `real` → `bge-m3` service |
+| `FUNASR_URL` | `http://funasr:8000` | OpenAI-compat endpoint (M5+) |
+| `FUNASR_MODEL` | `fun-asr-nano` | must match `--served-model-name` |
+| `FUNASR_DEVICE` | `cpu` | `cpu` for nano, `cuda` for large |
 | `SILERO_VAD_URL` | `http://silero-vad:8002` | adapter appends `/v1/vad/segment` |
 | `BGE_M3_URL` | `http://bge-m3:8080` | adapter appends `/v1/embeddings` |
 | `OPENAI_BASE_URL_STRONG` | `http://vllm-strong:8000/v1` | full path with `/v1` |
 | `OPENAI_BASE_URL_WEAK` | `http://vllm-weak:8001/v1` | full path with `/v1` |
-| `OPENAI_API_KEY` | `dummy` | vLLM ignores value; required by OpenAI schema |
+| `OPENAI_API_KEY` | `dummy` | vLLM ignores value; also reused as funASR Bearer |
 | `LLM_STRONG_MODEL` | `qwen3.6-27b` | MUST match vLLM `--served-model-name` |
 | `LLM_WEAK_MODEL` | `qwen3.6-35b-a3b` | MUST match vLLM `--served-model-name` |
+| `JUDGE_LLM_MODEL` | empty | empty → use `LLM_STRONG_MODEL` |
+| `EVAL_CONCURRENCY` | `4` | parallel examples during evaluation |
 | `EMBEDDING_DIM` | `1024` | bge-m3 native dim — do not change |
 | `HF_TOKEN` | empty | required for gated Qwen models on HuggingFace |
 | `JWT_SECRET` | `change-me-...` | **override when any `ADAPTER_*_MODE=real`** |

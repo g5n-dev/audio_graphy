@@ -146,7 +146,67 @@ class EmbedDimMismatchError(EmbedAdapterError):
     __module__ = "audio_graphy.adapters.exceptions"
 
 
+class ASRAdapterError(Exception):
+    """Base for all ASR adapter failures / ASR Adapter 错误基类."""
+
+    __module__ = "audio_graphy.adapters.exceptions"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        url: str | None = None,
+        status_code: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.url = url
+        self.status_code = status_code
+
+
+class ASRRequestError(ASRAdapterError):
+    """HTTP 400 / 422 — bad audio / unsupported response_format."""
+
+    __module__ = "audio_graphy.adapters.exceptions"
+
+
+class ASRAuthError(ASRAdapterError):
+    """HTTP 401 / 403 — funASR token rejected (when auth enabled)."""
+
+    __module__ = "audio_graphy.adapters.exceptions"
+
+
+class ASRTooLargeError(ASRAdapterError):
+    """HTTP 413 — audio payload exceeds server limit."""
+
+    __module__ = "audio_graphy.adapters.exceptions"
+
+
+class ASRRateLimitError(ASRAdapterError):
+    """HTTP 429 — funASR rate limit. M5 does NOT retry (PRD §4.4)."""
+
+    __module__ = "audio_graphy.adapters.exceptions"
+
+
+class ASRServerError(ASRAdapterError):
+    """HTTP 5xx — funASR inference fault / non-JSON response."""
+
+    __module__ = "audio_graphy.adapters.exceptions"
+
+
+class ASRTimeoutError(ASRAdapterError):
+    """httpx.TimeoutException / 请求超时."""
+
+    __module__ = "audio_graphy.adapters.exceptions"
+
+
 __all__ = [
+    "ASRAdapterError",
+    "ASRAuthError",
+    "ASRRateLimitError",
+    "ASRRequestError",
+    "ASRServerError",
+    "ASRTimeoutError",
+    "ASRTooLargeError",
     "EmbedAdapterError",
     "EmbedDimMismatchError",
     "EmbedServerError",

@@ -39,3 +39,18 @@ def vad_settings() -> Settings:
         adapter_vad_mode="real",
         silero_vad_url="http://silero-vad.test",
     )
+
+
+@pytest.fixture
+def funasr_settings() -> Settings:
+    """Settings enabling ``adapter_asr_mode="real"`` with a *.test funasr URL.
+
+    M5 unblocks real ASR via FunASRAdapter — respx intercepts the URL in tests.
+    NOTE: requires T5 (config.py validator relaxation) to be usable; until then
+    instantiating this fixture raises ValueError. Tests in T1 construct
+    FunASRAdapter directly via ``_make_adapter()``.
+    """
+    return Settings(
+        adapter_asr_mode="real",
+        funasr_url="http://funasr.test",
+    )

@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     adapter_mode: AdapterMode = "mock"
     # Per-adapter modes (M4). Default "mock" preserves M3 all-mock behavior.
     # Set to "real" to enable the corresponding service via docker-compose `--profile real`.
-    adapter_asr_mode: AdapterMode = "mock"   # M4: MUST be "mock" (funASR lands in M5)
+    adapter_asr_mode: AdapterMode = "mock"   # M5: set to "real" to enable funASR
     adapter_vad_mode: AdapterMode = "mock"
     adapter_llm_mode: AdapterMode = "mock"
     adapter_embed_mode: AdapterMode = "mock"
@@ -66,10 +66,15 @@ class Settings(BaseSettings):
     llm_weak_model: str = "qwen3.6-35b-a3b"
 
     # --- ASR / VAD / Embedding (real mode only) ---
-    funasr_url: str = "http://funasr:10095"
+    funasr_url: str = "http://funasr:8000"  # M5: OpenAI-compat endpoint
+    funasr_model: str = "fun-asr-nano"
     silero_vad_url: str = "http://silero-vad:8002"  # compose maps 8002:8000
     bge_m3_url: str = "http://bge-m3:8080"
     embedding_dim: int = 1024
+
+    # --- Eval subsystem (M5 — WS-2) ---
+    judge_llm_model: str = ""  # empty → fallback to llm_strong_model
+    eval_concurrency: int = 4
 
     # --- Storage ---
     working_dir: Path = Path("/data/working_dir")
@@ -107,6 +112,11 @@ class Settings(BaseSettings):
 
     # --- CORS ---
     cors_origins: str = "http://localhost:5173,http://localhost:3000"
+
+    @property
+    def judge_llm_model_resolved(self) -> str:
+        """Judge LLM model with fallback to ``llm_strong_model``."""
+        return self.judge_llm_model or self.llm_strong_model
 
     # ----------------------------------------------------------
     # Derived properties
@@ -162,14 +172,9 @@ class Settings(BaseSettings):
         if self.mock_llm_error_rate < 0 or self.mock_llm_error_rate > 1:
             raise ValueError("MOCK_LLM_ERROR_RATE must be in [0.0, 1.0]")
 
-        # M4 — hard reject ASR real (funASR adapter lands in M5).
-        if self.adapter_asr_mode == "real":
-            raise ValueError(
-                "ADAPTER_ASR_MODE=real is not supported in M4 (funASR lands in M5)"
-            )
-
-        # M4 — JWT warning if ANY real adapter mode enabled.
+        # M5 — JWT warning if ANY real adapter mode enabled (now including ASR).
         real_modes = [
+            self.adapter_asr_mode,
             self.adapter_vad_mode,
             self.adapter_llm_mode,
             self.adapter_embed_mode,

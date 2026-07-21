@@ -1,0 +1,158 @@
+# AudioGraphy M5 Evaluation Smoke Gold Set
+#
+# 10 realistic store-recording scenarios covering:
+# - Easy retrieval (perfect top-k)
+# - Hard retrieval (partial / missing chunks)
+# - Entity-heavy / Edge-heavy / Tag-heavy
+# - Empty gold (denominator-zero code path)
+# - Empty pred (worst-case pipeline output)
+# - Multi-tenant (metadata.tenant)
+#
+# Schema: see docs/m5-eval.md (T8) and `audio_graphy/eval/types.py`.
+
+# 1. Easy: perfect retrieval, full entity/edge/tag coverage.
+- query: "CS75 Plus 七月优惠多少？"
+  gold_answer: "5 万元现金优惠 + 2 年免息分期。"
+  gold_context_ids: ["chunk-001", "chunk-004"]
+  gold_entities:
+    - ["CS75 Plus", "车型"]
+    - ["5万", "价格方案"]
+    - ["2年免息", "金融方案"]
+  gold_edges:
+    - ["坐席", "推荐", "CS75 Plus", "EXTRACTED"]
+    - ["CS75 Plus", "搭配", "2年免息", "INFERRED"]
+  gold_tags:
+    - {tag_path: "接待.价格.优惠", value: "5万"}
+    - {tag_path: "接待.金融.免息", value: "2年"}
+  recording_id: "rec-2026-07-15-001"
+  metadata: {scenario: "sales", tenant: "default"}
+
+# 2. Easy: financial product Q&A.
+- query: "UNI-V 的 36 期分期利率是多少？"
+  gold_answer: "UNI-V 36 期分期年利率 3.99%。"
+  gold_context_ids: ["chunk-011"]
+  gold_entities:
+    - ["UNI-V", "车型"]
+    - ["3.99%", "利率"]
+  gold_edges:
+    - ["UNI-V", "利率", "3.99%", "EXTRACTED"]
+  gold_tags:
+    - {tag_path: "接待.金融.分期利率", value: "3.99%"}
+  metadata: {scenario: "finance", tenant: "default"}
+
+# 3. Hard: partial retrieval (only one of two gold chunks retrieved).
+- query: "对比 CS75 Plus 和 UNI-V 的金融方案。"
+  gold_answer: "CS75 Plus 2 年免息；UNI-V 36 期年利率 3.99%。"
+  gold_context_ids: ["chunk-004", "chunk-011"]
+  gold_entities:
+    - ["CS75 Plus", "车型"]
+    - ["UNI-V", "车型"]
+  gold_edges:
+    - ["CS75 Plus", "对比", "UNI-V", "AMBIGUOUS"]
+  gold_tags:
+    - {tag_path: "接待.金融.对比", value: "CS75 Plus vs UNI-V"}
+  metadata: {scenario: "comparison", tenant: "default"}
+
+# 4. Entity-heavy: many entities, few edges.
+- query: "今天展厅里有哪些车型？"
+  gold_answer: "CS75 Plus、UNI-V、UNI-K、Eado、Linmax 五款车型。"
+  gold_context_ids: ["chunk-022"]
+  gold_entities:
+    - ["CS75 Plus", "车型"]
+    - ["UNI-V", "车型"]
+    - ["UNI-K", "车型"]
+    - ["Eado", "车型"]
+    - ["Linmax", "车型"]
+  gold_edges: []
+  gold_tags:
+    - {tag_path: "接待.展厅.车型列表", value: "5款"}
+  metadata: {scenario: "showroom", tenant: "default"}
+
+# 5. Edge-heavy: many inferred relations, used to stress Edge P/C macro.
+- query: "整理一下客户家庭关系，方便后续推荐。"
+  gold_answer: "客户父亲开 CS75，母亲开 Linmax，妻子刚考驾照。"
+  gold_context_ids: ["chunk-031"]
+  gold_entities:
+    - ["客户父亲", "人物"]
+    - ["客户母亲", "人物"]
+    - ["妻子", "人物"]
+    - ["CS75", "车型"]
+    - ["Linmax", "车型"]
+  gold_edges:
+    - ["客户父亲", "驾驶", "CS75", "EXTRACTED"]
+    - ["客户母亲", "驾驶", "Linmax", "EXTRACTED"]
+    - ["妻子", "未购车", "无", "INFERRED"]
+    - ["客户", "家庭成员", "父亲/母亲/妻子", "AMBIGUOUS"]
+  gold_tags:
+    - {tag_path: "接待.客户画像.家庭", value: "三口之家"}
+  metadata: {scenario: "customer_profile", tenant: "default"}
+
+# 6. Tag-heavy: nested tag paths with mixed normalization cases.
+- query: "记录今天接待的客户意向等级和跟进事项。"
+  gold_answer: "客户意向 A 级，下周试驾 CS75 Plus，需要准备金融方案对比。"
+  gold_context_ids: ["chunk-042"]
+  gold_entities:
+    - ["CS75 Plus", "车型"]
+    - ["A 级", "意向等级"]
+  gold_edges: []
+  gold_tags:
+    - {tag_path: "接待.意向.等级", value: "A"}
+    - {tag_path: "接待.跟进.下一步", value: "试驾"}
+    - {tag_path: "接待.金融.需求", value: "方案对比"}
+    - {tag_path: "接待.时间.下次到店", value: "下周"}
+  metadata: {scenario: "follow_up", tenant: "default"}
+
+# 7. Empty gold: denominator-zero code path (no entities / edges / tags / chunks).
+- query: "今天的会议纪要整理好了吗？"
+  gold_answer: "已整理，稍后发邮件。"
+  gold_context_ids: []
+  gold_entities: []
+  gold_edges: []
+  gold_tags: []
+  metadata: {scenario: "internal", tenant: "default"}
+
+# 8. Empty pred (worst case): minimal gold, used to stress empty-pred code paths.
+- query: "试听一下车内音响效果。"
+  gold_answer: "Bose 12 喇叭环绕，支持 CarPlay 和无线充电。"
+  gold_context_ids: ["chunk-051"]
+  gold_entities:
+    - ["Bose", "配置"]
+  gold_edges: []
+  gold_tags:
+    - {tag_path: "接待.配置.音响", value: "Bose"}
+  metadata: {scenario: "demo", tenant: "default"}
+
+# 9. Multi-tenant: tenant-B (commercial fleet).
+- query: "公司客户采购 10 台 CS75 Plus 的折扣？"
+  gold_answer: "采购 10 台 9.5 折，赠送首年保险。"
+  gold_context_ids: ["chunk-061", "chunk-062"]
+  gold_entities:
+    - ["CS75 Plus", "车型"]
+    - ["10台", "采购数量"]
+    - ["9.5 折", "团体优惠"]
+  gold_edges:
+    - ["采购", "数量", "10台", "EXTRACTED"]
+    - ["采购", "折扣", "9.5 折", "EXTRACTED"]
+  gold_tags:
+    - {tag_path: "接待.团购.数量", value: "10"}
+    - {tag_path: "接待.团购.折扣", value: "9.5"}
+  recording_id: "rec-2026-07-15-b01"
+  metadata: {scenario: "fleet_sales", tenant: "tenant-b"}
+
+# 10. Multi-tenant: tenant-c (after-sales).
+- query: "首保里程多少？包含哪些项目？"
+  gold_answer: "5000 公里或 6 个月首保，包含机油、机滤、整车检查。"
+  gold_context_ids: ["chunk-071"]
+  gold_entities:
+    - ["5000公里", "里程"]
+    - ["6个月", "时间"]
+    - ["机油", "保养项目"]
+    - ["机滤", "保养项目"]
+  gold_edges:
+    - ["首保", "里程", "5000公里", "EXTRACTED"]
+    - ["首保", "项目", "机油", "EXTRACTED"]
+    - ["首保", "项目", "机滤", "EXTRACTED"]
+  gold_tags:
+    - {tag_path: "售后.首保.里程", value: "5000"}
+    - {tag_path: "售后.首保.项目", value: "机油/机滤"}
+  metadata: {scenario: "after_sales", tenant: "tenant-c"}

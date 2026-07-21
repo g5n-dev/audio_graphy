@@ -98,14 +98,14 @@ class TestBuildAdapters:
         assert isinstance(bundle.vad, MockVADAdapter)
 
     @pytest.mark.unit
-    def test_asr_real_rejected_in_m4(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """M4 invariant: ADAPTER_ASR_MODE=real is hard-rejected (funASR lands in M5)."""
+    def test_asr_real_allowed_in_m5(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """M5: ADAPTER_ASR_MODE=real is now allowed (funASR has landed)."""
         monkeypatch.setenv("ADAPTER_ASR_MODE", "real")
         from audio_graphy.config import get_settings
 
         get_settings.cache_clear()
-        with pytest.raises(ValueError, match="ADAPTER_ASR_MODE=real"):
-            get_settings()
+        s = get_settings()
+        assert s.adapter_asr_mode == "real"
 
     @pytest.mark.unit
     def test_per_adapter_mode_real_routes_to_real_adapters(
