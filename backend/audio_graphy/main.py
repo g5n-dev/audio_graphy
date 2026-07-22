@@ -13,6 +13,7 @@ import contextlib
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -384,6 +385,88 @@ def create_app() -> FastAPI:
             )
         except Exception as exc:
             logger.warning("M8 streaming router registration failed: %s", exc)
+
+    # M9 R2 — Advanced Graph routers (L9 master flag).
+    # When ``enable_advanced_graph=False`` (the default), every R2 path
+    # below returns 404 and M1-M8 surfaces are unchanged.
+    if getattr(settings, "enable_advanced_graph", False):
+        try:
+            from audio_graphy.api.bi_temporal import router as bi_temporal_router
+            from audio_graphy.api.compression_admin import (
+                router as compression_admin_router,
+            )
+            from audio_graphy.api.leiden_admin import (
+                router as leiden_admin_router,
+            )
+            from audio_graphy.api.search import router as search_router
+
+            app.include_router(bi_temporal_router, prefix=API_PREFIX)
+            app.include_router(leiden_admin_router, prefix=API_PREFIX)
+            app.include_router(search_router, prefix=API_PREFIX)
+            app.include_router(compression_admin_router, prefix=API_PREFIX)
+            logger.info("M9 advanced graph ENABLED (R2 routers registered)")
+        except Exception as exc:
+            logger.warning("M9 R2 router registration failed: %s", exc)
+
+        # M9 R2 T10 — weekly Sunday 03:00 compression cron.
+        try:
+            from apscheduler.schedulers.background import BackgroundScheduler
+            from apscheduler.triggers.cron import CronTrigger
+
+            # Reuse the retention scheduler if present; else create a fresh one.
+            comp_scheduler = getattr(app.state, "retention_scheduler", None)
+            if comp_scheduler is None:
+                comp_scheduler = BackgroundScheduler(daemon=True)
+                app.state.compression_scheduler = comp_scheduler
+
+            def _compression_cron() -> None:
+                """Bridge: invoke the async compression sweep from a sync job."""
+                import asyncio as _asyncio
+
+                from audio_graphy.core.retention import (
+                    run_weekly_compression_sweep,
+                )
+
+                def _gs_factory(tenant_id: str) -> Any:
+                    gs: dict[str, Any] | None = getattr(
+                        app.state, "graph_stores", None
+                    )
+                    if gs is None:
+                        return None
+                    return gs.get(tenant_id)
+
+                try:
+                    loop = _asyncio.new_event_loop()
+                    try:
+                        loop.run_until_complete(
+                            run_weekly_compression_sweep(
+                                session_factory=app.state.session_factory,
+                                graph_store_factory=_gs_factory,
+                                settings=settings,
+                            )
+                        )
+                    finally:
+                        loop.close()
+                except Exception as exc:
+                    logger.error(
+                        "Weekly compression cron failed: %s", exc, exc_info=True
+                    )
+
+            comp_scheduler.add_job(
+                _compression_cron,
+                trigger=CronTrigger(
+                    day_of_week="sun", hour=3, minute=0, timezone="Asia/Shanghai"
+                ),
+                id="compression_weekly",
+                coalesce=True,
+                max_instances=1,
+                replace_existing=True,
+            )
+            if not comp_scheduler.running:
+                comp_scheduler.start()
+            logger.info("M9 weekly compression cron scheduled (Sun 03:00 CST)")
+        except Exception as exc:
+            logger.warning("M9 compression cron registration failed: %s", exc)
 
     # Root redirect
     @app.get("/", tags=["meta"])

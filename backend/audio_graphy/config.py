@@ -193,6 +193,64 @@ class Settings(BaseSettings):
     # --- M8 Phase 4 — JWT TTL for WS (shorter than REST) ---
     ws_jwt_ttl_minutes: int = 5  # PRD §5.3
 
+    # --- M9 R1 T15 — advanced graph feature flags (L9 zero-regression) ---
+    # Master switch. When False, every M9 subsystem degrades to its M8
+    # baseline (no bi-temporal writes, no Leiden, no compression, no Layer 2
+    # fuzzy). Defaults to False per L9 ruling.
+    enable_advanced_graph: bool = False
+    # Bi-temporal timestamps + supersede pointer (architecture §6).
+    # When False, GraphEdge is constructed without bi-temporal fields.
+    enable_bitemporal_edges: bool = True
+    # Leiden / HIT-Leiden incremental community detection (architecture §7).
+    enable_leiden: bool = True
+    # L2 — diff percentage cap above which an incremental run becomes a full
+    # recompute. Default 30% (locked L2).
+    leiden_threshold_percent: float = 30.0
+    # Preferred Leiden backend: ``"leidenalg"`` (best, optional dep),
+    # ``"networkx"`` (always-available fallback), ``"fail-fast"``
+    # (raise if leidenalg is missing).
+    leiden_lib: Literal[
+        "leidenalg", "networkx", "fail-fast"
+    ] = "networkx"
+    # Maximum Leiden hierarchy levels actually persisted (Q2 cap=2; level 3
+    # dropped). Must be in [0, 3].
+    leiden_max_levels: int = 2
+
+    # Community summaries (architecture §8 / Q2).
+    # Strategy: ``eager`` = generate level-0 + leaf at Leiden time;
+    # ``lazy``   = generate levels 1-2 only on retrieval request;
+    # ``disabled`` = do not generate summaries at all.
+    community_summary_strategy: Literal[
+        "eager", "lazy", "disabled"
+    ] = "eager"
+
+    # Compression (architecture §9 / Q3 SOFT-only).
+    enable_compression: bool = True
+    # Compression candidate scoring thresholds (architecture §9.1).
+    compression_god_node_degree: int = 50
+    compression_stale_days: int = 180
+    # Per-run cap on candidates (prevents runaway compression batches).
+    compression_max_candidates_per_run: int = 100
+    # L6 locked — low-degree node merge: nodes with degree ≤ this AND
+    # rapidfuzz token_ratio ≥ compression_fuzzy_token_ratio (same community)
+    # become merge candidates. Default 1 (architecture §9.2 / §9.3).
+    compression_degree_threshold: int = 1
+    # L6 locked – rapidfuzz fuzz.token_ratio threshold (× 100) for the
+    # low-degree merge decision. Default 85 (architecture §9.3).
+    compression_fuzzy_token_ratio: int = 85
+    # L7 locked – AMBIGUOUS edges older than this many days without a
+    # re-encounter event get demoted to confidence='DEPRECATED'.
+    # Default 30 (architecture §9.4).
+    compression_ambiguous_deprecate_days: int = 30
+
+    # SpeakerLinker L8 — fuzzy thresholds (binding).
+    speaker_fuzzy_ambiguous_threshold: float = 0.85
+    speaker_fuzzy_inferred_threshold: float = 0.6
+    speaker_fuzzy_voiceprint_reconfirm_cosine: float = 0.7
+    # When True, SpeakerLinker invokes SpeakerFuzzyMatcher on Layer-1 misses.
+    # Default True (L8 active). Flip to False to recover M7 behaviour exactly.
+    enable_speaker_layer2_fuzzy: bool = True
+
     # --- Mock flakiness (testing) ---
     mock_asr_flaky: bool = False
     mock_llm_error_rate: float = 0.005
@@ -283,6 +341,37 @@ class Settings(BaseSettings):
                 f"> {self.voiceprint_ambiguous_threshold})"
             )
 
+        # M9 R1 T15 — advanced-graph sanity checks.
+        # Leiden levels cap (Q2 cap=2 in practice; allow 0..3 for forward-compat).
+        if not 0 <= self.leiden_max_levels <= 3:
+            raise ValueError(
+                f"LEIDEN_MAX_LEVELS must be in [0, 3], got {self.leiden_max_levels}"
+            )
+        # L8 — inferred ≤ ambiguous.
+        if self.speaker_fuzzy_inferred_threshold > self.speaker_fuzzy_ambiguous_threshold:
+            raise ValueError(
+                "SPEAKER_FUZZY_INFERRED_THRESHOLD must be ≤ "
+                f"SPEAKER_FUZZY_AMBIGUOUS_THRESHOLD (got "
+                f"{self.speaker_fuzzy_inferred_threshold} > "
+                f"{self.speaker_fuzzy_ambiguous_threshold})"
+            )
+        # M9 sub-flags require the master flag.
+        if not self.enable_advanced_graph:
+            sub_flags_on = []
+            if self.enable_bitemporal_edges:
+                sub_flags_on.append("ENABLE_BITEMPORAL_EDGES")
+            if self.enable_leiden:
+                sub_flags_on.append("ENABLE_LEIDEN")
+            if self.enable_compression:
+                sub_flags_on.append("ENABLE_COMPRESSION")
+            if sub_flags_on:
+                logger.warning(
+                    "ENABLE_ADVANCED_GRAPH=False but sub-flags ON: %s. "
+                    "Sub-flags are ignored when the master flag is False "
+                    "(L9 zero-regression).",
+                    ", ".join(sub_flags_on),
+                )
+
         return self
 
     # ----------------------------------------------------------
@@ -303,6 +392,46 @@ class Settings(BaseSettings):
         if not 0.0 <= v <= 1.0:
             raise ValueError(
                 f"VOICEPRINT_AMBIGUOUS_THRESHOLD must be in [0, 1], got {v}"
+            )
+        return v
+
+    # ----------------------------------------------------------
+    # M9 R1 T15 — per-field validators
+    # ----------------------------------------------------------
+    @field_validator("leiden_threshold_percent")
+    @classmethod
+    def _validate_leiden_threshold(cls, v: float) -> float:
+        if not 0.0 <= v <= 100.0:
+            raise ValueError(
+                f"LEIDEN_THRESHOLD_PERCENT must be in [0, 100], got {v}"
+            )
+        return v
+
+    @field_validator("speaker_fuzzy_ambiguous_threshold")
+    @classmethod
+    def _validate_speaker_fuzzy_ambiguous(cls, v: float) -> float:
+        if not 0.0 <= v <= 1.0:
+            raise ValueError(
+                f"SPEAKER_FUZZY_AMBIGUOUS_THRESHOLD must be in [0, 1], got {v}"
+            )
+        return v
+
+    @field_validator("speaker_fuzzy_inferred_threshold")
+    @classmethod
+    def _validate_speaker_fuzzy_inferred(cls, v: float) -> float:
+        if not 0.0 <= v <= 1.0:
+            raise ValueError(
+                f"SPEAKER_FUZZY_INFERRED_THRESHOLD must be in [0, 1], got {v}"
+            )
+        return v
+
+    @field_validator("speaker_fuzzy_voiceprint_reconfirm_cosine")
+    @classmethod
+    def _validate_speaker_fuzzy_vp_cosine(cls, v: float) -> float:
+        if not 0.0 <= v <= 1.0:
+            raise ValueError(
+                "SPEAKER_FUZZY_VOICEPRINT_RECONFIRM_COSINE must be in "
+                f"[0, 1], got {v}"
             )
         return v
 

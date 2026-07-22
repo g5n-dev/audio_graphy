@@ -34,8 +34,13 @@ GRAPHML_FILENAME = "graph_chunk_entity_relation.graphml"
 
 
 def cast_edge_confidence(value: str) -> EdgeConfidence:
-    """Safely cast a string to EdgeConfidence, defaulting to AMBIGUOUS."""
-    if value in ("EXTRACTED", "INFERRED", "AMBIGUOUS"):
+    """Safely cast a string to EdgeConfidence, defaulting to AMBIGUOUS.
+
+    M9 L7 introduces ``DEPRECATED`` as a valid EdgeConfidence value; it is
+    preserved here (rather than collapsed to AMBIGUOUS) so the L7
+    deprecation + retrieval exclusion path round-trips through storage.
+    """
+    if value in ("EXTRACTED", "INFERRED", "AMBIGUOUS", "DEPRECATED"):
         return cast(EdgeConfidence, value)
     return "AMBIGUOUS"
 
@@ -381,8 +386,8 @@ class NetworkXGraphStore:
     ) -> GraphEdge:
         """Convert NetworkX edge attributes to a GraphEdge dataclass."""
         confidence_str = attrs.get("confidence", "AMBIGUOUS")
-        # Ensure valid EdgeConfidence value
-        if confidence_str not in ("EXTRACTED", "INFERRED", "AMBIGUOUS"):
+        # Ensure valid EdgeConfidence value (M9 L7 — DEPRECATED round-trips).
+        if confidence_str not in ("EXTRACTED", "INFERRED", "AMBIGUOUS", "DEPRECATED"):
             confidence_str = "AMBIGUOUS"
         confidence = cast_edge_confidence(confidence_str)
 

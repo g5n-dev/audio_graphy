@@ -1,4 +1,5 @@
-"""OpenTelemetry helpers for the M8 streaming path (WS-3 / T11).
+"""OpenTelemetry helpers for the M8 streaming path (WS-3 / T11) and
+the M9 advanced-graph subsystem (R1 T14).
 
 The ``opentelemetry-sdk`` package is an OPTIONAL dependency — when it is
 not installed every helper in this module degrades to a no-op so the
@@ -7,6 +8,14 @@ streaming pipeline never fails on observability alone.
 Span chain (architecture §15.12 / §17):
 
     ws_recv → vad → asr → extractor → merger → db_write
+
+M9 R1 T14 adds four new span helpers for the advanced-graph subsystem:
+
+    bitemporal_supersede_span
+    leiden_run_span
+    community_summary_span
+    compression_apply_span
+    speaker_fuzzy_match_span
 
 The trace_id is generated per session at init time and included in every
 span + the ``session_opened`` event so clients can correlate.
@@ -99,9 +108,113 @@ def streaming_span(
         yield
 
 
+# ============================================================
+# M9 R1 T14 — advanced-graph span helpers
+# ============================================================
+#
+# All five helpers follow the same shape: contextual span + tenant
+# correlation + subsystem-specific attributes. They are intentionally
+# tiny so callers (BiTemporalEdgeService, IncrementalLeidenService, etc.)
+# can use them with minimal boilerplate.
+
+
+@contextlib.contextmanager
+def bitemporal_supersede_span(
+    *,
+    tenant_id: str,
+    edge_key: str,
+    replacement_key: str,
+    chain_depth: int = 1,
+) -> Iterator[None]:
+    """Span for one Q1 dual-track supersede operation."""
+    with streaming_span(
+        "bitemporal.supersede",
+        tenant_id=tenant_id,
+        edge_key=edge_key,
+        replacement_key=replacement_key,
+        chain_depth=chain_depth,
+    ):
+        yield
+
+
+@contextlib.contextmanager
+def leiden_run_span(
+    *,
+    tenant_id: str,
+    job_type: str,
+    diff_percent: float,
+    node_count: int,
+) -> Iterator[None]:
+    """Span for one Leiden run (full or incremental)."""
+    with streaming_span(
+        "leiden.run",
+        tenant_id=tenant_id,
+        job_type=job_type,
+        diff_percent=diff_percent,
+        node_count=node_count,
+    ):
+        yield
+
+
+@contextlib.contextmanager
+def community_summary_span(
+    *,
+    tenant_id: str,
+    level: int,
+    community_id: int,
+    strategy: str,
+) -> Iterator[None]:
+    """Span for one community summary LLM call."""
+    with streaming_span(
+        "community_summary.generate",
+        tenant_id=tenant_id,
+        level=level,
+        community_id=community_id,
+        strategy=strategy,
+    ):
+        yield
+
+
+@contextlib.contextmanager
+def compression_apply_span(
+    *,
+    tenant_id: str,
+    candidate_count: int,
+) -> Iterator[None]:
+    """Span for one CompressionService.apply batch."""
+    with streaming_span(
+        "compression.apply",
+        tenant_id=tenant_id,
+        candidate_count=candidate_count,
+    ):
+        yield
+
+
+@contextlib.contextmanager
+def speaker_fuzzy_match_span(
+    *,
+    tenant_id: str,
+    query_name: str,
+    candidate_count: int,
+) -> Iterator[None]:
+    """Span for one SpeakerFuzzyMatcher.match call."""
+    with streaming_span(
+        "speaker_fuzzy.match",
+        tenant_id=tenant_id,
+        query_name=query_name,
+        candidate_count=candidate_count,
+    ):
+        yield
+
+
 __all__ = [
     "OTEL_AVAILABLE",
+    "bitemporal_supersede_span",
+    "community_summary_span",
+    "compression_apply_span",
     "init_otel",
+    "leiden_run_span",
     "new_trace_id",
+    "speaker_fuzzy_match_span",
     "streaming_span",
 ]

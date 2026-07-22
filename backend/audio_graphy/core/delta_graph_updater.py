@@ -23,9 +23,16 @@ Edge confidence tagging (L9 + Q3):
     - Gleaning-supplement relations → ``INFERRED``.
     - EntityMerger fuzzy hits on either endpoint → ``AMBIGUOUS``.
 
+M9 R1 (T3):
+    When ``Settings.enable_advanced_graph`` is True, every newly inserted
+    edge is routed through ``BiTemporalEdgeService.insert_edge()`` so that
+    the four bi-temporal timestamps + ``superseded_by`` pointer are
+    populated correctly. The matching ``EdgeEvent`` audit row is buffered
+    on the report for the caller to commit (Q1 dual-track hook).
+
 NOT in scope:
     - Leiden community rebuild (L6 — admin-only, separate task).
-    - SpeakerFuzzyMatcher (PRD P1-3, deferred to M8 round 2).
+    - SpeakerFuzzyMatcher wiring into Layer 2 (T12, separate).
 """
 
 from __future__ import annotations
@@ -50,8 +57,10 @@ from audio_graphy.core.extractor import (
 from audio_graphy.core.streaming_rwlock import StreamingRWLock
 
 if TYPE_CHECKING:
+    from audio_graphy.core.bi_temporal import BiTemporalEdgeService
     from audio_graphy.core.entity_merger import EntityMerger
     from audio_graphy.core.speaker_linker import SpeakerLinker
+    from audio_graphy.models.edge_event import EdgeEvent
     from audio_graphy.storage.file_index import FileIndex
     from audio_graphy.storage.graph_networkx import NetworkXGraphStore
 
@@ -73,6 +82,8 @@ class DeltaUpdateReport:
         extraction_ms: Wall-clock time of the LLM extraction step.
         merge_ms: Wall-clock time of EntityMerger.merge().
         persist_ms: Wall-clock time of chunk + entity + edge DB writes.
+        m9_edge_events: M9 only — buffered EdgeEvent rows awaiting commit.
+            Empty when ``enable_advanced_graph`` is False (zero-regression).
     """
 
     chunk_id: int | None
@@ -85,6 +96,8 @@ class DeltaUpdateReport:
     extraction_ms: float
     merge_ms: float
     persist_ms: float
+    # M9 R1 T3: bi-temporal audit events awaiting caller's DB commit.
+    m9_edge_events: list[EdgeEvent] | None = None
 
 
 # Type aliases for factory callables (kept simple — no ParamSpec for now).
@@ -121,6 +134,7 @@ class DeltaGraphUpdater:
         graph_store_factory: GraphStoreFactory,
         rwlock: StreamingRWLock,
         session_id: str,
+        enable_advanced_graph: bool = False,
     ) -> None:
         self._bundle = bundle
         self._session_factory = session_factory
@@ -131,6 +145,9 @@ class DeltaGraphUpdater:
         self._graph_store_factory = graph_store_factory
         self._rwlock = rwlock
         self._session_id = session_id
+        # M9 R1 T3: bi-temporal hook is flag-gated (L9). When False the
+        # updater behaves identically to M8 (zero-regression).
+        self._enable_advanced_graph: bool = enable_advanced_graph
 
         # Reusable extractor (no per-call state besides prompt + cache).
         self._extractor = EntityExtractor(
@@ -188,6 +205,7 @@ class DeltaGraphUpdater:
                     extraction_ms=0.0,
                     merge_ms=0.0,
                     persist_ms=0.0,
+                    m9_edge_events=None,
                 )
 
             # Step 2: persist chunk + get id.
@@ -231,14 +249,16 @@ class DeltaGraphUpdater:
             # Step 7: update NetworkX graph store under write-lock.
             graph_store = self._graph_store_factory(tenant_id)
             t0 = time.perf_counter()
+            m9_events_buffer: list[EdgeEvent] | None = None
             async with self._rwlock.write_lock():
-                await self._write_to_graph(
+                m9_events_buffer = await self._write_to_graph(
                     graph_store,
                     extraction.entities,
                     merged_pairs,
                     edges_with_conf,
                     recording_id,
                     chunk_id,
+                    tenant_id,
                 )
             t_persist += (time.perf_counter() - t0) * 1000.0
 
@@ -255,6 +275,7 @@ class DeltaGraphUpdater:
             extraction_ms=t_extract,
             merge_ms=t_merge,
             persist_ms=t_persist,
+            m9_edge_events=m9_events_buffer,
         )
 
     # ------------------------------------------------------------------
@@ -366,12 +387,24 @@ class DeltaGraphUpdater:
         edges_with_conf: list[tuple[ExtractedRelation, EdgeConfidence]],
         recording_id: int,
         chunk_id: int,
-    ) -> None:
+        tenant_id: str,
+    ) -> list[EdgeEvent] | None:
         """Upsert nodes + edges into the NetworkXGraphStore.
 
         Reuses ``NetworkXGraphStore.upsert_node`` and ``upsert_edge`` —
         both are tenant-scoped and idempotent. The M8 streaming origin is
         recorded via the ``source_ids`` field (existing GraphNode attribute).
+
+        M9 R1 T3 — bi-temporal hook:
+            When ``self._enable_advanced_graph`` is True, every edge passes
+            through ``BiTemporalEdgeService.insert_edge()`` so that the four
+            bi-temporal timestamps + ``superseded_by`` field are populated
+            correctly. The matching ``EdgeEvent`` audit row is collected
+            into a buffer and returned to the caller for atomic commit.
+
+        Returns:
+            ``None`` when the M9 flag is False (zero-regression path).
+            A list of ``EdgeEvent`` rows (one per edge written) when True.
         """
         # Lazy import to avoid core/types.py circular dependency at module-load.
         from audio_graphy.core.types import GraphEdge, GraphNode
@@ -393,6 +426,17 @@ class DeltaGraphUpdater:
             )
             await graph_store.upsert_node(node)
 
+        # M9 R1 T3: instantiate the bi-temporal service lazily.
+        bt_service: BiTemporalEdgeService | None = None
+        if self._enable_advanced_graph:
+            from audio_graphy.core.bi_temporal import BiTemporalEdgeService
+
+            bt_service = BiTemporalEdgeService(tenant_id=tenant_id)
+
+        events_buffer: list[EdgeEvent] | None = (
+            [] if bt_service is not None else None
+        )
+
         # Build edges.
         for rel, conf in edges_with_conf:
             source_id = merged_pairs[
@@ -407,13 +451,31 @@ class DeltaGraphUpdater:
                     0,
                 )
             ][0] if entities else rel.target_name
-            edge = GraphEdge(
-                source=source_id,
-                target=target_id,
-                relation=rel.relation,
-                weight=rel.weight,
-                confidence=conf,
-                confidence_score=1.0 if conf == "EXTRACTED" else 0.5,
-                source_ids=[f"{recording_id}_{chunk_id}"],
-            )
+
+            if bt_service is not None:
+                # M9 path — bi-temporal timestamps + supersede pointer populated.
+                edge, event = bt_service.insert_edge(
+                    source=source_id,
+                    target=target_id,
+                    relation=rel.relation,
+                    weight=rel.weight,
+                    confidence=conf,
+                    confidence_score=1.0 if conf == "EXTRACTED" else 0.5,
+                    source_ids=[f"{recording_id}_{chunk_id}"],
+                )
+                assert events_buffer is not None
+                events_buffer.append(event)
+            else:
+                # M1-M8 legacy path — no bi-temporal fields.
+                edge = GraphEdge(
+                    source=source_id,
+                    target=target_id,
+                    relation=rel.relation,
+                    weight=rel.weight,
+                    confidence=conf,
+                    confidence_score=1.0 if conf == "EXTRACTED" else 0.5,
+                    source_ids=[f"{recording_id}_{chunk_id}"],
+                )
             await graph_store.upsert_edge(edge)
+
+        return events_buffer

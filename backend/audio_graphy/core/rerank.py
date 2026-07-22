@@ -679,6 +679,7 @@ class Reranker:
 # ============================================================
 
 _CONFIDENCE_RANK: dict[str, int] = {
+    "DEPRECATED": -1,
     "AMBIGUOUS": 0,
     "INFERRED": 1,
     "EXTRACTED": 2,

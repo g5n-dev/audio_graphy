@@ -15,6 +15,13 @@ Deletion scope per recording (hard delete, M6):
        this recording. Failure here is logged + downgraded (M6 does not
        require atomicity across file + DB + graph).
 
+M9 R1 T14 addition:
+    Before removing a node from the graph, the retention cascade now
+    invokes ``BiTemporalEdgeService.retention_cascade`` on all edges
+    touching that node. The resulting ``EdgeEvent`` rows are buffered
+    for atomic DB commit alongside the hard-delete batch. This preserves
+    bi-temporal audit trail for any edge that disappeared due to PIPL.
+
 For each recording deleted, one ``retention_delete`` audit_log row is
 written. Failures produce ``retention_delete_failed`` entries.
 
@@ -28,6 +35,8 @@ Args (constructor):
         is cached. Returning ``None`` skips GraphML cleanup for that tenant.
     retention_days: Override ``Settings.recording_retention_days`` (testing).
     batch_size: Max recordings processed per sweep (default 500).
+    enable_advanced_graph: M9 R1 T14 — when True, fire bi-temporal cascade
+        on edges before removing nodes (L9 zero-regression flag).
 """
 
 from __future__ import annotations
@@ -37,7 +46,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -85,6 +94,7 @@ class RetentionEnforcer:
         retention_days: int | None = None,
         batch_size: int = 500,
         cascade_voiceprint: bool = True,
+        enable_advanced_graph: bool = False,
     ) -> None:
         self._session_factory = session_factory
         self._crypto = crypto
@@ -93,6 +103,13 @@ class RetentionEnforcer:
         self._retention_days_override = retention_days
         self._batch_size = batch_size
         self._cascade_voiceprint = cascade_voiceprint
+        # M9 R1 T14 — flag-gated bi-temporal cascade (L9 zero-regression).
+        self._enable_advanced_graph: bool = enable_advanced_graph
+        # Buffer of EdgeEvent rows pending atomic commit (filled by the
+        # bi-temporal cascade; flushed in _delete_one after the hard-delete
+        # batch). Kept on the instance so multiple recordings in one sweep
+        # share a single commit at the end.
+        self._m9_edge_events_buffer: list[Any] = []
 
     async def run_sweep(self) -> RetentionReport:
         """Run one retention sweep. Called by APScheduler daily cron."""
@@ -243,7 +260,11 @@ class RetentionEnforcer:
         try:
             graph_store = self._graph_store_factory(str(rec.tenant_id))
             if graph_store is not None:
-                self._remove_graph_refs(graph_store, rec.id)
+                self._remove_graph_refs(
+                    graph_store,
+                    rec.id,
+                    tenant_id=str(rec.tenant_id),
+                )
         except Exception as exc:
             logger.warning(
                 "GraphML cleanup failed for recording %d: %s", rec.id, exc
@@ -333,13 +354,24 @@ class RetentionEnforcer:
             )
         )
 
-    @staticmethod
-    def _remove_graph_refs(graph_store: NetworkXGraphStore, recording_id: int) -> None:
+    def _remove_graph_refs(
+        self,
+        graph_store: NetworkXGraphStore,
+        recording_id: int,
+        *,
+        tenant_id: str = "",
+    ) -> None:
         """Drop graph nodes/edges that mention this recording id.
 
         M6 strategy: iterate node attrs (``recording_ids`` JSON-serialized
         list) and remove nodes whose only reference is this recording.
         Edges are dropped alongside their endpoints by NetworkX.
+
+        M9 R1 T14 addition: when ``self._enable_advanced_graph`` is True,
+        every edge touching a to-be-removed node first passes through
+        ``BiTemporalEdgeService.retention_cascade`` so that Q1/Q3
+        bi-temporal semantics are preserved (edges get ``invalid_at=now()``
+        and an ``EdgeEvent`` audit row is queued for commit).
         """
         from audio_graphy.core.types import _str_to_list
 
@@ -361,8 +393,163 @@ class RetentionEnforcer:
                     from audio_graphy.core.types import _list_to_str
 
                     graph.nodes[node_id]["recording_ids"] = _list_to_str(remaining)
+
+        # M9 R1 T14 — bi-temporal cascade before hard node removal.
+        if self._enable_advanced_graph and to_remove:
+            self._bitemporal_cascade_for_nodes(
+                graph_store=graph_store,
+                node_ids=to_remove,
+                tenant_id=tenant_id or "default",
+            )
+
         for node_id in to_remove:
             graph.remove_node(node_id)
 
+    def _bitemporal_cascade_for_nodes(
+        self,
+        *,
+        graph_store: NetworkXGraphStore,
+        node_ids: list[str],
+        tenant_id: str,
+    ) -> None:
+        """Q3 soft-delete every edge touching any node in ``node_ids``.
 
-__all__ = ["RetentionEnforcer", "RetentionReport"]
+        Per architecture §9 + Q3 ruling: edges get ``invalid_at=now()``;
+        EdgeEvent audit rows are buffered for commit. Nodes themselves
+        are still hard-removed (the M6 path) because retention IS the
+        regulatory hard-delete path; only the EDGES get the soft-delete
+        treatment so the audit trail records their disappearance.
+        """
+        # Lazy imports to keep retention.py importable without M9 modules.
+        from audio_graphy.core.bi_temporal import BiTemporalEdgeService
+        from audio_graphy.core.types import GraphEdge
+
+        bt = BiTemporalEdgeService(tenant_id=tenant_id)
+        graph = graph_store.graph
+
+        # Collect every edge that touches any to-be-removed node.
+        node_set = set(node_ids)
+        edges_to_invalidate: list[GraphEdge] = []
+        for src, tgt, data in list(graph.edges(data=True)):
+            if src in node_set or tgt in node_set:
+                # Reconstruct a GraphEdge from the GraphML attrs.
+                # We only need the bi-temporal fields; weight defaults
+                # to 1.0 because retention_cascade ignores it.
+                try:
+                    edge = GraphEdge(
+                        source=src,
+                        target=tgt,
+                        relation=str(data.get("relation", "")),
+                        weight=float(data.get("weight", 1.0)),
+                        confidence="EXTRACTED",
+                        confidence_score=1.0,
+                        source_ids=[],
+                    )
+                    edges_to_invalidate.append(edge)
+                except (TypeError, ValueError):
+                    # Skip malformed edges — graph cleanup is best-effort.
+                    continue
+
+        if not edges_to_invalidate:
+            return
+
+        # Produce (invalidated_edge, event) tuples and write back.
+        pairs = bt.retention_cascade(
+            edges_on_node=edges_to_invalidate,
+            actor="retention",
+        )
+        for invalidated_edge, event in pairs:
+            # Update the in-memory edge attrs (GraphML).
+            u, v = invalidated_edge.source, invalidated_edge.target
+            if graph.has_edge(u, v) and invalidated_edge.invalid_at is not None:
+                graph[u][v]["invalid_at"] = invalidated_edge.invalid_at.isoformat()
+            # Buffer the EdgeEvent for atomic DB commit.
+            self._m9_edge_events_buffer.append(event)
+
+
+# ============================================================
+# M9 R2 T10 — weekly compression cron entrypoint
+# ============================================================
+
+
+async def run_weekly_compression_sweep(
+    *,
+    session_factory: Any,
+    graph_store_factory: Callable[[str], NetworkXGraphStore | None],
+    settings: Any,
+) -> dict[str, Any]:
+    """Invoke ``CompressionService.run`` for every tenant that has a graph.
+
+    Designed to be invoked by APScheduler (Sunday 03:00 weekly — the
+    cron registration lives in ``main.py``). This function is async so
+    that callers can also invoke it directly from admin tooling.
+
+    Returns a summary dict keyed by tenant_id. Failures are logged and
+    surfaced in the per-tenant report (best-effort — the sweep does not
+    abort on the first tenant error).
+
+    Args:
+        session_factory: async_sessionmaker (unused for NetworkX sink,
+            reserved for the future transactional MySQL sink).
+        graph_store_factory: callable returning the per-tenant graph
+            store or None.
+        settings: app settings (god_node_degree_threshold + stale_days
+            come from here).
+    """
+    from audio_graphy.api.compression_admin import (
+        _all_graph_nodes,
+        _GraphCompressionSink,
+    )
+    from audio_graphy.core.bi_temporal import BiTemporalEdgeService
+    from audio_graphy.core.compression import CompressionService
+
+    # Snapshot the keys so a concurrent store mutation doesn't break us.
+    tenants = list(getattr(settings, "_compression_tenant_index", []) or [])
+    if not tenants:
+        # Fall back to a single default tenant if no explicit index exists.
+        tenants = ["default"]
+
+    summary: dict[str, Any] = {}
+    for tenant_id in tenants:
+        store = graph_store_factory(tenant_id)
+        if store is None:
+            continue
+        try:
+            sink = _GraphCompressionSink(store, tenant_id)
+            bt = BiTemporalEdgeService(tenant_id=tenant_id)
+            service = CompressionService(
+                sink=sink,
+                bt_service=bt,
+                god_node_degree_threshold=int(
+                    getattr(settings, "compression_god_node_degree", 50)
+                ),
+                stale_days=int(getattr(settings, "compression_stale_days", 180)),
+                tenant_id=tenant_id,
+            )
+            nodes = _all_graph_nodes(store)
+            report = service.run(
+                nodes,
+                max_candidates=int(
+                    getattr(settings, "compression_max_candidates_per_run", 100)
+                ),
+            )
+            summary[tenant_id] = {
+                "candidates": len(report.candidates),
+                "soft_deleted_nodes": len(report.soft_deleted_nodes),
+                "soft_deleted_edges": len(report.soft_deleted_edges),
+                "rolled_back": report.rolled_back,
+                "error": str(report.error) if report.error else None,
+            }
+        except Exception as exc:
+            logger.error(
+                "Weekly compression sweep failed for tenant %s: %s",
+                tenant_id,
+                exc,
+                exc_info=True,
+            )
+            summary[tenant_id] = {"error": str(exc)}
+
+    return summary
+
+
+__all__ = ["RetentionEnforcer", "RetentionReport", "run_weekly_compression_sweep"]

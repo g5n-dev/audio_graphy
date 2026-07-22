@@ -8,6 +8,28 @@
 
 基于 [VideoRAG](https://github.com/HKUDS/VideoRAG)（KDD 2026, HKUDS）的图谱内核做音频化改造——保留内核，替换模态预处理（VAD + ASR），砍掉视觉附属（MiniCPM-V + ImageBind）。
 
+## M9 Status (2026-07-22)
+
+Advanced Graph shipped — bi-temporal edges, HIT-Leiden community detection,
+GraphRAG search, compression cron, and L8 fuzzy speaker reconfirm queue.
+
+- **Bi-temporal edges (Q1 dual-track)**: edges carry `valid_at` / `invalid_at`
+  / `created_at` / `expired_at`; supersede is auto-invalidate + pointer in
+  one atomic mutation. Time-travel API at `GET /recordings/{id}/edges?at=ISO`.
+- **Leiden community detection** with 30% incremental threshold (L2) and
+  library fallback (leidenalg → networkx). Admin API at `/admin/leiden/*`.
+- **GraphRAG global search** — map-reduce over community summaries, top-k=5,
+  concurrency ≤5 (L4). Post `/search/global`, `/search/local`,
+  `/search/communities/{id}/drill-down`.
+- **Compression cron** weekly Sunday 03:00 (Q3 SOFT-DELETE only: nodes get
+  `expired_at`, edges get `invalid_at`). Admin API at `/admin/compression/*`.
+- **L8 fuzzy speaker reconfirm**: rapidfuzz ≥ 0.85 → AMBIGUOUS; voiceprint
+  cosine ≥ 0.7 reconfirms to CONFIRMED. Pending queue at
+  `/speakers/merge-pending` with inspector/admin confirm/reject.
+- **Master flag** `ENABLE_ADVANCED_GRAPH=false` (L9) — every R2 endpoint
+  returns 404 when the flag is off; M1-M8 surfaces are unchanged.
+- See [`docs/advanced-graph.md`](./docs/advanced-graph.md) for the full guide.
+
 ## M6 Status (2026-07-21)
 
 PIPL §14.3 compliance + Eval REST + rapidfuzz entity clustering shipped.

@@ -76,6 +76,8 @@ class SpeakerLinkReport:
         ambiguous_merges: Subset of merges tagged ``AMBIGUOUS``.
         fuzzy_merges: Subset of merges via Layer 2 (rapidfuzz). Always 0 in M7.
         audit_written: Number of audit_log rows inserted (best-effort count).
+        m9_pending_reconfirm: M9 — count of SpeakerMergePending rows enqueued
+            by Layer 2 (AMBIGUOUS verdicts awaiting voiceprint reconfirm).
     """
 
     recording_id: int
@@ -84,6 +86,7 @@ class SpeakerLinkReport:
     ambiguous_merges: int = 0
     fuzzy_merges: int = 0
     audit_written: int = 0
+    m9_pending_reconfirm: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +101,8 @@ class _NewSpeakerCandidate:
         speech_sec: Total speech seconds (for ``total_speech_sec`` accumulation).
         first_seen: Recording ``recorded_at`` (for ``SpeakerNode.first_seen``).
         role_hint: ``agent`` / ``customer`` / ``unknown`` from §17.9 heuristic.
+        display_name: M9 R1 T12 — display name for Layer 2 fuzzy match.
+            When empty, Layer 2 falls back to ``role_hint`` (M7 behaviour).
     """
 
     speaker_id: str
@@ -107,6 +112,7 @@ class _NewSpeakerCandidate:
     speech_sec: float
     first_seen: datetime | None
     role_hint: str
+    display_name: str = ""
 
 
 class SpeakerLinker:
@@ -121,6 +127,12 @@ class SpeakerLinker:
         ambiguity_threshold: Cosine above which merges are unambiguous
             (default 0.7, Q2 locked).
         tenant_id: Tenant scope for the linker instance (one per tenant).
+        enable_layer2_fuzzy: M9 R1 T12 — when True (default), invoke the
+            ``SpeakerFuzzyMatcher`` (L8) on Layer-1 misses. When False,
+            behave identically to M7 (zero-regression escape hatch).
+        fuzzy_matcher: Optional pre-constructed SpeakerFuzzyMatcher
+            (mainly for tests). When None and ``enable_layer2_fuzzy`` is
+            True, a default matcher is constructed lazily on first use.
     """
 
     def __init__(
@@ -132,6 +144,8 @@ class SpeakerLinker:
         voiceprint_threshold: float = 0.5,
         ambiguity_threshold: float = 0.7,
         tenant_id: str = "default",
+        enable_layer2_fuzzy: bool = True,
+        fuzzy_matcher: Any = None,
     ) -> None:
         if voiceprint_threshold > ambiguity_threshold:
             raise ValueError(
@@ -144,6 +158,9 @@ class SpeakerLinker:
         self._vp_threshold = voiceprint_threshold
         self._ambiguity_threshold = ambiguity_threshold
         self._tenant_id = tenant_id
+        # M9 R1 T12 — Layer 2 fuzzy matcher wiring (L8 ruling).
+        self._enable_layer2_fuzzy: bool = enable_layer2_fuzzy
+        self._fuzzy_matcher: Any = fuzzy_matcher
 
     # ------------------------------------------------------------------
     # Public API
@@ -178,6 +195,8 @@ class SpeakerLinker:
         merge_count = 0
         ambiguous = 0
         audit_written = 0
+        fuzzy_count = 0
+        pending_reconfirm = 0
 
         for cand in candidates:
             # Layer 1 — voiceprint cosine match.
@@ -206,8 +225,37 @@ class SpeakerLinker:
                 )
                 continue
 
-            # Layer 2 stub — fuzzy name match returns None in M7.
-            # (Intentionally empty; M8 adds SpeakerFuzzyMatcher.)
+            # Layer 2 — fuzzy name match (L8 wiring from M9 R1 T12).
+            if self._enable_layer2_fuzzy:
+                fuzzy_result = await self._try_layer2_fuzzy(cand, existing, recording_id)
+                if fuzzy_result is not None:
+                    node, ambiguity_tag, fuzzy_score, vp_score = fuzzy_result
+                    await self._merge_into_existing(
+                        cand, node, vp_score if vp_score is not None else 0.0,
+                        ambiguity_tag, recording_id,
+                    )
+                    merge_count += 1
+                    fuzzy_count += 1
+                    if ambiguity_tag == "AMBIGUOUS":
+                        ambiguous += 1
+                        pending_reconfirm += 1
+                    audit_written += await self._write_audit(
+                        action="speaker.merge",
+                        target=f"speaker:{node.id}",
+                        before={
+                            "source_speaker_id": cand.speaker_id,
+                            "voiceprint_id": cand.voiceprint_id,
+                            "recording_id": recording_id,
+                            "layer": 2,
+                        },
+                        after={
+                            "canonical_speaker_id": node.id,
+                            "fuzzy_score": fuzzy_score,
+                            "voiceprint_score": vp_score,
+                            "ambiguity_tag": ambiguity_tag,
+                        },
+                    )
+                    continue
 
             # Layer 3 / fallback — create new SpeakerNode.
             node = await self._create_new_speaker(cand, recording_id)
@@ -233,8 +281,9 @@ class SpeakerLinker:
             new_speakers=new_count,
             merged_speakers=merge_count,
             ambiguous_merges=ambiguous,
-            fuzzy_merges=0,
+            fuzzy_merges=fuzzy_count,
             audit_written=audit_written,
+            m9_pending_reconfirm=pending_reconfirm,
         )
 
     async def link_speakers(
@@ -255,6 +304,148 @@ class SpeakerLinker:
             "On-demand run() is the active path."
         )
         return []
+
+    # ------------------------------------------------------------------
+    # Layer 2 — fuzzy name matching (M9 R1 T12 / L8 ruling)
+    # ------------------------------------------------------------------
+    async def _try_layer2_fuzzy(
+        self,
+        candidate: _NewSpeakerCandidate,
+        existing: list[SpeakerNode],
+        recording_id: int,
+    ) -> tuple[SpeakerNode, str, float, float | None] | None:
+        """Run SpeakerFuzzyMatcher against existing speakers' display names.
+
+        L8 decision tree:
+          - CONFIRMED → merge with ambiguity_tag=None (Layer 1 voiceprint
+            reconfirm passed).
+          - AMBIGUOUS  → merge with ambiguity_tag="AMBIGUOUS" AND enqueue
+            a SpeakerMergePending row for human review.
+          - INFERRED   → merge with ambiguity_tag="AMBIGUOUS" but lower
+            priority (still considered ambiguous until reviewed).
+          - NO_MATCH   → return None (caller falls through to Layer 3).
+
+        Returns:
+            ``(node, ambiguity_tag, fuzzy_score, voiceprint_score)`` on hit,
+            ``None`` on NO_MATCH.
+        """
+        from audio_graphy.core.speaker_fuzzy_matcher import (
+            SpeakerCandidate as FuzzyCandidate,
+        )
+        from audio_graphy.core.speaker_fuzzy_matcher import (
+            SpeakerFuzzyMatcher,
+        )
+
+        if not existing:
+            return None
+
+        matcher = self._fuzzy_matcher or SpeakerFuzzyMatcher()
+        # Build fuzzy candidates from existing SpeakerNodes.
+        fuzzy_candidates: list[FuzzyCandidate] = []
+        for sn in existing:
+            # Decrypt the voiceprint once (cached on the node).
+            vec = self._get_cached_decrypted_vector(sn)
+            fuzzy_candidates.append(
+                FuzzyCandidate(
+                    speaker_node_id=sn.id,
+                    canonical_name=sn.display_name,
+                    voiceprint_vector=tuple(vec) if vec is not None else None,
+                )
+            )
+
+        # Derive the query name from the candidate (use role_hint as fallback).
+        query_name = self._derive_query_name(candidate)
+        if not query_name:
+            return None
+
+        result = matcher.match(
+            query_name=query_name,
+            candidates=fuzzy_candidates,
+            query_voiceprint=candidate.voiceprint,
+        )
+
+        if result.verdict == "NO_MATCH":
+            return None
+
+        # Find the matching SpeakerNode ORM by id.
+        matched_sn = next(
+            (sn for sn in existing if sn.id == result.matched_candidate.speaker_node_id),
+            None,
+        )
+        if matched_sn is None:
+            return None
+
+        ambiguity_tag = (
+            None
+            if result.verdict == "CONFIRMED"
+            else "AMBIGUOUS"
+        )
+
+        # Q1/L8: AMBIGUOUS verdicts are enqueued for reconfirm.
+        if result.needs_reconfirm:
+            await self._enqueue_reconfirm(
+                recording_id=recording_id,
+                candidate_name=query_name,
+                matched_node=matched_sn,
+                fuzzy_score=result.fuzzy_score,
+                voiceprint_score=result.voiceprint_score,
+            )
+
+        return (
+            matched_sn,
+            ambiguity_tag or "",
+            result.fuzzy_score,
+            result.voiceprint_score,
+        )
+
+    @staticmethod
+    def _derive_query_name(candidate: _NewSpeakerCandidate) -> str:
+        """Heuristically derive a display name from the candidate.
+
+        The M7 diarization speaker_id (e.g. ``spk_0``) is not a usable
+        display name for fuzzy matching. We prefer (in order):
+          1. ``candidate.display_name`` (M9 T12 — populated when ASR
+             transcribes a self-introduction like "我是王小姐").
+          2. ``candidate.role_hint`` (``agent`` / ``customer``).
+          3. ``candidate.speaker_id`` (last resort — usually NO_MATCH).
+        """
+        return candidate.display_name or candidate.role_hint or candidate.speaker_id
+
+    async def _enqueue_reconfirm(
+        self,
+        *,
+        recording_id: int,
+        candidate_name: str,
+        matched_node: SpeakerNode,
+        fuzzy_score: float,
+        voiceprint_score: float | None,
+    ) -> None:
+        """Insert a SpeakerMergePending row for human/voiceprint reconfirm.
+
+        Best-effort: any DB failure is logged + swallowed so that Layer 2
+        matches still complete. The audit trail captures the failure.
+        """
+        from audio_graphy.models.speaker_merge_pending import SpeakerMergePending
+
+        try:
+            async with self._session_factory() as session:
+                row = SpeakerMergePending(
+                    tenant_id=self._tenant_id,
+                    recording_id=recording_id,
+                    candidate_name=candidate_name,
+                    matched_speaker_node_id=matched_node.id,
+                    fuzzy_score=fuzzy_score,
+                    status="pending",
+                    voiceprint_score=voiceprint_score,
+                )
+                session.add(row)
+                await session.commit()
+        except Exception as exc:
+            logger.warning(
+                "SpeakerMergePending insert failed (recording_id=%s, "
+                "candidate=%s): %s",
+                recording_id, candidate_name, exc,
+            )
 
     # ------------------------------------------------------------------
     # Layer 1 — voiceprint cosine matching

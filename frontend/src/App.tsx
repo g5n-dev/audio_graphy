@@ -10,7 +10,9 @@
  *   /query        — natural language query
  *   /stats        — tag statistics
  *   /speakers     — speaker profile list (M7)
- *   /speakers/:id — speaker profile detail (M7)
+ *   /speakers/:id — speaker profile detail (M7 + M9 T15 pending merges)
+ *   /time-travel  — M9 R2 T15 bi-temporal explorer
+ *   /communities  — M9 R2 T15 Leiden community explorer
  *   /prompts      — prompt management
  */
 
@@ -24,6 +26,8 @@ import {
   IconMessage,
   IconStorage,
   IconUser,
+  IconClockCircle,
+  IconCommon,
 } from "@arco-design/web-react/icon";
 import { useAuthStore } from "@/stores/auth";
 import LoginPage from "@/pages/LoginPage";
@@ -35,6 +39,8 @@ import QueryPage from "@/pages/QueryPage";
 import StatsPage from "@/pages/StatsPage";
 import SpeakerProfileListPage from "@/pages/SpeakerProfile";
 import SpeakerProfileDetailPage from "@/pages/SpeakerProfile/Detail";
+import TimeTravelPage from "@/pages/TimeTravel";
+import CommunityExplorerPage from "@/pages/CommunityExplorer";
 
 const { Header, Sider, Content } = Layout;
 const { Title } = Typography;
@@ -45,6 +51,8 @@ const menuItems = [
   { key: "/graph", icon: <IconBranch />, label: "知识图谱" },
   { key: "/query", icon: <IconMessage />, label: "智能问答" },
   { key: "/speakers", icon: <IconUser />, label: "说话人" },
+  { key: "/communities", icon: <IconCommon />, label: "社区探索 (M9)" },
+  { key: "/time-travel", icon: <IconClockCircle />, label: "时间旅行 (M9)" },
   { key: "/stats", icon: <IconStorage />, label: "标签统计" },
 ];
 
@@ -128,6 +136,8 @@ function AppLayout() {
             <Route path="/query" element={<QueryPage />} />
             <Route path="/speakers" element={<SpeakerProfileListPage />} />
             <Route path="/speakers/:id" element={<SpeakerProfileDetailPage />} />
+            <Route path="/communities" element={<CommunityExplorerPage />} />
+            <Route path="/time-travel" element={<TimeTravelPage />} />
             <Route path="/stats" element={<StatsPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

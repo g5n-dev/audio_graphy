@@ -11,12 +11,14 @@ Defined here:
     - GraphNode / GraphEdge / GraphSnapshot (graph layer dataclasses)
     - VectorSearchHit (vector store result)
     - AudioGraphyError hierarchy (ParseError / StorageError / PipelineError)
+    - M9 exception subtree (BiTemporal / Leiden / Compression / SpeakerLinkerFuzzy)
     - Confidence upgrade helper
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 from audio_graphy.adapters.protocols import EdgeConfidence
@@ -82,6 +84,8 @@ class GraphNode:
         source_ids: Provenance — list of ``"{recording_id}_{chunk_id}"``.
         recording_ids: Recordings in which this entity appears.
         degree: Number of connected edges (for god-node ranking).
+        expired_at: M9 bi-temporal — when this node was logically deleted
+            (Q3 soft-delete during compression). NULL = live.
     """
 
     entity_id: str
@@ -91,11 +95,17 @@ class GraphNode:
     source_ids: list[str]
     recording_ids: list[int]
     degree: int = 0
+    # M9 Q3 Compression soft-delete timestamp (NULL = live node).
+    expired_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class GraphEdge:
     """A merged relation edge in the knowledge graph.
+
+    M9 extends this dataclass with bi-temporal timestamps following the
+    Graphiti paradigm (architecture §6). All four M9 fields default to
+    ``None`` / sensible values so M1-M8 callers remain source-compatible.
 
     Attributes:
         source: Source entity_id.
@@ -105,6 +115,17 @@ class GraphEdge:
         confidence: EXTRACTED / INFERRED / AMBIGUOUS.
         confidence_score: 1.0 for EXTRACTED; 0.0–1.0 for INFERRED; None for AMBIGUOUS.
         source_ids: Provenance — list of ``"{recording_id}_{chunk_id}"``.
+
+    M9 bi-temporal fields (architecture §6, Q1 dual-track):
+        valid_at: When the relation became true in the real world
+            (defaults to ``created_at`` if None). NULL forbidden post-M9.
+        invalid_at: When the relation ceased to be true. NULL = still open.
+        created_at: When the edge was first written to the graph (system time).
+        expired_at: When the edge was logically deleted (Q3 soft-delete).
+            NULL = live (not soft-deleted).
+        superseded_by: Q1 supersede pointer — id of the replacement edge.
+            NULL = this edge is current (or was hard-deleted, never superseded).
+            The replacement edge's ``valid_at`` = this edge's ``invalid_at``.
     """
 
     source: str
@@ -114,6 +135,12 @@ class GraphEdge:
     confidence: EdgeConfidence
     confidence_score: float | None
     source_ids: list[str] = field(default_factory=list)
+    # M9 bi-temporal fields (default None = open/live, M1-M8 compat).
+    valid_at: datetime | None = None
+    invalid_at: datetime | None = None
+    created_at: datetime | None = None
+    expired_at: datetime | None = None
+    superseded_by: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,6 +201,7 @@ class PipelineError(AudioGraphyError):
 # ============================================================
 
 _CONFIDENCE_RANK: dict[EdgeConfidence, int] = {
+    "DEPRECATED": -1,
     "AMBIGUOUS": 0,
     "INFERRED": 1,
     "EXTRACTED": 2,
@@ -244,3 +272,68 @@ def _str_to_list(s: str) -> list[Any]:
         return list(json.loads(s))
     except (json.JSONDecodeError, TypeError):
         return []
+
+
+# ============================================================
+# M9 exception subtree (architecture §16)
+# ============================================================
+
+
+class BiTemporalError(AudioGraphyError):
+    """Base for M9 bi-temporal edge service errors."""
+
+
+class BiTemporalInvalidRangeError(BiTemporalError):
+    """Raised when valid_at >= invalid_at (open interval inverted)."""
+
+
+class BiTemporalSupersedeChainError(BiTemporalError):
+    """Raised when a supersede chain exceeds max depth or forms a cycle."""
+
+
+class LeidenError(AudioGraphyError):
+    """Base for M9 Leiden community-detection errors."""
+
+
+class LeidenLibUnavailableError(LeidenError):
+    """Raised when the preferred Leiden library cannot be imported.
+
+    Per L2 the caller MUST fall back to full recompute + LRU cache rather
+    than re-raising; this exception is raised only when the fallback also
+    fails or when ``leiden_lib = "fail-fast"`` is configured.
+    """
+
+
+class LeidenThresholdExceededError(LeidenError):
+    """Raised when the incremental diff exceeds the 30% threshold (L2).
+
+    Caller should expand scope to full recompute rather than re-raise.
+    """
+
+
+class LeidenSnapshotCorruptError(LeidenError):
+    """Raised when a PartitionSnapshot on disk cannot be deserialised."""
+
+
+class CompressionError(AudioGraphyError):
+    """Base for M9 compression service errors."""
+
+
+class CompressionPolicyViolationError(CompressionError):
+    """Raised when Q3 SOFT-only policy is violated (e.g. attempted hard delete)."""
+
+
+class CompressionRollbackError(CompressionError):
+    """Raised when a soft-delete batch cannot be rolled back."""
+
+
+class SpeakerLinkerFuzzyError(AudioGraphyError):
+    """Base for M9 speaker linker fuzzy-match errors."""
+
+
+class SpeakerLinkerFuzzyThresholdError(SpeakerLinkerFuzzyError):
+    """Raised when the configured threshold is outside [0, 1]."""
+
+
+class SpeakerLinkerReconfirmUnavailableError(SpeakerLinkerFuzzyError):
+    """Raised when L8 reconfirm is required but no voiceprint is available."""

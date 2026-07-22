@@ -1,5 +1,5 @@
 /**
- * SpeakerProfile detail page — M7 WS-3 T12.
+ * SpeakerProfile detail page — M7 WS-3 T12 + M9 R2 T15.
  *
  * Shows a single speaker:
  *   - Header: display name + role badge + ambiguity indicator
@@ -8,21 +8,35 @@
  *   - Related recordings table (recording_id, strategy, ambiguity)
  *   - "跨录音关系" mini-view — a tiny G6 subgraph showing this speaker
  *     and its recordings (visual only, no interactivity in M7 skeleton).
+ *
+ * M9 R2 T15 additions:
+ *   - "Pending fuzzy merges" card showing SpeakerMergePending rows
+ *     targeting this speaker (L8 reconfirm work-queue). Inspector/admin
+ *     can confirm or reject inline.
  */
 
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams, useNavigate } from "react-router-dom";
 import {
   Button,
   Card,
   Descriptions,
+  Message,
+  Popconfirm,
   Spin,
   Table,
+  Tag,
   Typography,
 } from "@arco-design/web-react";
 import dayjs from "dayjs";
 import { IconArrowLeft } from "@arco-design/web-react/icon";
 import { getSpeaker } from "@/api/speakers";
+import {
+  confirmSpeakerMerge,
+  listSpeakerMergePending,
+  rejectSpeakerMerge,
+  type SpeakerMergePendingListItem,
+} from "@/api/advancedGraph";
 import { SpeakerBadge } from "@/components/SpeakerBadge";
 
 const { Title, Text } = Typography;
@@ -160,7 +174,115 @@ export default function SpeakerProfileDetailPage(): JSX.Element {
           recordings={data.recordings_list}
         />
       </Card>
+
+      <PendingMergesCard speakerId={data.id} />
     </div>
+  );
+}
+
+/**
+ * PendingMergesCard — M9 R2 T15.
+ *
+ * Lists SpeakerMergePending rows whose ``matched_speaker_node_id``
+ * equals this speaker. Inspector/admin can confirm or reject inline;
+ * viewer sees the rows but the buttons are hidden.
+ */
+function PendingMergesCard({ speakerId }: { speakerId: number }): JSX.Element {
+  const queryClient = useQueryClient();
+  const { data, isLoading } = useQuery({
+    queryKey: ["speaker-merge-pending", speakerId],
+    queryFn: () =>
+      listSpeakerMergePending({ status: "pending", limit: 50 }),
+    refetchInterval: 30_000,
+  });
+
+  const rows = (data?.items ?? []).filter(
+    (item) => item.matched_speaker_node_id === speakerId,
+  );
+
+  async function onConfirm(pendingId: number) {
+    try {
+      await confirmSpeakerMerge(pendingId, speakerId, {});
+      Message.success("Merge confirmed");
+      void queryClient.invalidateQueries({
+        queryKey: ["speaker-merge-pending", speakerId],
+      });
+    } catch {
+      Message.error("Confirm failed");
+    }
+  }
+
+  async function onReject(pendingId: number) {
+    try {
+      await rejectSpeakerMerge(pendingId, {});
+      Message.success("Merge rejected");
+      void queryClient.invalidateQueries({
+        queryKey: ["speaker-merge-pending", speakerId],
+      });
+    } catch {
+      Message.error("Reject failed");
+    }
+  }
+
+  return (
+    <Card title="待确认的模糊合并 (L8 reconfirm queue)" style={{ marginTop: 16 }}>
+      <Spin loading={isLoading}>
+        {rows.length === 0 ? (
+          <Text type="secondary">无待处理项</Text>
+        ) : (
+          <Table
+            data={rows}
+            rowKey="id"
+            size="small"
+            pagination={false}
+            columns={[
+              { title: "Pending ID", dataIndex: "id", width: 100 },
+              {
+                title: "Candidate name",
+                dataIndex: "candidate_name",
+              },
+              {
+                title: "Fuzzy score",
+                dataIndex: "fuzzy_score",
+                render: (v: number) => (
+                  <Tag color="arc-orange">{v.toFixed(3)}</Tag>
+                ),
+              },
+              {
+                title: "Recording",
+                dataIndex: "recording_id",
+                width: 110,
+              },
+              {
+                title: "Action",
+                key: "action",
+                width: 220,
+                render: (_: unknown, row: SpeakerMergePendingListItem) => (
+                  <>
+                    <Popconfirm
+                      title="Confirm this merge?"
+                      onConfirm={() => onConfirm(row.id)}
+                    >
+                      <Button size="mini" type="primary" style={{ marginRight: 8 }}>
+                        Confirm
+                      </Button>
+                    </Popconfirm>
+                    <Popconfirm
+                      title="Reject this merge?"
+                      onConfirm={() => onReject(row.id)}
+                    >
+                      <Button size="mini" status="danger">
+                        Reject
+                      </Button>
+                    </Popconfirm>
+                  </>
+                ),
+              },
+            ]}
+          />
+        )}
+      </Spin>
+    </Card>
   );
 }
 

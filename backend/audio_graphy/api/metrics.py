@@ -139,6 +139,130 @@ STREAMING_TAG_RECOMPUTES_TOTAL = Counter(
 )
 
 # ============================================================
+# M9 R1 T14 — advanced-graph metrics (13 metrics, architecture §17)
+# ============================================================
+#
+# Naming follows the established "audiography_<subsystem>_<verb>" convention.
+# All 13 metrics are scoped to the M9 advanced-graph subsystem. They are
+# always registered (even when enable_advanced_graph=False) so dashboards
+# don't break on flag toggle; they just stay at zero.
+
+# BiTemporal
+BITEMPORAL_EDGE_EVENTS_TOTAL = Counter(
+    "audiography_bitemporal_edge_events_total",
+    "M9 bi-temporal edge events written, by event_type "
+    "(insert / merge / supersede / soft_delete / restore).",
+    ["event_type"],
+    registry=REGISTRY,
+)
+
+BITEMPORAL_SUPERSEDE_CHAIN_DEPTH = Histogram(
+    "audiography_bitemporal_supersede_chain_depth",
+    "Depth of the supersede chain when a supersede happens (cap=8).",
+    buckets=(1, 2, 3, 4, 5, 6, 7, 8),
+    registry=REGISTRY,
+)
+
+# Leiden
+LEIDEN_RUNS_TOTAL = Counter(
+    "audiography_leiden_runs_total",
+    "M9 Leiden runs, by job_type (full / incremental) and outcome "
+    "(succeeded / failed).",
+    ["job_type", "status"],
+    registry=REGISTRY,
+)
+
+LEIDEN_RUN_DURATION = Histogram(
+    "audiography_leiden_run_duration_seconds",
+    "Wall-clock duration of one Leiden run.",
+    registry=REGISTRY,
+)
+
+LEIDEN_DIFF_PERCENT = Histogram(
+    "audiography_leiden_diff_percent",
+    "Incremental diff percentage observed at run start (L2 threshold gauge).",
+    buckets=(0, 5, 10, 20, 30, 50, 75, 100),
+    registry=REGISTRY,
+)
+
+LEIDEN_MODULARITY = Histogram(
+    "audiography_leiden_modularity",
+    "Q modularity score achieved per Leiden run.",
+    buckets=(-1.0, -0.5, 0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 1.0),
+    registry=REGISTRY,
+)
+
+# Community summaries
+COMMUNITY_SUMMARIES_TOTAL = Counter(
+    "audiography_community_summaries_total",
+    "M9 community summaries generated, by level (0/1/2) and strategy "
+    "(eager / lazy).",
+    ["level", "strategy"],
+    registry=REGISTRY,
+)
+
+COMMUNITY_SUMMARY_DURATION = Histogram(
+    "audiography_community_summary_duration_seconds",
+    "Per-summary LLM call duration (Q2 level 0/1/2).",
+    registry=REGISTRY,
+)
+
+# Compression
+COMPRESSION_RUNS_TOTAL = Counter(
+    "audiography_compression_runs_total",
+    "M9 compression runs, by outcome (committed / rolled_back).",
+    ["outcome"],
+    registry=REGISTRY,
+)
+
+COMPRESSION_NODES_SOFT_DELETED = Counter(
+    "audiography_compression_nodes_soft_deleted_total",
+    "M9 compression: nodes soft-deleted (expired_at set).",
+    registry=REGISTRY,
+)
+
+COMPRESSION_EDGES_SOFT_DELETED = Counter(
+    "audiography_compression_edges_soft_deleted_total",
+    "M9 compression: edges soft-deleted (invalid_at set).",
+    registry=REGISTRY,
+)
+
+COMPRESSION_EDGES_DEPRECATED = Counter(
+    "audiography_compression_edges_deprecated_total",
+    "M9 compression L7: AMBIGUOUS edges demoted to DEPRECATED.",
+    registry=REGISTRY,
+)
+
+COMPRESSION_ORPHANS_INVALIDATED = Counter(
+    "audiography_compression_orphans_invalidated_total",
+    "M9 compression Phase 3: orphan edges invalidated (source/target "
+    "node already soft-deleted).",
+    registry=REGISTRY,
+)
+
+# Global search latency (L4 map-reduce).
+GLOBAL_SEARCH_DURATION = Histogram(
+    "audiography_global_search_duration_seconds",
+    "M9 L4 global search (map-reduce) end-to-end latency in seconds.",
+    registry=REGISTRY,
+)
+
+# Speaker fuzzy
+SPEAKER_FUZZY_MATCHES_TOTAL = Counter(
+    "audiography_speaker_fuzzy_matches_total",
+    "M9 SpeakerFuzzyMatcher verdicts, by verdict "
+    "(CONFIRMED / AMBIGUOUS / INFERRED / NO_MATCH).",
+    ["verdict"],
+    registry=REGISTRY,
+)
+
+SPEAKER_RECONFIRM_QUEUE_SIZE = Gauge(
+    "audiography_speaker_reconfirm_queue_size",
+    "Current count of pending SpeakerMergePending rows awaiting reconfirm.",
+    registry=REGISTRY,
+)
+
+# ============================================================
 # Histograms
 # ============================================================
 
@@ -238,15 +362,31 @@ def register_metrics(app: FastAPI) -> None:
 
 __all__ = [
     "AUDIT_LOG_WRITTEN",
+    "BITEMPORAL_EDGE_EVENTS_TOTAL",
+    "BITEMPORAL_SUPERSEDE_CHAIN_DEPTH",
+    "COMMUNITY_SUMMARIES_TOTAL",
+    "COMMUNITY_SUMMARY_DURATION",
+    "COMPRESSION_EDGES_DEPRECATED",
+    "COMPRESSION_EDGES_SOFT_DELETED",
+    "COMPRESSION_NODES_SOFT_DELETED",
+    "COMPRESSION_ORPHANS_INVALIDATED",
+    "COMPRESSION_RUNS_TOTAL",
     "DSAR_REQUESTS",
     "EVAL_EXAMPLE_DURATION",
     "EVAL_RUN_TOTAL",
+    "GLOBAL_SEARCH_DURATION",
     "HTTP_REQUESTS",
+    "LEIDEN_DIFF_PERCENT",
+    "LEIDEN_MODULARITY",
+    "LEIDEN_RUNS_TOTAL",
+    "LEIDEN_RUN_DURATION",
     "LLM_CALLS",
     "LLM_CALL_DURATION",
     "PIPELINE_DURATION",
     "REGISTRY",
     "RETENTION_DELETES",
+    "SPEAKER_FUZZY_MATCHES_TOTAL",
+    "SPEAKER_RECONFIRM_QUEUE_SIZE",
     "STREAMING_ASR_LATENCY",
     "STREAMING_SEGMENTS_TOTAL",
     "STREAMING_SESSIONS_ACTIVE",
