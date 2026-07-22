@@ -18,6 +18,8 @@ from __future__ import annotations
 from audio_graphy.models.audit_log import AuditLog
 from audio_graphy.models.base import Base, TenantScopedBase
 from audio_graphy.models.chunk import Chunk
+from audio_graphy.models.community_summary import CommunitySummary
+from audio_graphy.models.edge_event import EdgeEvent
 from audio_graphy.models.entity_alias import EntityAlias
 from audio_graphy.models.enums import (
     PipelineState,
@@ -26,12 +28,14 @@ from audio_graphy.models.enums import (
     UserRole,
 )
 from audio_graphy.models.eval_run import EvalRunORM
+from audio_graphy.models.leiden_job import LeidenJob
 from audio_graphy.models.llm_call_log import LLMCallLog
 from audio_graphy.models.prompt import Prompt
 from audio_graphy.models.recompute_task import RecomputeTask
 from audio_graphy.models.recording import Recording
 from audio_graphy.models.segment import Segment
 from audio_graphy.models.speaker_link import SpeakerLink
+from audio_graphy.models.speaker_merge_pending import SpeakerMergePending
 from audio_graphy.models.speaker_node import SpeakerNode
 from audio_graphy.models.tag_current import TagCurrent
 from audio_graphy.models.tag_fact import TagFact
@@ -47,9 +51,12 @@ __all__ = [
     "AuditLog",
     "Base",
     "Chunk",
+    "CommunitySummary",
+    "EdgeEvent",
     "EntityAlias",
     "EvalRunORM",
     "LLMCallLog",
+    "LeidenJob",
     "PipelineState",
     "Prompt",
     "RecomputeTask",
@@ -57,6 +64,7 @@ __all__ = [
     "RecordingStatus",
     "Segment",
     "SpeakerLink",
+    "SpeakerMergePending",
     "SpeakerNode",
     "TagCurrent",
     "TagFact",

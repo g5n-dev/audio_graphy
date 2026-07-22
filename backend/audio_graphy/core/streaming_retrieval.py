@@ -16,6 +16,7 @@ Q3 decision (§11.2) — edge confidence handling:
     EXTRACTED       1.0                included
     INFERRED        0.8                filtered when min >= EXTRACTED
     AMBIGUOUS       0.5                filtered when min >= INFERRED
+    DEPRECATED      (dropped)          always filtered (M9 L7)
     ==============  =================  =================================
 
 RWLock discipline (shared knowledge §17):
@@ -48,7 +49,11 @@ DEFAULT_INFERRED_EDGE_WEIGHT = 0.8
 EXTRACTED_EDGE_WEIGHT = 1.0
 
 # Confidence rank used for min_confidence strict-mode filtering.
+# DEPRECATED (M9 L7) is ranked below AMBIGUOUS so it is always filtered
+# in strict mode; the Q3 multiplier path also short-circuits DEPRECATED
+# to weight 0.0 so it never contributes to retrieval scoring.
 _CONFIDENCE_RANK: dict[str, int] = {
+    "DEPRECATED": -1,
     "AMBIGUOUS": 0,
     "INFERRED": 1,
     "EXTRACTED": 2,
@@ -221,6 +226,11 @@ class StreamingRetriever:
                 # Depth-1 neighbors via edges with Q3 confidence weighting.
                 edges = await graph_store.get_edges(node.entity_id)
                 for edge in edges:
+                    # M9 L7 — DEPRECATED edges are excluded entirely
+                    # (multiplier × 0; do not appear in any candidate set).
+                    if edge.confidence == "DEPRECATED":
+                        filtered += 1
+                        continue
                     if not self._passes_min_confidence(edge.confidence, min_confidence):
                         filtered += 1
                         continue

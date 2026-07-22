@@ -434,10 +434,13 @@ class StreamingASRAdapter(Protocol):
 # Confidence tags (borrowed from Graphify — see DESIGN.md §3.1)
 # ============================================================
 
-EdgeConfidence = Literal["EXTRACTED", "INFERRED", "AMBIGUOUS"]
+EdgeConfidence = Literal["EXTRACTED", "INFERRED", "AMBIGUOUS", "DEPRECATED"]
 """Confidence tag attached to every edge in the knowledge graph.
 
 - EXTRACTED: relation is explicitly stated in source transcript (confidence 1.0)
 - INFERRED: relation derived via cross-segment merge / clustering (0.0 < score < 1.0)
 - AMBIGUOUS: uncertain pairing, flagged for human review
+- DEPRECATED: M9 L7 — AMBIGUOUS edge older than 30 days with no re-encounter.
+    Excluded from retrieval (multiplier × 0). NOT a hard delete; the row is
+    retained for audit, restoration, and regulatory retention windows.
 """

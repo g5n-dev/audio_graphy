@@ -48,6 +48,13 @@ EXPECTED_TABLES = {
     "speaker_links",
     "vectors_voiceprint",
     "vectors_audio",
+    # M8
+    "streaming_sessions",
+    # M9
+    "edge_events",
+    "community_summaries",
+    "leiden_jobs",
+    "speaker_merge_pending",
 }
 
 

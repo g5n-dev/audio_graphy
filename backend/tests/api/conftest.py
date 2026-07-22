@@ -31,6 +31,11 @@ os.environ.setdefault("MYSQL_DB", "audiography_test")
 os.environ.setdefault("JWT_SECRET", "test-secret-32-chars-minimum-length!!")
 os.environ.setdefault("WORKING_DIR", "/tmp/audiography_api_test_working_dir")
 os.environ.setdefault("DEFAULT_TENANT_ID", "default")
+# M9 R2: enable the advanced graph endpoints for API integration tests.
+# The L9 regression test explicitly skips when this is True.
+# NOTE: tests/core/test_config_m9.py asserts the *default* value is False.
+# To avoid env bleed, we only set this inside the api_settings fixture below
+# (per-test), not as a process-wide env var.
 
 
 @pytest.fixture
@@ -48,6 +53,10 @@ def api_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     get_settings.cache_clear()
     monkeypatch.setenv("WORKING_DIR", str(tmp_path / "working_dir"))
     monkeypatch.setenv("ADAPTER_MODE", "mock")
+    # M9 R2: enable the advanced graph endpoints for API integration tests.
+    # Set per-test so the default-False contract documented in
+    # tests/core/test_config_m9.py is unaffected.
+    monkeypatch.setenv("ENABLE_ADVANCED_GRAPH", "true")
     (tmp_path / "working_dir").mkdir(parents=True, exist_ok=True)
     return get_settings()
 
