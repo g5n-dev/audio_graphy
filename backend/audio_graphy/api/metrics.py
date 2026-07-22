@@ -37,6 +37,7 @@ from prometheus_client import (
     CONTENT_TYPE_LATEST,
     CollectorRegistry,
     Counter,
+    Gauge,
     Histogram,
     generate_latest,
 )
@@ -89,6 +90,50 @@ DSAR_REQUESTS = Counter(
 EVAL_RUN_TOTAL = Counter(
     "audiography_eval_run_total",
     "Total eval runs by final status (pending / running / completed / failed).",
+    ["status"],
+    registry=REGISTRY,
+)
+
+# ============================================================
+# M8 Phase 4 (WS-3 / T11) — streaming metrics
+# ============================================================
+
+STREAMING_SESSIONS_ACTIVE = Gauge(
+    "audiography_streaming_sessions_active",
+    "Currently active /ws/stream sessions.",
+    registry=REGISTRY,
+)
+
+STREAMING_SESSIONS_TOTAL = Counter(
+    "audiography_streaming_sessions_total",
+    "Total streaming sessions opened, by tenant.",
+    ["tenant_id"],
+    registry=REGISTRY,
+)
+
+STREAMING_SEGMENTS_TOTAL = Counter(
+    "audiography_streaming_segments_total",
+    "Total ASR segments emitted, by mode (confirmed / realtime).",
+    ["mode"],
+    registry=REGISTRY,
+)
+
+STREAMING_VAD_RESETS_TOTAL = Counter(
+    "audiography_streaming_vad_resets_total",
+    "Total VAD resets, by reason (seq_gap / client_request).",
+    ["reason"],
+    registry=REGISTRY,
+)
+
+STREAMING_ASR_LATENCY = Histogram(
+    "audiography_streaming_asr_latency_seconds",
+    "Per-push streaming ASR latency in seconds.",
+    registry=REGISTRY,
+)
+
+STREAMING_TAG_RECOMPUTES_TOTAL = Counter(
+    "audiography_streaming_tag_recomputes_total",
+    "Total streaming tag batch recomputes, by outcome (ok / error).",
     ["status"],
     registry=REGISTRY,
 )
@@ -202,6 +247,12 @@ __all__ = [
     "PIPELINE_DURATION",
     "REGISTRY",
     "RETENTION_DELETES",
+    "STREAMING_ASR_LATENCY",
+    "STREAMING_SEGMENTS_TOTAL",
+    "STREAMING_SESSIONS_ACTIVE",
+    "STREAMING_SESSIONS_TOTAL",
+    "STREAMING_TAG_RECOMPUTES_TOTAL",
+    "STREAMING_VAD_RESETS_TOTAL",
     "VECTOR_QUERY_DURATION",
     "MetricsMiddleware",
     "register_metrics",

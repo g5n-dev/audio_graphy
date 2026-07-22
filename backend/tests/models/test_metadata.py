@@ -1,7 +1,7 @@
 """Metadata introspection tests for the models package.
 
-These tests verify that Base.metadata contains all 20 tables and that
-the models package exports all 20 model classes.
+These tests verify that Base.metadata contains all 21 tables and that
+the models package exports all 21 model classes.
 """
 
 from __future__ import annotations
@@ -37,6 +37,10 @@ from audio_graphy.models import (
     VoiceprintVector,
 )
 
+# M8: streaming_sessions registers its table on import; import it explicitly so
+# Base.metadata is deterministic regardless of test execution order.
+import audio_graphy.models.streaming_session  # noqa: F401,E402
+
 EXPECTED_TABLES = {
     "tenants",
     "users",
@@ -59,6 +63,8 @@ EXPECTED_TABLES = {
     "speaker_links",
     "vectors_voiceprint",
     "vectors_audio",
+    # M8
+    "streaming_sessions",
 }
 
 EXPECTED_MODELS = {
@@ -88,10 +94,10 @@ EXPECTED_MODELS = {
 
 @pytest.mark.integration
 class TestMetadata:
-    """Verify Base.metadata contains all 20 tables (M3 13 + M5 recompute_tasks + M6 eval_runs/entity_aliases + M7 4)."""
+    """Verify Base.metadata contains all 21 tables (M3 13 + M5 recompute_tasks + M6 eval_runs/entity_aliases + M7 4 + M8 streaming_sessions)."""
 
     def test_metadata_has_13_tables(self) -> None:
-        assert len(Base.metadata.tables) == 20
+        assert len(Base.metadata.tables) == 21
 
     def test_metadata_table_names(self) -> None:
         assert set(Base.metadata.tables.keys()) == EXPECTED_TABLES

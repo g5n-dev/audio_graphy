@@ -289,6 +289,177 @@ class VoiceprintServerError(VoiceprintAdapterError):
     __module__ = "audio_graphy.adapters.exceptions"
 
 
+# ============================================================
+# M8 — Phase 4: Streaming VAD / Streaming ASR / WebSocket session
+# ============================================================
+
+
+# Re-exported mix-ins that classify HTTP-style failure modes. M8 follows the
+# same pattern as the M4-M7 adapters (per-class base + per-status subclass)
+# rather than introducing a parallel taxonomy.
+class RequestErrorMixin:
+    """Marker mix-in for 4xx-equivalent failures (client-supplied input bad)."""
+
+
+class ServerErrorMixin:
+    """Marker mix-in for 5xx-equivalent failures (upstream service fault)."""
+
+
+class TimeoutErrorMixin:
+    """Marker mix-in for timeout failures (connect / push / drain)."""
+
+
+class StreamingVADAdapterError(Exception):
+    """Base for all streaming VAD adapter failures / M8 流式 VAD 错误基类.
+
+    Covers Silero streaming VAD (``silero_vad.onnx`` local file, 4-state FSM).
+    Subclasses mirror the batch VAD exception mapping but apply to per-chunk
+    failures rather than per-file failures.
+    """
+
+    __module__ = "audio_graphy.adapters.exceptions"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        url: str | None = None,
+        status_code: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.url = url
+        self.status_code = status_code
+
+
+class StreamingVADChunkShapeError(StreamingVADAdapterError, RequestErrorMixin):
+    """PCM chunk not exactly 1024 bytes (512 samples × 2 bytes).
+
+    L3 locked constraint: 16 kHz mono int16, 512 samples per chunk. Any
+    deviation indicates a client bug or transport corruption — fail-fast.
+    """
+
+    __module__ = "audio_graphy.adapters.exceptions"
+
+
+class StreamingVADModelLoadError(StreamingVADAdapterError, ServerErrorMixin):
+    """``silero_vad.onnx`` missing or corrupt (ONNX session creation failed).
+
+    Almost always indicates a deployment misconfiguration (model file not
+    mounted). Recovery requires re-deploying the model, not retrying.
+    """
+
+    __module__ = "audio_graphy.adapters.exceptions"
+
+
+class StreamingASRAdapterError(Exception):
+    """Base for all streaming ASR adapter failures / M8 流式 ASR 错误基类.
+
+    Covers funASR WebSocket:10095 failures (handshake / push / finalize /
+    drain). Subclasses map to either HTTP-style categories or to
+    WebSocket-specific close codes (1011 internal error, etc.).
+    """
+
+    __module__ = "audio_graphy.adapters.exceptions"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        url: str | None = None,
+        status_code: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.url = url
+        self.status_code = status_code
+
+
+class StreamingASRRequestError(StreamingASRAdapterError, RequestErrorMixin):
+    """funASR WS handshake 400 / 422 — bad init JSON / unsupported model."""
+
+    __module__ = "audio_graphy.adapters.exceptions"
+
+
+class StreamingASRAuthError(StreamingASRAdapterError, RequestErrorMixin):
+    """funASR WS handshake 401 / 403 — token rejected (when auth enabled)."""
+
+    __module__ = "audio_graphy.adapters.exceptions"
+
+
+class StreamingASRServerError(StreamingASRAdapterError, ServerErrorMixin):
+    """funASR WS 1011 internal error / transport error / non-JSON response."""
+
+    __module__ = "audio_graphy.adapters.exceptions"
+
+
+class StreamingASRConnectTimeout(StreamingASRAdapterError, TimeoutErrorMixin):
+    """funASR WS connect timeout (default 5s).
+
+    Triggers fallback to backup funASR replica (R4 mitigation).
+    """
+
+    __module__ = "audio_graphy.adapters.exceptions"
+
+
+class StreamingASRPushTimeout(StreamingASRAdapterError, TimeoutErrorMixin):
+    """funASR push timeout — 30s no response on an established connection.
+
+    Indicates the funASR worker is stuck or the GPU is saturated.
+    """
+
+    __module__ = "audio_graphy.adapters.exceptions"
+
+
+class StreamingASRProtocolError(StreamingASRAdapterError, ServerErrorMixin):
+    """funASR returned malformed JSON or missing required fields.
+
+    funASR protocol deviations are logged + skipped (the stream continues
+    with the next delta); this exception is raised only when the delta
+    cannot be safely interpreted at all.
+    """
+
+    __module__ = "audio_graphy.adapters.exceptions"
+
+
+class WebSocketSessionError(Exception):
+    """Base for WebSocket session-lifecycle failures / M8 WS 会话错误基类.
+
+    Covers session creation, backpressure, finalization, and tenant
+    isolation failures. Distinct from ``StreamingVADAdapterError`` and
+    ``StreamingASRAdapterError`` which cover upstream service faults.
+    """
+
+    __module__ = "audio_graphy.adapters.exceptions"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        session_id: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.session_id = session_id
+
+
+class WebSocketBackpressureOverflow(WebSocketSessionError):
+    """``recv_queue`` exceeded ``MAX_RECV_QUEUE`` (default 200) — force close.
+
+    PRD §5.3 PIPL + R1 mitigation. Triggered when the client pushes PCM
+    faster than the server can drain (e.g. ASR push timeout causing
+    backlog). Force-close prevents OOM.
+    """
+
+    __module__ = "audio_graphy.adapters.exceptions"
+
+
+class WebSocketSessionStateError(WebSocketSessionError):
+    """Session lifecycle violated (e.g. push_pcm called before connect).
+
+    Indicates a programming bug in the caller rather than a network fault.
+    """
+
+    __module__ = "audio_graphy.adapters.exceptions"
+
+
 __all__ = [
     "ASRAdapterError",
     "ASRAuthError",
@@ -311,6 +482,19 @@ __all__ = [
     "LLMRateLimitError",
     "LLMServerError",
     "LLMTimeoutError",
+    "RequestErrorMixin",
+    "ServerErrorMixin",
+    "StreamingASRAdapterError",
+    "StreamingASRAuthError",
+    "StreamingASRConnectTimeout",
+    "StreamingASRProtocolError",
+    "StreamingASRPushTimeout",
+    "StreamingASRRequestError",
+    "StreamingASRServerError",
+    "StreamingVADAdapterError",
+    "StreamingVADChunkShapeError",
+    "StreamingVADModelLoadError",
+    "TimeoutErrorMixin",
     "VADAdapterError",
     "VADRequestError",
     "VADServerError",
@@ -320,5 +504,8 @@ __all__ = [
     "VoiceprintRequestError",
     "VoiceprintServerError",
     "VoiceprintTimeoutError",
+    "WebSocketBackpressureOverflow",
+    "WebSocketSessionError",
+    "WebSocketSessionStateError",
     "_redact",
 ]

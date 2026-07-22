@@ -292,6 +292,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     if app.state.engine is not None:
         await app.state.engine.dispose()
+
+    # M8: close the streaming connection pool (real ASR mode only).
+    streaming_pool = getattr(app.state, "streaming_pool", None)
+    if streaming_pool is not None:
+        with contextlib.suppress(Exception):
+            await streaming_pool.close_all()
+
     logger.info("AudioGraphy M3 backend shutting down")
 
 
@@ -353,6 +360,30 @@ def create_app() -> FastAPI:
     app.include_router(dsar_router, prefix=API_PREFIX)
     app.include_router(eval_router, prefix=API_PREFIX)
     app.include_router(speakers_router, prefix=API_PREFIX)
+
+    # M8 Phase 4 — WebSocket /ws/stream router. Only mounted when
+    # ``enable_streaming=True`` (default False per PRD §17.11). When False,
+    # /ws/stream returns 404 and M1-M7 tests have zero regression.
+    if getattr(settings, "enable_streaming", False):
+        try:
+            from audio_graphy.adapters.bundle import build_streaming_adapters
+            from audio_graphy.api.ws_stream import router as ws_stream_router
+
+            # Build the per-app streaming bundle (lazy; empty when disabled).
+            streaming_bundle = build_streaming_adapters(settings)
+            app.state.streaming_bundle = streaming_bundle
+            app.state.streaming_pool = streaming_bundle.pool
+            # Track active sessions for diagnostics / graceful shutdown.
+            app.state.stream_sessions = {}
+
+            app.include_router(ws_stream_router)  # NO API_PREFIX — path is /ws/stream
+            logger.info(
+                "M8 streaming ENABLED (vad=%s asr=%s)",
+                settings.adapter_streaming_vad_mode,
+                settings.adapter_streaming_asr_mode,
+            )
+        except Exception as exc:
+            logger.warning("M8 streaming router registration failed: %s", exc)
 
     # Root redirect
     @app.get("/", tags=["meta"])

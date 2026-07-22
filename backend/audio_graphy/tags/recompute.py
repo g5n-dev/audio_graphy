@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
@@ -30,6 +31,25 @@ from audio_graphy.tags.facts import TagFactsService
 from audio_graphy.tags.stats import TagStatsService
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class SegmentTagBatchResult:
+    """Result of one streaming segment-scoped tag recompute (M8 WS-3 / T9).
+
+    Attributes:
+        tenant_id: Tenant scope.
+        recording_id: Recording the segments belong to.
+        segment_ids: Segment ids included in the batch.
+        tags_written: Number of tag facts appended.
+        skipped_existing: Tag values identical to current — no write.
+    """
+
+    tenant_id: str
+    recording_id: int
+    segment_ids: list[int] = field(default_factory=list)
+    tags_written: int = 0
+    skipped_existing: int = 0
 
 
 class RecomputeService:
@@ -279,6 +299,163 @@ class RecomputeService:
             if task is None:
                 raise TaskNotFoundError(detail={"task_id": task_id})
             return task
+
+    # ------------------------------------------------------------------
+    # M8 WS-3 / T9 — streaming segment-scoped recompute entry point
+    # ------------------------------------------------------------------
+
+    async def recompute_tags_for_segments(
+        self,
+        tenant_id: str,
+        recording_id: int,
+        segment_ids: list[int],
+        tag_paths: list[str] | None = None,
+        prompt_version: str = "streaming/v1",
+    ) -> SegmentTagBatchResult:
+        """Recompute tags for a batch of streaming confirmed segments.
+
+        M8 Phase 4 (WS-3 / T9) — invoked by ``StreamingTagScheduler`` every
+        N confirmed segments. Writes go into the SAME ``tag_facts`` table as
+        the batch path (M3 three-layer model), scoped by the recording id.
+
+        The provided ``segment_ids`` are used as the LLM input scope: their
+        transcripts are concatenated and tagged as one batch.
+
+        Args:
+            tenant_id: Tenant scope.
+            recording_id: Recording the segments belong to.
+            segment_ids: Segment DB ids confirmed since the last batch.
+            tag_paths: Tag paths to compute (default: the three P0 paths).
+            prompt_version: Provenance marker (default ``"streaming/v1"``).
+
+        Returns:
+            SegmentTagBatchResult with write counts.
+        """
+        effective_tag_paths = tag_paths or [
+            "quality.greeting",
+            "quality.closing",
+            "sales.product_mention",
+        ]
+
+        # Load the recording (tenant-scoped).
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(Recording).where(
+                    Recording.id == recording_id,
+                    Recording.tenant_id == tenant_id,
+                )
+            )
+            recording = result.scalar_one_or_none()
+        if recording is None:
+            raise TaskNotFoundError(
+                detail={"recording_id": recording_id, "tenant_id": tenant_id}
+            )
+
+        # Load segment transcripts (tenant-scoped, ordered by idx).
+        from audio_graphy.models.segment import Segment
+
+        stmt = (
+            select(Segment)
+            .where(
+                Segment.recording_id == recording_id,
+                Segment.tenant_id == tenant_id,
+                Segment.id.in_(segment_ids),
+            )
+            .order_by(Segment.idx)
+        )
+        async with self._session_factory() as session:
+            seg_result = await session.execute(stmt)
+            segments = list(seg_result.scalars().all())
+
+        transcripts = "\n".join(
+            s.transcript for s in segments if s.transcript
+        )
+
+        tags_written = 0
+        skipped_existing = 0
+        for tag_path in effective_tag_paths:
+            old_value = await self._get_current_tag_value(recording_id, tag_path, tenant_id)
+            new_value = await self._compute_segment_tag_value(
+                recording_id=recording_id,
+                tag_path=tag_path,
+                transcripts=transcripts,
+                prompt_version=prompt_version,
+                segment_ids=segment_ids,
+            )
+            if old_value == new_value:
+                skipped_existing += 1
+                continue
+
+            input_hash = hashlib.md5(
+                f"{tag_path}:{recording_id}:streaming:{','.join(map(str, segment_ids))}".encode()
+            ).hexdigest()
+            fact = await self._facts_svc.append_fact(
+                recording_id=recording_id,
+                tag_path=tag_path,
+                tag_value=new_value,
+                prompt_version=prompt_version,
+                model_version=self._bundle.weak_llm.model,
+                input_hash=input_hash,
+                confidence=0.95,
+                source="llm",
+                computed_by=None,
+                tenant_id=tenant_id,
+            )
+            await self._current_svc.upsert_current(fact, tenant_id)
+            await self._stats_svc.apply_delta(
+                tenant_id=tenant_id,
+                store_id=str(recording.store_id),
+                agent_name=str(recording.agent_name),
+                tag_path=tag_path,
+                old_value=old_value,
+                new_value=new_value,
+            )
+            tags_written += 1
+
+        return SegmentTagBatchResult(
+            tenant_id=tenant_id,
+            recording_id=recording_id,
+            segment_ids=list(segment_ids),
+            tags_written=tags_written,
+            skipped_existing=skipped_existing,
+        )
+
+    async def _compute_segment_tag_value(
+        self,
+        recording_id: int,
+        tag_path: str,
+        transcripts: str,
+        prompt_version: str,
+        segment_ids: list[int],
+    ) -> str:
+        """Compute one tag value over streaming segment transcripts (cached)."""
+        cache_key = hashlib.md5(
+            f"streaming:{tag_path}:{recording_id}:{prompt_version}:{','.join(map(str, segment_ids))}".encode()
+        ).hexdigest()
+
+        cached = await self._file_index.get_llm_cache(cache_key)
+        if cached is not None:
+            return cached
+
+        messages: list[dict[str, str]] = [
+            {
+                "role": "user",
+                "content": (
+                    "请对以下流式转写片段进行质检打标。\n"
+                    f"标签路径: {tag_path}\n"
+                    f"录音ID: {recording_id}\n"
+                    f"转写片段:\n{transcripts[:4000]}\n"
+                    "请返回 pass 或 fail。"
+                ),
+            }
+        ]
+        response = await self._bundle.weak_llm.complete(
+            messages=messages,
+            cache_key=cache_key,
+        )
+        tag_value = response.text.strip().split("\n")[0][:255]
+        await self._file_index.set_llm_cache(cache_key, tag_value)
+        return tag_value
 
     # ------------------------------------------------------------------
     # Private helpers
