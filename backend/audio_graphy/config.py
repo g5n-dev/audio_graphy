@@ -147,6 +147,52 @@ class Settings(BaseSettings):
     enable_clap: bool = False
     enable_voiceprint: bool = False
 
+    # --- M8 Phase 4 — streaming feature flags ---
+    # Master switch. When False (default), /ws/stream route is NOT registered
+    # and M1-M7 tests have zero regression (PRD AC-P0-07 + §17.11).
+    enable_streaming: bool = False
+    # Streaming retrieval (Q3 默认权重 0.5). Off by default — WS-3 will flip.
+    enable_streaming_retrieval: bool = False
+
+    # --- M8 Phase 4 — streaming adapter modes ---
+    adapter_streaming_vad_mode: AdapterMode = "mock"
+    adapter_streaming_asr_mode: AdapterMode = "mock"
+
+    # --- M8 Phase 4 — service endpoints ---
+    funasr_ws_url: str = "ws://funasr:10095"
+    silero_vad_model_path: str = "/models/silero_vad.onnx"
+
+    # --- M8 Phase 4 — Silero thresholds (L3 locked defaults) ---
+    streaming_vad_onset_threshold: float = 0.5
+    streaming_vad_offset_threshold: float = 0.35
+    streaming_vad_min_speech_sec: float = 0.25
+    streaming_vad_min_silence_sec: float = 0.10
+    streaming_vad_chunk_samples: int = 512  # L3 — do NOT change
+    streaming_vad_reset_seq_gap: int = 3    # Q2 — reset threshold
+
+    # --- M8 Phase 4 — funASR streaming config ---
+    streaming_asr_chunk_interval: int = 10
+    streaming_asr_connect_timeout_sec: float = 5.0
+    streaming_asr_push_timeout_sec: float = 30.0
+    streaming_asr_finalize_timeout_sec: float = 5.0
+    streaming_asr_pool_size_per_tenant: int = 8  # Q1
+
+    # --- M8 Phase 4 — session & WS lifecycle ---
+    streaming_tag_interval: int = 5             # L7
+    streaming_tag_debounce_ms: float = 500.0
+    streaming_session_timeout_sec: float = 300.0  # PRD §5.3
+    streaming_session_pcm_buffer_max_sec: float = 60.0  # PIPL cap
+    ws_heartbeat_interval_sec: float = 30.0
+    ws_max_recv_queue: int = 200
+    ws_backpressure_warn: int = 100
+
+    # --- M8 Phase 4 — AMBIGUOUS edge downweight (Q3) ---
+    streaming_ambiguous_edge_weight: float = 0.5
+    streaming_inferred_edge_weight: float = 0.8
+
+    # --- M8 Phase 4 — JWT TTL for WS (shorter than REST) ---
+    ws_jwt_ttl_minutes: int = 5  # PRD §5.3
+
     # --- Mock flakiness (testing) ---
     mock_asr_flaky: bool = False
     mock_llm_error_rate: float = 0.005
@@ -272,6 +318,63 @@ class Settings(BaseSettings):
             )
         if not all(0.0 <= x <= 1.0 for x in v):
             raise ValueError(f"All weights must be in [0, 1], got {v}")
+        return v
+
+    # ----------------------------------------------------------
+    # M8 Phase 4 — per-field validators
+    # ----------------------------------------------------------
+    @field_validator("streaming_vad_onset_threshold")
+    @classmethod
+    def _validate_streaming_vad_onset(cls, v: float) -> float:
+        if not 0.0 <= v <= 1.0:
+            raise ValueError(
+                f"STREAMING_VAD_ONSET_THRESHOLD must be in [0, 1], got {v}"
+            )
+        return v
+
+    @field_validator("streaming_vad_offset_threshold")
+    @classmethod
+    def _validate_streaming_vad_offset(cls, v: float) -> float:
+        if not 0.0 <= v <= 1.0:
+            raise ValueError(
+                f"STREAMING_VAD_OFFSET_THRESHOLD must be in [0, 1], got {v}"
+            )
+        return v
+
+    @field_validator("streaming_ambiguous_edge_weight")
+    @classmethod
+    def _validate_streaming_ambiguous_w(cls, v: float) -> float:
+        if not 0.0 <= v <= 1.0:
+            raise ValueError(
+                f"STREAMING_AMBIGUOUS_EDGE_WEIGHT must be in [0, 1], got {v}"
+            )
+        return v
+
+    @field_validator("streaming_inferred_edge_weight")
+    @classmethod
+    def _validate_streaming_inferred_w(cls, v: float) -> float:
+        if not 0.0 <= v <= 1.0:
+            raise ValueError(
+                f"STREAMING_INFERRED_EDGE_WEIGHT must be in [0, 1], got {v}"
+            )
+        return v
+
+    @field_validator("streaming_vad_reset_seq_gap")
+    @classmethod
+    def _validate_streaming_reset_gap(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError(
+                f"STREAMING_VAD_RESET_SEQ_GAP must be ≥ 1, got {v}"
+            )
+        return v
+
+    @field_validator("streaming_asr_pool_size_per_tenant")
+    @classmethod
+    def _validate_pool_size(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError(
+                f"STREAMING_ASR_POOL_SIZE_PER_TENANT must be ≥ 1, got {v}"
+            )
         return v
 
 

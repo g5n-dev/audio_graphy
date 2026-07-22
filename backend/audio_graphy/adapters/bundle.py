@@ -10,11 +10,14 @@ from audio_graphy.adapters.protocols import (
     AudioEmbedAdapter,
     EmbedAdapter,
     LLMAdapter,
+    StreamingASRAdapter,
+    StreamingVADAdapter,
     VADAdapter,
     VoiceprintAdapter,
 )
 
 if TYPE_CHECKING:
+    from audio_graphy.adapters.real.streaming_funasr_pool import FunASRConnectionPool
     from audio_graphy.config import Settings
 
 
@@ -187,3 +190,185 @@ def build_hybrid_bundle(settings: Settings) -> AdapterBundle:
         audio_embed=audio_embed,
         voiceprint=voiceprint,
     )
+
+
+# ============================================================
+# M8 Phase 4 — streaming adapter factory
+# ============================================================
+
+
+@dataclass(frozen=True, slots=True)
+class StreamingAdapterBundle:
+    """Aggregate of M8 streaming adapters.
+
+    When ``enable_streaming=False`` (default), ``build_streaming_adapters``
+    returns an empty bundle (all None) so the WS endpoint is never wired.
+
+    Attributes:
+        vad: StreamingVADAdapter (Silero real or Mock).
+        asr: StreamingASRAdapter (funASR real or Mock). ``None`` when the
+            real-mode pool is in use — the endpoint acquires adapters from
+            the pool per session.
+        pool: Optional ``FunASRConnectionPool`` for real mode. ``None`` for
+            mock mode (adapters are created per session instead).
+    """
+
+    vad: StreamingVADAdapter | None = None
+    asr: StreamingASRAdapter | None = None
+    pool: FunASRConnectionPool | None = None
+
+
+def build_streaming_adapters(settings: Settings) -> StreamingAdapterBundle:
+    """Build streaming adapters (lazy; empty when ``enable_streaming=False``).
+
+    Args:
+        settings: Application settings.
+
+    Returns:
+        StreamingAdapterBundle. All fields None when streaming is disabled.
+    """
+    if not settings.enable_streaming:
+        return StreamingAdapterBundle()
+
+    # Streaming VAD
+    if settings.adapter_streaming_vad_mode == "real":
+        from audio_graphy.adapters.real.streaming_vad_silero import (
+            StreamingSileroVADAdapter,
+        )
+
+        vad: StreamingVADAdapter = StreamingSileroVADAdapter(
+            model_path=settings.silero_vad_model_path,
+            onset_threshold=settings.streaming_vad_onset_threshold,
+            offset_threshold=settings.streaming_vad_offset_threshold,
+            min_speech_sec=settings.streaming_vad_min_speech_sec,
+            min_silence_sec=settings.streaming_vad_min_silence_sec,
+        )
+    else:
+        from audio_graphy.adapters.mock_streaming_vad import (
+            MockStreamingVADAdapter,
+        )
+
+        vad = MockStreamingVADAdapter()
+
+    # Streaming ASR
+    pool: FunASRConnectionPool | None = None
+    asr: StreamingASRAdapter | None
+    if settings.adapter_streaming_asr_mode == "real":
+        from audio_graphy.adapters.real.streaming_funasr_pool import (
+            FunASRConnectionPool,
+        )
+
+        pool = FunASRConnectionPool(
+            ws_url=settings.funasr_ws_url,
+            pool_size_per_tenant=settings.streaming_asr_pool_size_per_tenant,
+            connect_timeout_sec=settings.streaming_asr_connect_timeout_sec,
+            push_timeout_sec=settings.streaming_asr_push_timeout_sec,
+        )
+        asr = None  # Per-session adapter acquired from pool.
+    else:
+        from audio_graphy.adapters.mock_streaming_asr import (
+            MockStreamingASRAdapter,
+        )
+
+        asr = MockStreamingASRAdapter()
+
+    return StreamingAdapterBundle(vad=vad, asr=asr, pool=pool)
+
+
+def build_streaming_vad_for_session(settings: Settings) -> StreamingVADAdapter:
+    """Build one per-session streaming VAD adapter.
+
+    Called by the WS endpoint when a new session is created. In real mode,
+    a fresh ``StreamingSileroVADAdapter`` is returned (it owns its own LSTM
+    hidden state — NOT shared across sessions).
+    """
+    if settings.adapter_streaming_vad_mode == "real":
+        from audio_graphy.adapters.real.streaming_vad_silero import (
+            StreamingSileroVADAdapter,
+        )
+
+        return StreamingSileroVADAdapter(
+            model_path=settings.silero_vad_model_path,
+            onset_threshold=settings.streaming_vad_onset_threshold,
+            offset_threshold=settings.streaming_vad_offset_threshold,
+            min_speech_sec=settings.streaming_vad_min_speech_sec,
+            min_silence_sec=settings.streaming_vad_min_silence_sec,
+        )
+    from audio_graphy.adapters.mock_streaming_vad import (
+        MockStreamingVADAdapter,
+    )
+
+    return MockStreamingVADAdapter()
+
+
+def build_streaming_asr_for_session(settings: Settings) -> StreamingASRAdapter:
+    """Build one per-session streaming ASR adapter (mock mode only).
+
+    Real mode: the WS endpoint should acquire from ``StreamingAdapterBundle.pool``
+    via ``FunASRConnectionPool.acquire(tenant_id, session_id, hotwords)``.
+    """
+    if settings.adapter_streaming_asr_mode == "real":
+        raise RuntimeError(
+            "build_streaming_asr_for_session is for mock mode only; "
+            "use FunASRConnectionPool.acquire() for real mode"
+        )
+    from audio_graphy.adapters.mock_streaming_asr import (
+        MockStreamingASRAdapter,
+    )
+
+    return MockStreamingASRAdapter()
+
+
+@dataclass(frozen=True, slots=True)
+class _SessionStreamingBundle:
+    """Per-session streaming adapter pair.
+
+    Returned by ``build_streaming_adapters_for_session`` so the WS endpoint
+    can construct one ``StreamSession`` without reaching back into the
+    settings / global bundle.
+
+    Attributes:
+        vad: StreamingVADAdapter (per session — VAD has hidden state).
+        asr: StreamingASRAdapter (per session; mock mode only).
+    """
+
+    vad: StreamingVADAdapter
+    asr: StreamingASRAdapter
+
+
+def build_streaming_adapters_for_session(
+    settings: Settings,
+) -> _SessionStreamingBundle:
+    """Build a fresh pair of streaming adapters for one new WS session (mock mode).
+
+    Real mode requires an async pool acquire; callers needing real mode
+    should use ``acquire_streaming_adapters_for_session`` instead.
+    """
+    vad = build_streaming_vad_for_session(settings)
+    asr = build_streaming_asr_for_session(settings)
+    return _SessionStreamingBundle(vad=vad, asr=asr)
+
+
+async def acquire_streaming_adapters_for_session(
+    settings: Settings,
+    *,
+    tenant_id: str,
+    session_id: str,
+    hotwords: tuple[str, ...],
+    pool: FunASRConnectionPool | None,
+) -> _SessionStreamingBundle:
+    """Async variant: acquire the ASR adapter from the pool when real mode.
+
+    The WS endpoint uses this; the sync ``build_streaming_adapters_for_session``
+    is kept for the mock path only.
+    """
+    vad = build_streaming_vad_for_session(settings)
+    if settings.adapter_streaming_asr_mode == "real":
+        if pool is None:
+            raise RuntimeError(
+                "Real streaming ASR mode requires a FunASRConnectionPool"
+            )
+        asr: StreamingASRAdapter = await pool.acquire(tenant_id, session_id, hotwords)
+    else:
+        asr = build_streaming_asr_for_session(settings)
+    return _SessionStreamingBundle(vad=vad, asr=asr)
