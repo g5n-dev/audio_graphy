@@ -17,7 +17,14 @@
  *   /prompts      — prompt management
  */
 
-import { lazy, Suspense, useEffect, useState } from "react";
+import {
+  Component,
+  lazy,
+  Suspense,
+  useEffect,
+  useState,
+  type ReactNode,
+} from "react";
 import { Routes, Route, Navigate, useLocation, useNavigate } from "react-router-dom";
 import {
   Layout,
@@ -87,6 +94,78 @@ function RouteLoadingFallback() {
       <Spin tip="页面加载中…" />
     </div>
   );
+}
+
+interface RouteErrorBoundaryProps {
+  children: ReactNode;
+  routeKey: string;
+  onReturnHome: () => void;
+}
+
+interface RouteErrorBoundaryState {
+  hasError: boolean;
+}
+
+class RouteErrorBoundary extends Component<
+  RouteErrorBoundaryProps,
+  RouteErrorBoundaryState
+> {
+  state: RouteErrorBoundaryState = { hasError: false };
+
+  static getDerivedStateFromError(): RouteErrorBoundaryState {
+    return { hasError: true };
+  }
+
+  componentDidUpdate(previousProps: RouteErrorBoundaryProps) {
+    if (
+      this.state.hasError &&
+      previousProps.routeKey !== this.props.routeKey
+    ) {
+      this.setState({ hasError: false });
+    }
+  }
+
+  private retry = () => {
+    this.setState({ hasError: false });
+  };
+
+  render() {
+    if (!this.state.hasError) {
+      return this.props.children;
+    }
+
+    return (
+      <section
+        role="alert"
+        aria-labelledby="route-error-title"
+        style={{
+          minHeight: 360,
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          padding: 32,
+          textAlign: "center",
+        }}
+      >
+        <h1
+          id="route-error-title"
+          style={{ margin: "0 0 12px", color: "#1d2129", fontSize: 24 }}
+        >
+          页面加载失败
+        </h1>
+        <p style={{ margin: "0 0 24px", color: "#86909c" }}>
+          当前功能暂时无法显示，请重新加载或返回首页。
+        </p>
+        <Space>
+          <Button type="primary" onClick={this.retry}>
+            重新加载
+          </Button>
+          <Button onClick={this.props.onReturnHome}>返回首页</Button>
+        </Space>
+      </section>
+    );
+  }
 }
 
 const menuGroups = [
@@ -243,35 +322,43 @@ function AppLayout() {
             minHeight: "calc(100vh - 56px)",
           }}
         >
-          <Suspense fallback={<RouteLoadingFallback />}>
-            <Routes>
-              <Route path="/" element={<DashboardPage />} />
-              <Route path="/recordings" element={<RecordingsPage />} />
-              <Route path="/recordings/:id" element={<RecordingDetailPage />} />
-              <Route path="/receptions" element={<ReceptionEntryPage />} />
-              <Route
-                path="/receptions/:id/workspace"
-                element={<ReceptionWorkspacePage />}
-              />
-              <Route
-                path="/receptions/:id/graph"
-                element={<ReceptionGraphPage />}
-              />
-              <Route
-                path="/reception-flow"
-                element={<ReceptionStateInsightsPage />}
-              />
-              <Route path="/graph" element={<GraphExplorerPage />} />
-              <Route path="/query" element={<QueryPage />} />
-              <Route path="/speakers" element={<SpeakerProfileListPage />} />
-              <Route path="/speakers/:id" element={<SpeakerProfileDetailPage />} />
-              <Route path="/communities" element={<CommunityExplorerPage />} />
-              <Route path="/time-travel" element={<TimeTravelPage />} />
-              <Route path="/stats" element={<StatsPage />} />
-              <Route path="/tag-insights" element={<TagInsightsPage />} />
-              <Route path="*" element={<Navigate to="/" replace />} />
-            </Routes>
-          </Suspense>
+          <RouteErrorBoundary
+            routeKey={location.pathname}
+            onReturnHome={() => navigate("/", { replace: true })}
+          >
+            <Suspense fallback={<RouteLoadingFallback />}>
+              <Routes>
+                <Route path="/" element={<DashboardPage />} />
+                <Route path="/recordings" element={<RecordingsPage />} />
+                <Route path="/recordings/:id" element={<RecordingDetailPage />} />
+                <Route path="/receptions" element={<ReceptionEntryPage />} />
+                <Route
+                  path="/receptions/:id/workspace"
+                  element={<ReceptionWorkspacePage />}
+                />
+                <Route
+                  path="/receptions/:id/graph"
+                  element={<ReceptionGraphPage />}
+                />
+                <Route
+                  path="/reception-flow"
+                  element={<ReceptionStateInsightsPage />}
+                />
+                <Route path="/graph" element={<GraphExplorerPage />} />
+                <Route path="/query" element={<QueryPage />} />
+                <Route path="/speakers" element={<SpeakerProfileListPage />} />
+                <Route
+                  path="/speakers/:id"
+                  element={<SpeakerProfileDetailPage />}
+                />
+                <Route path="/communities" element={<CommunityExplorerPage />} />
+                <Route path="/time-travel" element={<TimeTravelPage />} />
+                <Route path="/stats" element={<StatsPage />} />
+                <Route path="/tag-insights" element={<TagInsightsPage />} />
+                <Route path="*" element={<Navigate to="/" replace />} />
+              </Routes>
+            </Suspense>
+          </RouteErrorBoundary>
         </Content>
       </Layout>
     </Layout>

@@ -10,7 +10,28 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAuthStore } from "@/stores/auth";
 
-const graphModuleState = vi.hoisted(() => ({ evaluations: 0 }));
+const graphModuleState = vi.hoisted(() => ({
+  evaluations: 0,
+  shouldThrow: false,
+}));
+let restoreExpectedGraphError: (() => void) | undefined;
+
+function suppressExpectedGraphError() {
+  const preventJSDOMReport = (event: ErrorEvent) => {
+    if (
+      event.error instanceof Error &&
+      event.error.message === "sensitive-graph-stack"
+    ) {
+      event.preventDefault();
+    }
+  };
+  window.addEventListener("error", preventJSDOMReport);
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  restoreExpectedGraphError = () => {
+    window.removeEventListener("error", preventJSDOMReport);
+    consoleError.mockRestore();
+  };
+}
 
 vi.mock("@/pages/DashboardPage", () => ({
   default: () => <div>dashboard-route</div>,
@@ -20,7 +41,12 @@ vi.mock("@/pages/GraphExplorerPage", async () => {
   graphModuleState.evaluations += 1;
   await new Promise((resolve) => setTimeout(resolve, 100));
   return {
-    default: () => <div>graph-route</div>,
+    default: () => {
+      if (graphModuleState.shouldThrow) {
+        throw new Error("sensitive-graph-stack");
+      }
+      return <div>graph-route</div>;
+    },
   };
 });
 
@@ -49,6 +75,9 @@ import App from "./App";
 describe("App route loading", () => {
   afterEach(() => {
     cleanup();
+    restoreExpectedGraphError?.();
+    restoreExpectedGraphError = undefined;
+    graphModuleState.shouldThrow = false;
     useAuthStore.getState().clearAuth();
     localStorage.clear();
   });
@@ -265,5 +294,78 @@ describe("App route loading", () => {
     expect(
       await screen.findByText("reception-workspace-route"),
     ).toBeInTheDocument();
+  });
+
+  it("keeps the application shell visible and retries a failed route without exposing error details", async () => {
+    suppressExpectedGraphError();
+    graphModuleState.shouldThrow = true;
+    useAuthStore.setState({
+      token: "test-token",
+      refreshToken: "test-refresh-token",
+      user: {
+        id: 1,
+        name: "Test User",
+        email: "test@example.com",
+        role: "admin",
+        tenant_id: "tenant-test",
+      },
+      isAuthenticated: true,
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/graph"]}>
+        <App />
+      </MemoryRouter>,
+    );
+
+    expect(
+      await screen.findByRole("heading", { name: "页面加载失败" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("navigation", { name: "平台功能导航" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("AudioGraphy")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "返回首页" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/sensitive-graph-stack/)).not.toBeInTheDocument();
+
+    graphModuleState.shouldThrow = false;
+    fireEvent.click(screen.getByRole("button", { name: "重新加载" }));
+
+    expect(await screen.findByText("graph-route")).toBeInTheDocument();
+  });
+
+  it("recovers automatically when navigating away from a failed route", async () => {
+    suppressExpectedGraphError();
+    graphModuleState.shouldThrow = true;
+    useAuthStore.setState({
+      token: "test-token",
+      refreshToken: "test-refresh-token",
+      user: {
+        id: 1,
+        name: "Test User",
+        email: "test@example.com",
+        role: "admin",
+        tenant_id: "tenant-test",
+      },
+      isAuthenticated: true,
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/graph"]}>
+        <App />
+      </MemoryRouter>,
+    );
+
+    expect(
+      await screen.findByRole("heading", { name: "页面加载失败" }),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "返回首页" }));
+
+    expect(await screen.findByText("dashboard-route")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "页面加载失败" }),
+    ).not.toBeInTheDocument();
   });
 });

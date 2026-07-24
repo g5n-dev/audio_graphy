@@ -48,11 +48,17 @@ const NODE_TYPE_COLORS: Record<string, string> = {
 export default function GraphExplorerPage() {
   const containerRef = useRef<HTMLDivElement>(null);
   const graphRef = useRef<Graph | null>(null);
+  const graphRenderedRef = useRef(false);
+  const renderVersionRef = useRef(0);
 
   const [nodeType, setNodeType] = useState<string>("");
   const [minDegree, setMinDegree] = useState(0);
   const [limit, setLimit] = useState(200);
   const [selectedEntity, setSelectedEntity] = useState<string>("");
+  const [renderStatus, setRenderStatus] = useState<
+    "idle" | "rendering" | "ready" | "error"
+  >("idle");
+  const [renderAttempt, setRenderAttempt] = useState(0);
   const pendingFilters = useMemo(
     () => ({ nodeType, minDegree, limit }),
     [limit, minDegree, nodeType],
@@ -60,7 +66,13 @@ export default function GraphExplorerPage() {
   const filters = useDebouncedValue(pendingFilters);
 
   // Fetch graph data
-  const { data: graphData, isLoading } = useQuery({
+  const {
+    data: graphData,
+    isError: isGraphQueryError,
+    isFetching: isGraphQueryFetching,
+    isLoading,
+    refetch: refetchGraph,
+  } = useQuery({
     queryKey: [
       "graph",
       "explore",
@@ -139,6 +151,7 @@ export default function GraphExplorerPage() {
     graph.on("node:click", handleNodeClick);
 
     graphRef.current = graph;
+    graphRenderedRef.current = false;
     let active = true;
     let lastWidth = width;
     let lastHeight = height;
@@ -172,12 +185,13 @@ export default function GraphExplorerPage() {
 
     return () => {
       active = false;
+      renderVersionRef.current += 1;
       resizeObserver.disconnect();
-      graph.stopLayout();
       graph.off("node:click", handleNodeClick);
       graph.destroy();
       if (graphRef.current === graph) {
         graphRef.current = null;
+        graphRenderedRef.current = false;
       }
     };
   }, []);
@@ -206,11 +220,60 @@ export default function GraphExplorerPage() {
       },
     }));
 
-    graphRef.current.stopLayout();
-    graphRef.current.setLayout(createBoundedGraphLayout(nodes.length));
-    graphRef.current.setData({ nodes, edges });
-    void graphRef.current.render().catch(() => undefined);
-  }, [graphData]);
+    const graph = graphRef.current;
+    const renderVersion = renderVersionRef.current + 1;
+    renderVersionRef.current = renderVersion;
+
+    if (graphRenderedRef.current) {
+      graph.stopLayout();
+      graphRenderedRef.current = false;
+    }
+
+    graph.setLayout(createBoundedGraphLayout(nodes.length));
+    graph.setData({ nodes, edges });
+    setRenderStatus("rendering");
+
+    // React StrictMode intentionally mounts, runs effects, and immediately
+    // cleans up a probe instance before mounting the real one. Deferring the
+    // first G6 render by one task lets that cleanup cancel the probe before G6
+    // starts its asynchronous layout pipeline. This avoids a destroyed graph
+    // reporting an error when cached query data is available synchronously.
+    const renderStartTimer = window.setTimeout(() => {
+      if (
+        graphRef.current !== graph ||
+        renderVersionRef.current !== renderVersion
+      ) {
+        return;
+      }
+
+      void (async () => {
+        try {
+          await graph.render();
+          if (
+            graphRef.current !== graph ||
+            renderVersionRef.current !== renderVersion
+          ) {
+            return;
+          }
+          graphRenderedRef.current = true;
+          setRenderStatus("ready");
+        } catch {
+          if (
+            graphRef.current !== graph ||
+            renderVersionRef.current !== renderVersion
+          ) {
+            return;
+          }
+          graphRenderedRef.current = false;
+          setRenderStatus("error");
+        }
+      })();
+    }, 0);
+
+    return () => {
+      window.clearTimeout(renderStartTimer);
+    };
+  }, [graphData, renderAttempt]);
 
   return (
     <div style={{ padding: 24 }}>
@@ -277,7 +340,64 @@ export default function GraphExplorerPage() {
                 <Spin size={40} />
               </div>
             )}
-            {!isLoading && graphData && graphData.nodes.length === 0 && (
+            {isGraphQueryError && (
+              <div
+                role="alert"
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  justifyContent: "center",
+                  alignItems: "center",
+                  gap: 12,
+                  height: "100%",
+                  padding: 24,
+                  textAlign: "center",
+                }}
+              >
+                <Text style={{ fontWeight: 600 }}>图谱数据加载失败</Text>
+                <Text style={{ color: "#86909c" }}>
+                  无法获取图谱数据，请检查网络后重试。
+                </Text>
+                <Button
+                  type="primary"
+                  loading={isGraphQueryFetching}
+                  onClick={() => void refetchGraph()}
+                >
+                  重新加载
+                </Button>
+              </div>
+            )}
+            {!isGraphQueryError && renderStatus === "error" && (
+              <div
+                role="alert"
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  justifyContent: "center",
+                  alignItems: "center",
+                  gap: 12,
+                  height: "100%",
+                  padding: 24,
+                  textAlign: "center",
+                }}
+              >
+                <Text style={{ fontWeight: 600 }}>图谱渲染失败</Text>
+                <Text style={{ color: "#86909c" }}>
+                  画布初始化未完成，可重新尝试渲染。
+                </Text>
+                <Button
+                  type="primary"
+                  onClick={() => setRenderAttempt((attempt) => attempt + 1)}
+                >
+                  重试渲染
+                </Button>
+              </div>
+            )}
+            {!isGraphQueryError &&
+              renderStatus !== "error" &&
+              !isLoading &&
+              graphData &&
+              graphData.nodes.length === 0 && (
               <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "100%" }}>
                 <Empty description="暂无图谱数据" />
               </div>

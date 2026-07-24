@@ -2,7 +2,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   ChangeEvent,
   FormEvent,
-  useEffect,
+  type KeyboardEvent,
   useMemo,
   useRef,
   useState,
@@ -64,14 +64,8 @@ const INSIGHT_SECTIONS = [
 ] as const;
 type InsightSectionId = (typeof INSIGHT_SECTIONS)[number]["id"];
 
-function scrollToInsightSection(id: string): void {
-  const reduceMotion =
-    typeof window.matchMedia === "function" &&
-    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  document.getElementById(id)?.scrollIntoView?.({
-    behavior: reduceMotion ? "auto" : "smooth",
-    block: "start",
-  });
+function insightTabId(sectionId: InsightSectionId): string {
+  return `${sectionId}-tab`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -524,36 +518,39 @@ function InsightResult({
   const [activeSection, setActiveSection] = useState<InsightSectionId>(
     INSIGHT_SECTIONS[0].id,
   );
+  const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
-  useEffect(() => {
-    if (typeof IntersectionObserver === "undefined") return undefined;
-    const sections = INSIGHT_SECTIONS.map(({ id }) =>
-      document.getElementById(id),
-    ).filter((section): section is HTMLElement => section !== null);
-    if (sections.length === 0) return undefined;
+  const selectTab = (index: number): void => {
+    const nextIndex =
+      (index + INSIGHT_SECTIONS.length) % INSIGHT_SECTIONS.length;
+    setActiveSection(INSIGHT_SECTIONS[nextIndex].id);
+    tabRefs.current[nextIndex]?.focus();
+  };
 
-    const observer = new IntersectionObserver(
-      (entries) => {
-        const visible = entries
-          .filter((entry) => entry.isIntersecting)
-          .sort(
-            (left, right) =>
-              Math.abs(left.boundingClientRect.top) -
-              Math.abs(right.boundingClientRect.top),
-          );
-        const sectionId = visible[0]?.target.id as
-          | InsightSectionId
-          | undefined;
-        if (sectionId) setActiveSection(sectionId);
-      },
-      {
-        rootMargin: "-96px 0px -55% 0px",
-        threshold: [0, 0.15, 0.5],
-      },
-    );
-    sections.forEach((section) => observer.observe(section));
-    return () => observer.disconnect();
-  }, []);
+  const handleTabKeyDown = (
+    event: KeyboardEvent<HTMLButtonElement>,
+    index: number,
+  ): void => {
+    let nextIndex: number | null = null;
+    switch (event.key) {
+      case "ArrowLeft":
+        nextIndex = index - 1;
+        break;
+      case "ArrowRight":
+        nextIndex = index + 1;
+        break;
+      case "Home":
+        nextIndex = 0;
+        break;
+      case "End":
+        nextIndex = INSIGHT_SECTIONS.length - 1;
+        break;
+      default:
+        return;
+    }
+    event.preventDefault();
+    selectTab(nextIndex);
+  };
 
   return (
     <div className="ag-insight-results" aria-live="polite">
@@ -605,20 +602,28 @@ function InsightResult({
           )}
         </div>
       )}
-      <nav className="ag-insight-view-nav" aria-label="标签洞察视图">
-        {INSIGHT_SECTIONS.map((section) => (
+      <nav
+        className="ag-insight-view-nav"
+        role="tablist"
+        aria-label="标签洞察视图"
+      >
+        {INSIGHT_SECTIONS.map((section, index) => (
           <button
             type="button"
+            role="tab"
             key={section.id}
+            id={insightTabId(section.id)}
+            ref={(element) => {
+              tabRefs.current[index] = element;
+            }}
             className={
               activeSection === section.id ? "is-active" : undefined
             }
             aria-controls={section.id}
-            aria-pressed={activeSection === section.id}
-            onClick={() => {
-              setActiveSection(section.id);
-              scrollToInsightSection(section.id);
-            }}
+            aria-selected={activeSection === section.id}
+            tabIndex={activeSection === section.id ? 0 : -1}
+            onClick={() => setActiveSection(section.id)}
+            onKeyDown={(event) => handleTabKeyDown(event, index)}
           >
             {section.label}
           </button>
@@ -626,71 +631,100 @@ function InsightResult({
         <span>图谱看关系 · 矩阵看证据 · 图表看趋势</span>
       </nav>
 
-      <div id="tag-relationship-graph" className="ag-tag-graph-slot">
-        <TagInsightGraph
-          result={result}
-          receptionId={
-            persisted?.returned_reception_ids.length === 1
-              ? persisted.returned_reception_ids[0]
-              : undefined
-          }
-        />
-      </div>
-
-      <section className="ag-kpi-grid" aria-label="标签洞察概览">
-        <article>
-          <span>标签组</span>
-          <strong>{result.overview.group_count}</strong>
-          <small>{result.merge_strategy}</small>
-        </article>
-        <article>
-          <span>对齐单元</span>
-          <strong>{result.overview.total_cells}</strong>
-          <small>完整 {result.overview.complete_cells}</small>
-        </article>
-        <article
-          className={
-            result.overview.conflict_cells > 0 ? "is-warning" : undefined
-          }
+      {activeSection === "tag-relationship-graph" && (
+        <section
+          id="tag-relationship-graph"
+          className="ag-insight-tab-panel ag-tag-graph-slot"
+          role="tabpanel"
+          aria-labelledby={insightTabId("tag-relationship-graph")}
+          tabIndex={0}
         >
-          <span>冲突单元</span>
-          <strong>{result.overview.conflict_cells}</strong>
-          <small>{formatPercent(result.overview.conflict_rate)}</small>
-        </article>
-        <article
-          className={
-            result.overview.incomplete_cells > 0 ? "is-warning" : undefined
-          }
-        >
-          <span>缺失单元</span>
-          <strong>{result.overview.incomplete_cells}</strong>
-          <small>需复核或补标</small>
-        </article>
-      </section>
+          <TagInsightGraph
+            result={result}
+            receptionId={
+              persisted?.returned_reception_ids.length === 1
+                ? persisted.returned_reception_ids[0]
+                : undefined
+            }
+          />
+        </section>
+      )}
 
-      <section className="ag-coverage-strip" aria-label="标签组覆盖率">
-        {result.coverage.map((item) => (
-          <div key={item.group_key}>
-            <span>
-              <strong>{item.group_key}</strong>
-              <small>
-                覆盖 {item.assigned_cells} / 缺失 {item.missing_cells}
-              </small>
-            </span>
-            <i>
-              <b style={{ width: `${item.coverage_rate * 100}%` }} />
-            </i>
-            <strong>{formatPercent(item.coverage_rate)}</strong>
-          </div>
-        ))}
-      </section>
-      <div id="tag-comparison-matrix">
-        <TagMatrix groups={result.groups} rows={result.matrix} />
-      </div>
-      <div id="tag-chart-insights">
-        <InsightVisuals result={result} />
-      </div>
-      {persisted && <PersistedEvidence items={persisted.evidence_summary} />}
+      {activeSection === "tag-comparison-matrix" && (
+        <section
+          id="tag-comparison-matrix"
+          className="ag-insight-tab-panel ag-insight-matrix-panel"
+          role="tabpanel"
+          aria-labelledby={insightTabId("tag-comparison-matrix")}
+          tabIndex={0}
+        >
+          <section className="ag-kpi-grid" aria-label="标签洞察概览">
+            <article>
+              <span>标签组</span>
+              <strong>{result.overview.group_count}</strong>
+              <small>{result.merge_strategy}</small>
+            </article>
+            <article>
+              <span>对齐单元</span>
+              <strong>{result.overview.total_cells}</strong>
+              <small>完整 {result.overview.complete_cells}</small>
+            </article>
+            <article
+              className={
+                result.overview.conflict_cells > 0 ? "is-warning" : undefined
+              }
+            >
+              <span>冲突单元</span>
+              <strong>{result.overview.conflict_cells}</strong>
+              <small>{formatPercent(result.overview.conflict_rate)}</small>
+            </article>
+            <article
+              className={
+                result.overview.incomplete_cells > 0
+                  ? "is-warning"
+                  : undefined
+              }
+            >
+              <span>缺失单元</span>
+              <strong>{result.overview.incomplete_cells}</strong>
+              <small>需复核或补标</small>
+            </article>
+          </section>
+
+          <section className="ag-coverage-strip" aria-label="标签组覆盖率">
+            {result.coverage.map((item) => (
+              <div key={item.group_key}>
+                <span>
+                  <strong>{item.group_key}</strong>
+                  <small>
+                    覆盖 {item.assigned_cells} / 缺失 {item.missing_cells}
+                  </small>
+                </span>
+                <i>
+                  <b style={{ width: `${item.coverage_rate * 100}%` }} />
+                </i>
+                <strong>{formatPercent(item.coverage_rate)}</strong>
+              </div>
+            ))}
+          </section>
+          <TagMatrix groups={result.groups} rows={result.matrix} />
+          {persisted && (
+            <PersistedEvidence items={persisted.evidence_summary} />
+          )}
+        </section>
+      )}
+
+      {activeSection === "tag-chart-insights" && (
+        <section
+          id="tag-chart-insights"
+          className="ag-insight-tab-panel ag-insight-charts-panel"
+          role="tabpanel"
+          aria-labelledby={insightTabId("tag-chart-insights")}
+          tabIndex={0}
+        >
+          <InsightVisuals result={result} />
+        </section>
+      )}
     </div>
   );
 }

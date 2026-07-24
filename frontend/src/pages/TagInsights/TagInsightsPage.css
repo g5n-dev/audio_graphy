@@ -128,10 +128,20 @@
   border-color: #cbdcff;
 }
 
-.ag-tag-insights-page .ag-tag-graph-slot {
+.ag-tag-insights-page .ag-insight-tab-panel {
   order: 2;
+  display: grid;
+  min-width: 0;
+  gap: 12px;
+  outline: none;
+}
+
+.ag-tag-insights-page .ag-insight-tab-panel:focus-visible {
+  box-shadow: inset 0 0 0 2px #8fb5ff;
+}
+
+.ag-tag-insights-page .ag-tag-graph-slot {
   min-height: calc(100vh - 150px);
-  scroll-margin-top: 94px;
 }
 
 .ag-tag-insights-page .ag-tag-graph-slot > .tig-shell {
@@ -168,27 +178,22 @@
 }
 
 .ag-tag-insights-page .ag-kpi-grid {
-  order: 3;
   margin: 0 18px;
 }
 
 .ag-tag-insights-page .ag-coverage-strip {
-  order: 4;
   margin: 0 18px;
 }
 
 .ag-tag-insights-page #tag-comparison-matrix {
-  order: 5;
-  margin: 0 18px;
+  padding-top: 12px;
 }
 
 .ag-tag-insights-page #tag-chart-insights {
-  order: 6;
   margin: 0 18px;
 }
 
 .ag-tag-insights-page .ag-persisted-evidence {
-  order: 7;
   margin: 0 18px;
 }
 

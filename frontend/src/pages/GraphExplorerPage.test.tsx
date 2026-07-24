@@ -1,3 +1,4 @@
+import { StrictMode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -10,6 +11,7 @@ const apiMocks = vi.hoisted(() => ({
 }));
 
 const graphMocks = vi.hoisted(() => {
+  const renderQueue: Array<() => Promise<void>> = [];
   const instances: Array<{
     on: ReturnType<typeof vi.fn>;
     off: ReturnType<typeof vi.fn>;
@@ -28,7 +30,9 @@ const graphMocks = vi.hoisted(() => {
       off: vi.fn(),
       setData: vi.fn(),
       setLayout: vi.fn(),
-      render: vi.fn(() => Promise.resolve()),
+      render: vi.fn(
+        () => renderQueue.shift()?.() ?? Promise.resolve(),
+      ),
       setSize: vi.fn(),
       resize: vi.fn(),
       stopLayout: vi.fn(),
@@ -38,7 +42,7 @@ const graphMocks = vi.hoisted(() => {
     return instance;
   });
 
-  return { Graph, instances };
+  return { Graph, instances, renderQueue };
 });
 
 vi.mock("@/api/services", () => apiMocks);
@@ -87,7 +91,13 @@ class ResizeObserverMock {
   }
 }
 
-function renderPage() {
+function renderPage({
+  strict = false,
+  initialGraphData,
+}: {
+  strict?: boolean;
+  initialGraphData?: ExploreResponse;
+} = {}) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: {
@@ -96,10 +106,19 @@ function renderPage() {
       },
     },
   });
-  return render(
+  if (initialGraphData) {
+    queryClient.setQueryData(
+      ["graph", "explore", "", 0, 200],
+      initialGraphData,
+    );
+  }
+  const page = (
     <QueryClientProvider client={queryClient}>
       <GraphExplorerPage />
-    </QueryClientProvider>,
+    </QueryClientProvider>
+  );
+  return render(
+    strict ? <StrictMode>{page}</StrictMode> : page,
   );
 }
 
@@ -110,6 +129,7 @@ describe("GraphExplorerPage performance lifecycle", () => {
     apiMocks.getEntity.mockReset();
     graphMocks.Graph.mockClear();
     graphMocks.instances.length = 0;
+    graphMocks.renderQueue.length = 0;
     resizeObservers.length = 0;
     vi.stubGlobal(
       "ResizeObserver",
@@ -146,6 +166,38 @@ describe("GraphExplorerPage performance lifecycle", () => {
     expect(graphMocks.Graph).toHaveBeenCalledTimes(1);
   });
 
+  it("never stops an uninitialized layout during StrictMode cleanup", async () => {
+    apiMocks.exploreGraph.mockImplementation(() => new Promise(() => undefined));
+
+    const view = renderPage({ strict: true });
+
+    await waitFor(() => expect(graphMocks.instances).toHaveLength(2));
+    const [discardedGraph, activeGraph] = graphMocks.instances;
+
+    expect(discardedGraph.stopLayout).not.toHaveBeenCalled();
+    expect(discardedGraph.destroy).toHaveBeenCalledTimes(1);
+    expect(activeGraph.stopLayout).not.toHaveBeenCalled();
+
+    view.unmount();
+
+    expect(activeGraph.stopLayout).not.toHaveBeenCalled();
+    expect(activeGraph.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not start rendering the discarded StrictMode probe instance when data is cached", async () => {
+    renderPage({
+      strict: true,
+      initialGraphData: largeGraph(2),
+    });
+
+    await waitFor(() => expect(graphMocks.instances).toHaveLength(2));
+    const [discardedGraph, activeGraph] = graphMocks.instances;
+
+    await waitFor(() => expect(activeGraph.render).toHaveBeenCalledTimes(1));
+    expect(discardedGraph.render).not.toHaveBeenCalled();
+    expect(discardedGraph.destroy).toHaveBeenCalledTimes(1);
+  });
+
   it("persists an observed size before first render and releases graph resources", async () => {
     const view = renderPage();
 
@@ -180,8 +232,32 @@ describe("GraphExplorerPage performance lifecycle", () => {
 
     expect(graph.off).toHaveBeenCalledWith("node:click", clickHandler);
     expect(observer?.disconnect).toHaveBeenCalledTimes(1);
-    expect(graph.stopLayout).toHaveBeenCalled();
+    expect(graph.stopLayout).not.toHaveBeenCalled();
     expect(graph.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops the previous layout only after a successful render", async () => {
+    apiMocks.exploreGraph
+      .mockResolvedValueOnce(largeGraph(2))
+      .mockResolvedValueOnce(largeGraph(3));
+    renderPage();
+
+    await waitFor(() => {
+      expect(graphMocks.instances[0]?.render).toHaveBeenCalledTimes(1);
+    });
+    const graph = graphMocks.instances[0];
+    expect(graph.stopLayout).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByPlaceholderText("节点类型筛选"), {
+      target: { value: "客户" },
+    });
+
+    await waitFor(
+      () => expect(apiMocks.exploreGraph).toHaveBeenCalledTimes(2),
+      { timeout: 700 },
+    );
+    await waitFor(() => expect(graph.render).toHaveBeenCalledTimes(2));
+    expect(graph.stopLayout).toHaveBeenCalledTimes(1);
   });
 
   it("updates data on the existing graph and selects the bounded large-graph layout", async () => {
@@ -200,5 +276,44 @@ describe("GraphExplorerPage performance lifecycle", () => {
       }),
     );
     expect(graphMocks.Graph).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows a recoverable query error and reloads graph data", async () => {
+    apiMocks.exploreGraph
+      .mockRejectedValueOnce(new Error("network unavailable"))
+      .mockResolvedValueOnce(EMPTY_GRAPH);
+    renderPage();
+
+    expect(
+      await screen.findByText("图谱数据加载失败"),
+    ).toBeInTheDocument();
+    expect(graphMocks.instances[0]?.render).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "重新加载" }));
+
+    await waitFor(() =>
+      expect(apiMocks.exploreGraph).toHaveBeenCalledTimes(2),
+    );
+    expect(await screen.findByText("暂无图谱数据")).toBeInTheDocument();
+  });
+
+  it("shows a recoverable render error and retries without stopping an unrendered layout", async () => {
+    apiMocks.exploreGraph.mockResolvedValueOnce(largeGraph(1));
+    graphMocks.renderQueue.push(
+      () => Promise.reject(new Error("canvas initialization failed")),
+    );
+    renderPage();
+
+    expect(await screen.findByText("图谱渲染失败")).toBeInTheDocument();
+    const graph = graphMocks.instances[0];
+    expect(graph.stopLayout).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "重试渲染" }));
+
+    await waitFor(() => expect(graph.render).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(screen.queryByText("图谱渲染失败")).not.toBeInTheDocument(),
+    );
+    expect(graph.stopLayout).not.toHaveBeenCalled();
   });
 });
