@@ -1,4 +1,5 @@
 import {
+  useEffect,
   useId,
   useMemo,
   useState,
@@ -90,7 +91,32 @@ const COMMUNITY_COLORS: CommunityColor[] = [
   { strong: "#6D4BC3", soft: "#EAE2FF", wash: "#F8F5FF" },
   { strong: "#B13D64", soft: "#FADCE7", wash: "#FFF5F8" },
   { strong: "#34786A", soft: "#DDF1EA", wash: "#F4FAF8" },
+  { strong: "#2B78A0", soft: "#D9EEF7", wash: "#F3FAFD" },
+  { strong: "#C15A28", soft: "#F7E0D5", wash: "#FFF6F1" },
 ];
+
+const COMMUNITY_COLOR_INDEX: Record<string, number> = {
+  "stage.greeting": 0,
+  "stage.requirement": 1,
+  "stage.presentation": 2,
+  "stage.experience": 3,
+  "objection.price": 4,
+  "intent.level": 5,
+  next_step: 6,
+  "compliance.risk": 7,
+};
+
+function stableCommunityColor(key: string): CommunityColor {
+  const preferredIndex = COMMUNITY_COLOR_INDEX[key];
+  if (preferredIndex !== undefined) {
+    return COMMUNITY_COLORS[preferredIndex];
+  }
+  let hash = 0;
+  for (const character of key) {
+    hash = (hash * 31 + character.charCodeAt(0)) >>> 0;
+  }
+  return COMMUNITY_COLORS[hash % COMMUNITY_COLORS.length];
+}
 
 const EDGE_APPEARANCE: Record<
   GraphEdgeKind,
@@ -321,152 +347,92 @@ function buildLayout(nodes: GraphNode[]): {
     };
   }
 
-  const regionWidth =
-    communityKeys.length === 1
-      ? GRAPH_WIDTH - 180
-      : communityKeys.length === 2
-        ? 390
-        : 300;
-  const communityHeights = communityKeys.map((community) => {
-    const members = communitiesByKey.get(community) ?? [];
-    const focusCount = members.filter((node) => node.kind === "focus").length;
-    const orbitCount = members.length - focusCount;
-    const columns = regionWidth > 700 ? 6 : 3;
-    const rows =
-      focusCount === 1
-        ? Math.ceil(orbitCount / columns)
-        : Math.ceil(members.length / columns);
-    if (focusCount > 1) {
-      return Math.max(240, 80 + rows * 54);
-    }
-    return Math.min(
-      320,
-      Math.max(210, (focusCount === 1 ? 128 : 80) + rows * 46),
-    );
-  });
-  const maximumHeight = Math.max(...communityHeights);
-  const graphHeight =
-    communityKeys.length === 1
-      ? Math.max(MIN_GRAPH_HEIGHT, maximumHeight + 220)
-      : communityKeys.length === 2
-        ? MIN_GRAPH_HEIGHT
-        : communityKeys.length <= 6
-          ? 780
-          : Math.max(
-              MIN_GRAPH_HEIGHT,
-              190 +
-                Math.ceil(communityKeys.length / 3) * (maximumHeight + 44),
-            );
+  const graphHeight = communityKeys.length > 10 ? 900 : 760;
   const root: NodePosition =
     communityKeys.length === 1
-      ? { x: GRAPH_WIDTH / 2, y: maximumHeight + 112 }
-      : communityKeys.length > 6
-        ? { x: GRAPH_WIDTH / 2, y: 88 }
-        : { x: GRAPH_WIDTH / 2, y: graphHeight / 2 };
+      ? { x: 220, y: graphHeight / 2 }
+      : { x: GRAPH_WIDTH / 2, y: graphHeight / 2 };
 
-  const radialCenters = (count: number): NodePosition[] => {
-    const topY = 170;
-    const middleY = graphHeight / 2;
-    const bottomY = graphHeight - 170;
+  const orbitalCenters = (count: number): NodePosition[] => {
     if (count === 1) {
-      return [{ x: GRAPH_WIDTH / 2, y: 30 + maximumHeight / 2 }];
+      return [{ x: 710, y: graphHeight / 2 }];
     }
     if (count === 2) {
       return [
-        { x: 235, y: middleY },
-        { x: GRAPH_WIDTH - 235, y: middleY },
+        { x: 230, y: graphHeight / 2 },
+        { x: GRAPH_WIDTH - 230, y: graphHeight / 2 },
       ];
     }
-    if (count === 3) {
-      return [
-        { x: 205, y: topY },
-        { x: GRAPH_WIDTH - 205, y: topY },
-        { x: GRAPH_WIDTH / 2, y: bottomY },
-      ];
-    }
-    if (count === 4) {
-      return [
-        { x: 205, y: topY },
-        { x: GRAPH_WIDTH - 205, y: topY },
-        { x: 205, y: bottomY },
-        { x: GRAPH_WIDTH - 205, y: bottomY },
-      ];
-    }
-    if (count === 5) {
-      return [
-        { x: 180, y: topY },
-        { x: GRAPH_WIDTH / 2, y: topY },
-        { x: GRAPH_WIDTH - 180, y: topY },
-        { x: 315, y: bottomY },
-        { x: GRAPH_WIDTH - 315, y: bottomY },
-      ];
-    }
-    return [
-      { x: 180, y: topY },
-      { x: GRAPH_WIDTH / 2, y: topY },
-      { x: GRAPH_WIDTH - 180, y: topY },
-      { x: 180, y: bottomY },
-      { x: GRAPH_WIDTH / 2, y: bottomY },
-      { x: GRAPH_WIDTH - 180, y: bottomY },
-    ];
+
+    const horizontalRadius = count <= 4 ? 340 : 370;
+    const verticalRadius = count <= 4 ? 238 : 270;
+    return communityKeys.map((_, index) => {
+      const angle = -Math.PI / 2 + (index / count) * Math.PI * 2;
+      return {
+        x: root.x + Math.cos(angle) * horizontalRadius,
+        y: root.y + Math.sin(angle) * verticalRadius,
+      };
+    });
   };
 
-  const centers =
-    communityKeys.length <= 6
-      ? radialCenters(communityKeys.length)
-      : communityKeys.map((_, index) => ({
-          x: 190 + (index % 3) * 370,
-          y:
-            190 +
-            Math.floor(index / 3) * (maximumHeight + 44) +
-            maximumHeight / 2,
-        }));
+  const centers = orbitalCenters(communityKeys.length);
 
   const communities: CommunityLayout[] = communityKeys.map(
     (community, communityIndex) => {
       const center = centers[communityIndex];
-      const width = regionWidth;
-      const height = communityHeights[communityIndex];
+      const members = communitiesByKey.get(community) ?? [];
+      const width =
+        communityKeys.length === 1
+          ? 700
+          : Math.min(248, Math.max(190, 154 + members.length * 12));
+      const height =
+        communityKeys.length === 1
+          ? 520
+          : Math.min(198, Math.max(148, 118 + members.length * 10));
       const x = center.x - width / 2;
       const y = center.y - height / 2;
-      const members = communitiesByKey.get(community) ?? [];
-      const focusMembers = members.filter((node) => node.kind === "focus");
-      const orbitMembers = members.filter((node) => node.kind !== "focus");
-      const columns = width > 700 ? 6 : 3;
-      if (focusMembers.length === 1) {
-        positions.set(focusMembers[0].id, {
-          x: center.x,
-          y: y + 58,
+      const orderedMembers = [...members].sort(
+        (left, right) =>
+          ["focus", "value", "evidence"].indexOf(left.kind) -
+          ["focus", "value", "evidence"].indexOf(right.kind),
+      );
+
+      orderedMembers.forEach((node, index) => {
+        if (index === 0) {
+          positions.set(node.id, center);
+          return;
+        }
+
+        let ring = 1;
+        let ringStart = 1;
+        let ringCapacity = 6;
+        while (index >= ringStart + ringCapacity) {
+          ringStart += ringCapacity;
+          ring += 1;
+          ringCapacity = ring * 6;
+        }
+        const indexInRing = index - ringStart;
+        const angle =
+          -Math.PI / 2 +
+          (indexInRing / ringCapacity) * Math.PI * 2 +
+          (ring % 2 === 0 ? Math.PI / ringCapacity : 0);
+        const radiusX = Math.min(
+          width * 0.42,
+          (communityKeys.length === 1 ? 74 : 42) * ring,
+        );
+        const radiusY = Math.min(
+          height * 0.39,
+          (communityKeys.length === 1 ? 58 : 34) * ring,
+        );
+        positions.set(node.id, {
+          x: center.x + Math.cos(angle) * radiusX,
+          y: center.y + Math.sin(angle) * radiusY,
         });
-        const rows = Math.max(1, Math.ceil(orbitMembers.length / columns));
-        const rowGap =
-          rows <= 1 ? 0 : Math.min(48, (height - 132) / (rows - 1));
-        orbitMembers.forEach((node, index) => {
-          const column = index % columns;
-          const row = Math.floor(index / columns);
-          positions.set(node.id, {
-            x: x + ((column + 0.5) * width) / columns,
-            y: y + 112 + row * rowGap,
-          });
-        });
-      } else {
-        const rows = Math.max(1, Math.ceil(members.length / columns));
-        const rowGap =
-          rows <= 1 ? 0 : Math.min(54, (height - 98) / (rows - 1));
-        members.forEach((node, index) => {
-          const column = index % columns;
-          const row = Math.floor(index / columns);
-          positions.set(node.id, {
-            x: x + ((column + 0.5) * width) / columns,
-            y: y + 62 + row * rowGap,
-          });
-        });
-      }
+      });
 
       return {
         key: community,
-        color:
-          COMMUNITY_COLORS[communityIndex % COMMUNITY_COLORS.length],
+        color: stableCommunityColor(community),
         x,
         y,
         width,
@@ -494,6 +460,9 @@ function nodeAppearance(
   node: GraphNode,
   color: CommunityColor,
 ): { fill: string; stroke: string } {
+  if (node.kind === "focus") {
+    return { fill: "#FFFFFF", stroke: color.strong };
+  }
   if (node.kind === "evidence") {
     return { fill: "#FFFFFF", stroke: "#7386A5" };
   }
@@ -501,7 +470,7 @@ function nodeAppearance(
     return { fill: "#FFF1ED", stroke: "#C94D32" };
   }
   if (node.status === "agreement") {
-    return { fill: node.kind === "focus" ? color.soft : "#EAF8F1", stroke: "#16805D" };
+    return { fill: "#EAF8F1", stroke: "#16805D" };
   }
   return { fill: color.soft, stroke: color.strong };
 }
@@ -510,9 +479,9 @@ function nodeDimensions(kind: GraphNodeKind): {
   width: number;
   height: number;
 } {
-  if (kind === "focus") return { width: 94, height: 42 };
-  if (kind === "value") return { width: 94, height: 38 };
-  return { width: 86, height: 34 };
+  if (kind === "focus") return { width: 34, height: 34 };
+  if (kind === "value") return { width: 22, height: 22 };
+  return { width: 18, height: 18 };
 }
 
 function clipLabel(value: string, maxLength: number): string {
@@ -576,6 +545,21 @@ const NODE_KIND_LABELS: Record<GraphNodeKind, string> = {
   value: "组版本值",
   evidence: "原始证据",
 };
+
+const COMMUNITY_DISPLAY_NAMES: Record<string, string> = {
+  "stage.greeting": "初次接触",
+  "stage.requirement": "需求发现",
+  "stage.presentation": "方案推荐",
+  "stage.experience": "产品体验",
+  "objection.price": "价格异议",
+  "intent.level": "购买意向",
+  next_step: "下一步计划",
+  "compliance.risk": "合规风险",
+};
+
+function communityDisplayName(key: string): string {
+  return COMMUNITY_DISPLAY_NAMES[key] ?? key;
+}
 
 function curvedEdgePath(
   source: NodePosition,
@@ -807,6 +791,31 @@ export function TagInsightGraph({
     () => [...new Set(graph.nodes.map((node) => node.community))],
     [graph.nodes],
   );
+  useEffect(() => {
+    setSelectedNodeId((current) => {
+      if (
+        current !== null &&
+        graph.nodes.some((node) => node.id === current)
+      ) {
+        return current;
+      }
+      return (
+        graph.nodes.find(
+          (node) => node.kind === "focus" && node.status === "conflict",
+        )?.id ??
+        graph.nodes.find((node) => node.kind === "focus")?.id ??
+        null
+      );
+    });
+  }, [graph.nodes]);
+  useEffect(() => {
+    if (
+      selectedCommunity !== "" &&
+      !communityKeys.includes(selectedCommunity)
+    ) {
+      setSelectedCommunity("");
+    }
+  }, [communityKeys, selectedCommunity]);
   const visibleNodes = useMemo(
     () =>
       graph.nodes.filter(
@@ -1022,7 +1031,7 @@ export function TagInsightGraph({
             className="tig-graph-svg"
             style={{
               width: `${zoom * 100}%`,
-              minWidth: `${840 * zoom}px`,
+              minWidth: `${760 * zoom}px`,
             }}
           >
             <title>多标签组对比与溯源图</title>
@@ -1057,6 +1066,16 @@ export function TagInsightGraph({
                   </marker>
                 ),
               )}
+              <marker
+                id={`${markerId}-community`}
+                markerWidth="7"
+                markerHeight="7"
+                refX="6"
+                refY="3.5"
+                orient="auto"
+              >
+                <path d="M0,0 L7,3.5 L0,7 Z" fill="#6F8FB8" />
+              </marker>
             </defs>
 
             <rect
@@ -1084,33 +1103,44 @@ export function TagInsightGraph({
                   ry={community.height / 2}
                   fill={community.color.wash}
                   stroke={community.color.soft}
-                  strokeWidth="1.2"
-                  strokeDasharray="5 7"
+                  fillOpacity="0.72"
+                  strokeWidth="1"
+                  strokeDasharray="4 7"
                 />
                 <ellipse
                   cx={community.centerX}
                   cy={community.centerY}
-                  rx={community.width / 2 + 9}
-                  ry={community.height / 2 + 9}
+                  rx={community.width / 2 + 11}
+                  ry={community.height / 2 + 11}
                   fill="none"
                   stroke={community.color.soft}
-                  strokeOpacity="0.42"
+                  strokeOpacity="0.58"
+                />
+                <ellipse
+                  cx={community.centerX}
+                  cy={community.centerY}
+                  rx={community.width / 2 + 21}
+                  ry={community.height / 2 + 21}
+                  fill="none"
+                  stroke={community.color.soft}
+                  strokeOpacity="0.25"
                 />
                 <text
                   x={community.centerX}
-                  y={community.y + 20}
+                  y={community.y - 11}
                   fill={community.color.strong}
                   className="tig-community__label"
                   textAnchor="middle"
                 >
-                  {clipLabel(community.key, 25)}
+                  {clipLabel(communityDisplayName(community.key), 18)}
                 </text>
                 <text
                   x={community.centerX}
-                  y={community.y + 36}
+                  y={community.y + 4}
                   className="tig-community__meta"
                   textAnchor="middle"
                 >
+                  {community.key} ·{" "}
                   {
                     visibleNodes.filter(
                       (node) => node.community === community.key,
@@ -1129,6 +1159,7 @@ export function TagInsightGraph({
                       node.community === community.key &&
                       node.kind === "focus",
                   )
+                  .slice(0, 1)
                   .map((node) => {
                     const target = layout.positions.get(node.id);
                     if (!target) return null;
@@ -1138,7 +1169,8 @@ export function TagInsightGraph({
                         key={`central::${node.id}`}
                         d={`M ${layout.root.x} ${layout.root.y} Q ${(layout.root.x + target.x) / 2} ${(layout.root.y + target.y) / 2 - 10} ${target.x} ${target.y}`}
                         stroke={community.color.strong}
-                        strokeDasharray={row?.conflict ? "7 6" : undefined}
+                        strokeDasharray={row?.conflict ? "7 6" : "3 8"}
+                        markerEnd={`url(#${markerId}-community)`}
                         data-central-link={node.id}
                       />
                     );
@@ -1209,26 +1241,44 @@ export function TagInsightGraph({
               <circle
                 cx={layout.root.x}
                 cy={layout.root.y}
-                r="61"
+                r="82"
                 className="tig-central-target__halo"
               />
               <circle
                 cx={layout.root.x}
                 cy={layout.root.y}
-                r="53"
+                r="68"
+                className="tig-central-target__orbit"
+              />
+              <circle
+                cx={layout.root.x}
+                cy={layout.root.y}
+                r="55"
+                className="tig-central-target__orbit tig-central-target__orbit--inner"
+              />
+              <circle
+                cx={layout.root.x}
+                cy={layout.root.y}
+                r="46"
                 className="tig-central-target__body"
+              />
+              <circle
+                cx={layout.root.x}
+                cy={layout.root.y - 19}
+                r="5"
+                className="tig-central-target__signal"
               />
               <text
                 x={layout.root.x}
-                y={layout.root.y - 10}
+                y={layout.root.y - 5}
                 textAnchor="middle"
                 className="tig-central-target__eyebrow"
               >
-                TARGET LABEL
+                TARGET HUB
               </text>
               <text
                 x={layout.root.x}
-                y={layout.root.y + 8}
+                y={layout.root.y + 12}
                 textAnchor="middle"
                 className="tig-central-target__title"
               >
@@ -1236,7 +1286,7 @@ export function TagInsightGraph({
               </text>
               <text
                 x={layout.root.x}
-                y={layout.root.y + 27}
+                y={layout.root.y + 29}
                 textAnchor="middle"
                 className="tig-central-target__meta"
               >
@@ -1256,6 +1306,30 @@ export function TagInsightGraph({
                 const selected = selectedNodeId === node.id;
                 const focused = focusedNodeId === node.id;
                 const { width, height } = nodeDimensions(node.kind);
+                const community = layout.communities.find(
+                  (item) => item.key === node.community,
+                );
+                const isCommunityHub =
+                  community !== undefined &&
+                  Math.abs(position.x - community.centerX) < 1 &&
+                  Math.abs(position.y - community.centerY) < 1;
+                const labelOnLeft =
+                  community !== undefined &&
+                  position.x < community.centerX - 2;
+                const labelOffset =
+                  node.kind === "focus"
+                    ? width / 2 + 8
+                    : width / 2 + 6;
+                const labelX = isCommunityHub
+                  ? 0
+                  : labelOnLeft
+                    ? -labelOffset
+                    : labelOffset;
+                const labelAnchor = isCommunityHub
+                  ? "middle"
+                  : labelOnLeft
+                    ? "end"
+                    : "start";
                 const nodeStyle = {
                   "--tig-node-fill": appearance.fill,
                   "--tig-node-stroke": appearance.stroke,
@@ -1298,12 +1372,10 @@ export function TagInsightGraph({
                     style={nodeStyle}
                   >
                     {(selected || focused) && (
-                      <rect
-                        x={-width / 2 - 4}
-                        y={-height / 2 - 4}
-                        width={width + 8}
-                        height={height + 8}
-                        rx="13"
+                      <circle
+                        cx="0"
+                        cy="0"
+                        r={width / 2 + 5}
                         fill="none"
                         stroke={selected ? "#165DFF" : "#6C8DC2"}
                         strokeWidth="2"
@@ -1311,37 +1383,37 @@ export function TagInsightGraph({
                         className="tig-node__selection"
                       />
                     )}
-                    <rect
-                      x={-width / 2}
-                      y={-height / 2}
-                      width={width}
-                      height={height}
-                      rx={node.kind === "focus" ? 12 : 9}
-                      strokeWidth={node.kind === "focus" ? 2 : 1.5}
+                    {node.kind === "focus" && (
+                      <circle
+                        cx="0"
+                        cy="0"
+                        r={width / 2 + 4}
+                        className="tig-node__orbit"
+                      />
+                    )}
+                    <circle
+                      data-node-glyph
+                      cx="0"
+                      cy="0"
+                      r={width / 2}
+                      strokeWidth={node.kind === "focus" ? 2 : 1.4}
                       className="tig-node__body"
                     />
                     <circle
-                      cx={-width / 2 + 10}
-                      cy={-height / 2 + 10}
-                      r="4"
+                      cx={width / 2 - 2}
+                      cy={-height / 2 + 2}
+                      r={node.kind === "focus" ? 3.5 : 2.5}
                       className="tig-node__signal"
                     />
-                    <text
-                      y={node.kind === "evidence" ? 1 : -4}
-                      textAnchor="middle"
-                      dominantBaseline="middle"
-                      className="tig-node__title"
-                    >
-                      {clipLabel(node.label, node.kind === "focus" ? 20 : 15)}
-                    </text>
-                    {node.kind !== "evidence" && (
+                    {node.kind === "value" && (
                       <text
-                        y="14"
-                        textAnchor="middle"
+                        x={labelX}
+                        y="-1"
+                        textAnchor={labelAnchor}
                         dominantBaseline="middle"
-                        className="tig-node__subtitle"
+                        className="tig-node__title"
                       >
-                        {clipLabel(node.subtitle, 20)}
+                        {clipLabel(node.label, 10)}
                       </text>
                     )}
                     <title>{nodeAriaLabel(node)}</title>

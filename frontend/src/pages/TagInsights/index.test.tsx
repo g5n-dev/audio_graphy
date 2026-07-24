@@ -383,6 +383,7 @@ describe("TagInsightsPage", () => {
         name: "多标签组对比与溯源图",
       }),
     ).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("tab", { name: "对比矩阵" }));
     expect(await screen.findByText("标签矩阵")).toBeInTheDocument();
     expect(screen.getByText("结果已截断")).toBeInTheDocument();
     expect(screen.getByText("洞察输出已按预算截断")).toBeInTheDocument();
@@ -598,13 +599,14 @@ describe("TagInsightsPage", () => {
       screen.getByRole("button", { name: "运行合并与对比分析" }),
     );
 
+    await userEvent.click(screen.getByRole("tab", { name: "对比矩阵" }));
     expect(await screen.findByText("标签矩阵")).toBeInTheDocument();
     expect(screen.getAllByText("fail").length).toBeGreaterThan(0);
     expect(screen.getAllByText("pass").length).toBeGreaterThan(0);
     expect(screen.getByText("冲突")).toBeInTheDocument();
   });
 
-  it("scrolls between insight views without hijacking the HashRouter route", async () => {
+  it("switches true tab panels without scrolling or changing the route", async () => {
     mockedGetPersistedInsights.mockResolvedValueOnce({
       ...EMPTY_PERSISTED_RESPONSE,
       total_receptions: 1,
@@ -616,28 +618,101 @@ describe("TagInsightsPage", () => {
     renderPage();
 
     await screen.findByRole("heading", { name: "多标签组对比与溯源图" });
-    const chartSection = document.getElementById("tag-chart-insights");
-    expect(chartSection).not.toBeNull();
     const scrollIntoView = vi.fn();
-    Object.defineProperty(chartSection, "scrollIntoView", {
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
       configurable: true,
       value: scrollIntoView,
     });
+    Object.defineProperty(window, "scrollY", {
+      configurable: true,
+      value: 240,
+    });
+    const routeBefore = window.location.href;
 
-    const relationshipButton = screen.getByRole("button", {
+    const relationshipTab = screen.getByRole("tab", {
       name: "关系图谱",
     });
-    const chartButton = screen.getByRole("button", { name: "图表分析" });
-    expect(relationshipButton).toHaveAttribute("aria-pressed", "true");
-    expect(chartButton).toHaveAttribute("aria-pressed", "false");
+    const matrixTab = screen.getByRole("tab", { name: "对比矩阵" });
+    const chartTab = screen.getByRole("tab", { name: "图表分析" });
 
-    await userEvent.click(chartButton);
+    expect(screen.getByRole("tablist", { name: "标签洞察视图" }))
+      .toBeInTheDocument();
+    expect(relationshipTab).toHaveAttribute("aria-selected", "true");
+    expect(relationshipTab).toHaveAttribute("tabindex", "0");
+    expect(matrixTab).toHaveAttribute("aria-selected", "false");
+    expect(matrixTab).toHaveAttribute("tabindex", "-1");
+    expect(screen.getByRole("tabpanel", { name: "关系图谱" }))
+      .toBeInTheDocument();
+    expect(screen.queryByText("标签矩阵")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("group", { name: "标签趋势折线图" }),
+    ).not.toBeInTheDocument();
 
-    expect(scrollIntoView).toHaveBeenCalledWith({
-      behavior: "smooth",
-      block: "start",
+    await userEvent.click(matrixTab);
+
+    expect(matrixTab).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tabpanel", { name: "对比矩阵" }))
+      .toBeInTheDocument();
+    expect(screen.getByText("标签矩阵")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "多标签组对比与溯源图" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("group", { name: "标签趋势折线图" }),
+    ).not.toBeInTheDocument();
+
+    await userEvent.click(chartTab);
+
+    expect(chartTab).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tabpanel", { name: "图表分析" }))
+      .toBeInTheDocument();
+    expect(
+      screen.getByRole("group", { name: "标签趋势折线图" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("标签矩阵")).not.toBeInTheDocument();
+    expect(scrollIntoView).not.toHaveBeenCalled();
+    expect(window.scrollY).toBe(240);
+    expect(window.location.href).toBe(routeBefore);
+  });
+
+  it("supports arrow, Home and End keyboard navigation with roving focus", async () => {
+    mockedGetPersistedInsights.mockResolvedValueOnce({
+      ...EMPTY_PERSISTED_RESPONSE,
+      total_receptions: 1,
+      returned_reception_ids: [1],
+      total_assignments: 2,
+      assignment_count: 2,
+      insights: RESPONSE,
     });
-    expect(relationshipButton).toHaveAttribute("aria-pressed", "false");
-    expect(chartButton).toHaveAttribute("aria-pressed", "true");
+    renderPage();
+
+    const relationshipTab = await screen.findByRole("tab", {
+      name: "关系图谱",
+    });
+    const matrixTab = screen.getByRole("tab", { name: "对比矩阵" });
+    const chartTab = screen.getByRole("tab", { name: "图表分析" });
+
+    relationshipTab.focus();
+    fireEvent.keyDown(relationshipTab, { key: "ArrowRight" });
+    expect(matrixTab).toHaveFocus();
+    expect(matrixTab).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tabpanel", { name: "对比矩阵" }))
+      .toBeInTheDocument();
+
+    fireEvent.keyDown(matrixTab, { key: "End" });
+    expect(chartTab).toHaveFocus();
+    expect(chartTab).toHaveAttribute("aria-selected", "true");
+
+    fireEvent.keyDown(chartTab, { key: "ArrowRight" });
+    expect(relationshipTab).toHaveFocus();
+    expect(relationshipTab).toHaveAttribute("aria-selected", "true");
+
+    fireEvent.keyDown(relationshipTab, { key: "ArrowLeft" });
+    expect(chartTab).toHaveFocus();
+    expect(chartTab).toHaveAttribute("aria-selected", "true");
+
+    fireEvent.keyDown(chartTab, { key: "Home" });
+    expect(relationshipTab).toHaveFocus();
+    expect(relationshipTab).toHaveAttribute("aria-selected", "true");
   });
 });

@@ -382,6 +382,51 @@ describe("TagInsightGraph", () => {
     expect(within(detail).getByText("缺失")).toBeInTheDocument();
   });
 
+  it("places larger community sets around the central target with compact node glyphs", () => {
+    renderGraph({
+      ...RESPONSE,
+      matrix: Array.from({ length: 8 }, (_, index) =>
+        matrixRow(`community.${index + 1}`, ["一致", "一致"], index + 1),
+      ),
+      co_occurrences: [],
+    });
+
+    const graph = screen.getByRole("group", {
+      name: /多标签组对比与溯源图/,
+    });
+    const centralBody = graph.querySelector<SVGCircleElement>(
+      ".tig-central-target__body",
+    );
+    expect(centralBody).not.toBeNull();
+    const rootX = Number(centralBody?.getAttribute("cx"));
+    const rootY = Number(centralBody?.getAttribute("cy"));
+    const communityCenters = [
+      ...graph.querySelectorAll<SVGEllipseElement>(
+        "ellipse[data-community-field]",
+      ),
+    ].map((region) => ({
+      x: Number(region.getAttribute("cx")),
+      y: Number(region.getAttribute("cy")),
+    }));
+
+    expect(communityCenters).toHaveLength(8);
+    expect(communityCenters.some((center) => center.x < rootX - 120)).toBe(
+      true,
+    );
+    expect(communityCenters.some((center) => center.x > rootX + 120)).toBe(
+      true,
+    );
+    expect(communityCenters.some((center) => center.y < rootY - 120)).toBe(
+      true,
+    );
+    expect(communityCenters.some((center) => center.y > rootY + 120)).toBe(
+      true,
+    );
+    expect(
+      graph.querySelectorAll("circle[data-node-glyph]").length,
+    ).toBeGreaterThan(0);
+  });
+
   it("keeps nodes in a dense same-label community from overlapping", () => {
     renderGraph({
       ...RESPONSE,
