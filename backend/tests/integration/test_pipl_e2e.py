@@ -14,6 +14,7 @@ through their real constructors so the full code path is exercised.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -125,11 +126,15 @@ async def test_ingestion_encrypts_audio_and_scrubs_segments(
 
     # The .enc file exists on disk and is NOT the plaintext bytes.
     enc_path = Path(rec.audio_encrypted_path)
-    assert enc_path.exists()
-    assert enc_path.read_bytes() != audio_path.read_bytes()
+    assert await asyncio.to_thread(enc_path.exists)
+    encrypted_bytes, plaintext_bytes = await asyncio.gather(
+        asyncio.to_thread(enc_path.read_bytes),
+        asyncio.to_thread(audio_path.read_bytes),
+    )
+    assert encrypted_bytes != plaintext_bytes
 
     # The plaintext header (RIFF) is NOT visible at the start of the .enc file.
-    assert not enc_path.read_bytes().startswith(b"RIFF")
+    assert not encrypted_bytes.startswith(b"RIFF")
 
     # Now exercise update_segment_text — scrubber populates text_scrubbed.
     async with e2e_factory() as session:
@@ -156,7 +161,9 @@ async def test_ingestion_encrypts_audio_and_scrubs_segments(
 
     async with e2e_factory() as s:
         rows = list(
-            (await s.execute(select(AuditLog).where(AuditLog.action == "recording.uploaded"))).scalars().all()
+            (await s.execute(select(AuditLog).where(AuditLog.action == "recording.uploaded")))
+            .scalars()
+            .all()
         )
     assert len(rows) == 1
 
@@ -290,7 +297,9 @@ async def test_retention_sweep_deletes_all(
 
     async with e2e_factory() as s:
         audit_rows = list(
-            (await s.execute(select(AuditLog).where(AuditLog.action == "retention_delete"))).scalars().all()
+            (await s.execute(select(AuditLog).where(AuditLog.action == "retention_delete")))
+            .scalars()
+            .all()
         )
     assert len(audit_rows) == 1
     assert audit_rows[0].target == f"recording:{rec_id}"

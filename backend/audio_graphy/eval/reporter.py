@@ -58,7 +58,9 @@ def _render_markdown(run: EvalRun) -> str:
     lines.append(f"- **Gold set**: `{run.gold_set_path}`")
     lines.append(f"- **Started**: {run.started_at}")
     lines.append(f"- **Finished**: {run.finished_at}")
-    lines.append(f"- **Examples**: {len(run.per_example)} total / {len(ok_examples)} ok / {len(errors)} errors")
+    lines.append(
+        f"- **Examples**: {len(run.per_example)} total / {len(ok_examples)} ok / {len(errors)} errors"
+    )
     if run.config:
         lines.append("- **Config**:")
         for key in sorted(run.config):
@@ -138,23 +140,20 @@ def _render_markdown(run: EvalRun) -> str:
     return "\n".join(lines)
 
 
-def _find_metric(
-    metrics: tuple[MetricResult, ...], name: str
-) -> MetricResult | None:
+def _find_metric(metrics: tuple[MetricResult, ...], name: str) -> MetricResult | None:
     for m in metrics:
         if m.name == name:
             return m
     return None
 
 
-def _worst_examples(
-    examples: list[EvalExampleResult], count: int
-) -> list[EvalExampleResult]:
+def _worst_examples(examples: list[EvalExampleResult], count: int) -> list[EvalExampleResult]:
     """Return up to ``count`` worst examples sorted by primary metric ascending.
 
     If faithfulness metric is present (judge attached), sort by it; else sort
     by context_precision_at_5; else by tag_accuracy; else unsorted.
     """
+
     def key(ex: EvalExampleResult) -> float:
         for name in ("faithfulness", "context_precision_at_5", "tag_accuracy"):
             m = _find_metric(ex.metrics, name)
@@ -177,12 +176,8 @@ def _collect_phase2_metrics(
     for ex in examples:
         eer = _find_metric(ex.metrics, "voiceprint_eer")
         der = _find_metric(ex.metrics, "diarization_der")
-        eer_v = (
-            float(eer.value) if eer and not eer.details.get("skipped") else None
-        )
-        der_v = (
-            float(der.value) if der and not der.details.get("skipped") else None
-        )
+        eer_v = float(eer.value) if eer and not eer.details.get("skipped") else None
+        der_v = float(der.value) if der and not der.details.get("skipped") else None
         if eer_v is not None or der_v is not None:
             out.append((ex.example_id, eer_v, der_v))
     return out

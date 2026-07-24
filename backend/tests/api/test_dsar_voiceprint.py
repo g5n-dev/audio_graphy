@@ -117,9 +117,7 @@ def test_export_includes_voiceprints_json(
 ) -> None:
     """Export ZIP contains voiceprints.json with voiceprint_id metadata only."""
     factory = db_session_factory
-    rec_id = _run_async(
-        _seed_rec_with_voiceprint(factory, crypto=dev_crypto_fixture)
-    )
+    rec_id = _run_async(_seed_rec_with_voiceprint(factory, crypto=dev_crypto_fixture))
 
     resp = test_client.post(
         f"/api/v1/dsar/export/{rec_id}",
@@ -158,17 +156,13 @@ def test_erase_cascades_speaker_recordings_list(
 
     factory = db_session_factory
     rec_id = _run_async(
-        _seed_rec_with_voiceprint(
-            factory, crypto=dev_crypto_fixture, voiceprint_id="vp-erase-test"
-        )
+        _seed_rec_with_voiceprint(factory, crypto=dev_crypto_fixture, voiceprint_id="vp-erase-test")
     )
 
     # Confirm speaker_node has the recording.
     async def _list_speakers() -> list[int]:
         async with factory() as session:
-            nodes = list(
-                (await session.execute(select(SpeakerNode))).scalars().all()
-            )
+            nodes = list((await session.execute(select(SpeakerNode))).scalars().all())
             return [n.id for n in nodes]
 
     speakers_before = _run_async(_list_speakers())
@@ -183,9 +177,7 @@ def test_erase_cascades_speaker_recordings_list(
 
     # After erase, the speaker_node should be gone (recordings_list became empty).
     speakers_after = _run_async(_list_speakers())
-    assert speakers_after == [], (
-        f"speaker_node should have been hard-deleted, got {speakers_after}"
-    )
+    assert speakers_after == [], f"speaker_node should have been hard-deleted, got {speakers_after}"
 
 
 def test_export_without_voiceprint_rows_still_succeeds(

@@ -1,22 +1,39 @@
 """Metadata introspection tests for the models package.
 
-These tests verify that Base.metadata contains all 25 tables and that
-the models package exports all 25 model classes.
+These tests verify that Base.metadata contains all registered tables and that
+the models package exports the corresponding model classes.
 """
 
 from __future__ import annotations
 
 import pytest
 
+import audio_graphy.models.community_summary
+
+# M9 R1 T1: register the four new M9 tables on metadata.
+import audio_graphy.models.edge_event
+import audio_graphy.models.leiden_job
+import audio_graphy.models.speaker_merge_pending
+
+# M8: streaming_sessions registers its table on import; import it explicitly so
+# Base.metadata is deterministic regardless of test execution order.
+import audio_graphy.models.streaming_session  # noqa: F401
 from audio_graphy.models import (
     AuditLog,
     Base,
     Chunk,
+    DialogueStateTransition,
+    DialogueTagAssignment,
+    DialogueUnit,
     EntityAlias,
     EvalRunORM,
     LLMCallLog,
     PipelineState,
     Prompt,
+    ProvenanceEvent,
+    Reception,
+    ReceptionAutomationRun,
+    ReceptionRecording,
     RecomputeTask,
     Recording,
     RecordingStatus,
@@ -36,15 +53,6 @@ from audio_graphy.models import (
     VectorEntity,
     VoiceprintVector,
 )
-
-# M8: streaming_sessions registers its table on import; import it explicitly so
-# Base.metadata is deterministic regardless of test execution order.
-import audio_graphy.models.streaming_session  # noqa: F401,E402
-# M9 R1 T1: register the four new M9 tables on metadata.
-import audio_graphy.models.edge_event  # noqa: F401,E402
-import audio_graphy.models.community_summary  # noqa: F401,E402
-import audio_graphy.models.leiden_job  # noqa: F401,E402
-import audio_graphy.models.speaker_merge_pending  # noqa: F401,E402
 
 EXPECTED_TABLES = {
     "tenants",
@@ -75,6 +83,14 @@ EXPECTED_TABLES = {
     "community_summaries",
     "leiden_jobs",
     "speaker_merge_pending",
+    # Reception/dialogue workspace
+    "receptions",
+    "reception_recordings",
+    "dialogue_units",
+    "dialogue_state_transitions",
+    "dialogue_tag_assignments",
+    "provenance_events",
+    "reception_automation_runs",
 }
 
 EXPECTED_MODELS = {
@@ -99,16 +115,22 @@ EXPECTED_MODELS = {
     SpeakerLink,
     VoiceprintVector,
     VectorAudio,
+    Reception,
+    ReceptionRecording,
+    DialogueUnit,
+    DialogueStateTransition,
+    DialogueTagAssignment,
+    ProvenanceEvent,
+    ReceptionAutomationRun,
 }
 
 
 @pytest.mark.integration
 class TestMetadata:
-    """Verify Base.metadata contains all 25 tables (M3 13 + M5 recompute_tasks +
-    M6 eval_runs/entity_aliases + M7 4 + M8 streaming_sessions + M9 4)."""
+    """Verify metadata includes the reception/dialogue workspace tables."""
 
-    def test_metadata_has_13_tables(self) -> None:
-        assert len(Base.metadata.tables) == 25
+    def test_metadata_has_all_tables(self) -> None:
+        assert len(Base.metadata.tables) == 32
 
     def test_metadata_table_names(self) -> None:
         assert set(Base.metadata.tables.keys()) == EXPECTED_TABLES
@@ -121,7 +143,7 @@ class TestMetadata:
 
 @pytest.mark.integration
 class TestModelExports:
-    """Verify all 13 model classes are exported from the package."""
+    """Verify all registered model classes are exported from the package."""
 
     def test_all_models_importable(self) -> None:
         for model in EXPECTED_MODELS:
@@ -196,6 +218,12 @@ class TestInheritanceHierarchy:
             AuditLog,
             LLMCallLog,
             EntityAlias,
+            Reception,
+            ReceptionRecording,
+            DialogueUnit,
+            DialogueStateTransition,
+            DialogueTagAssignment,
+            ProvenanceEvent,
         }
         for model in tsb_models:
             assert issubclass(model, TenantScopedBase)

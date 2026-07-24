@@ -12,8 +12,7 @@ No source modifications. Covers:
 from __future__ import annotations
 
 import json
-import struct
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +33,8 @@ from audio_graphy.api.ws_stream import (
     _persist_session_row,
     _register_session,
     _unregister_session,
+)
+from audio_graphy.api.ws_stream import (
     router as ws_router,
 )
 from audio_graphy.auth.jwt_utils import JWTManager
@@ -55,15 +56,15 @@ def _pcm(seed: int = 0, samples: int = 512) -> bytes:
 
 def _make_session(**overrides: Any) -> StreamSession:
     asr = MockStreamingASRAdapter(connect_latency_ms=0, push_latency_ms=0)
-    kwargs: dict[str, Any] = dict(
-        session_id=StreamSessionId(value="qa-gap"),
-        tenant_id="t1",
-        recording_id=1,
-        user_id=1,
-        consent_token_hash=hash_consent_token("yes"),
-        vad_adapter=MockStreamingVADAdapter(latency_ms=0),
-        asr_adapter=asr,
-    )
+    kwargs: dict[str, Any] = {
+        "session_id": StreamSessionId(value="qa-gap"),
+        "tenant_id": "t1",
+        "recording_id": 1,
+        "user_id": 1,
+        "consent_token_hash": hash_consent_token("yes"),
+        "vad_adapter": MockStreamingVADAdapter(latency_ms=0),
+        "asr_adapter": asr,
+    }
     kwargs.update(overrides)
     return StreamSession(**kwargs)
 
@@ -165,7 +166,8 @@ class TestSileroVADPushLifecycle:
         # Next real push with low onset triggers segment_end via wall-clock —
         # but wall-clock now ≈ pending_start_ts, so force promotion directly.
         adapter._fsm.step(
-            0.0, now + adapter._min_silence_sec + 0.01,
+            0.0,
+            now + adapter._min_silence_sec + 0.01,
         )
         assert adapter._fsm.state == "SILENCE"
         # finalize the segment manually (as segment_end path would).
@@ -263,7 +265,9 @@ class TestFunASRConnectAndPush:
         ws = _StubWS()
         adapter = StreamingFunASRAdapter(ws_url="ws://funasr:10095", ws_client=ws)
         await adapter.connect(
-            session_id="s1", tenant_id="t1", hotwords=("长安CS75", "退订"),
+            session_id="s1",
+            tenant_id="t1",
+            hotwords=("长安CS75", "退订"),
         )
         assert len(ws.sent) == 1
         payload = json.loads(ws.sent[0])
@@ -297,10 +301,15 @@ class TestFunASRConnectAndPush:
         ws = _StubWS()
         ws.recv_queue = [
             json.dumps({"mode": "2pass-online", "text": "我想退", "is_final": False}),
-            json.dumps({
-                "mode": "2pass-offline", "text": "我想退订。", "is_final": True,
-                "sentence_id": 3, "confidence": 0.9,
-            }),
+            json.dumps(
+                {
+                    "mode": "2pass-offline",
+                    "text": "我想退订。",
+                    "is_final": True,
+                    "sentence_id": 3,
+                    "confidence": 0.9,
+                }
+            ),
         ]
         adapter = StreamingFunASRAdapter(ws_url="ws://x", ws_client=ws)
         await adapter.connect(session_id="s1", tenant_id="t1")
@@ -401,7 +410,9 @@ class TestFunASRConnectAndPush:
             json.dumps({"mode": "2pass-offline", "text": "done", "is_final": True}),
         ]
         adapter = StreamingFunASRAdapter(
-            ws_url="ws://x", ws_client=ws, finalize_timeout_sec=2.0,
+            ws_url="ws://x",
+            ws_client=ws,
+            finalize_timeout_sec=2.0,
         )
         await adapter.connect(session_id="s1", tenant_id="t1")
         deltas = await adapter.finalize()
@@ -417,7 +428,9 @@ class TestFunASRConnectAndPush:
         ws = _StubWS()
         ws.recv_queue = [RuntimeError("connection reset")]
         adapter = StreamingFunASRAdapter(
-            ws_url="ws://x", ws_client=ws, finalize_timeout_sec=2.0,
+            ws_url="ws://x",
+            ws_client=ws,
+            finalize_timeout_sec=2.0,
         )
         await adapter.connect(session_id="s1", tenant_id="t1")
         assert await adapter.finalize() == ()
@@ -454,7 +467,8 @@ class TestFunASRConnectAndPush:
 class TestFunASRPoolLifecycle:
     @pytest.mark.asyncio
     async def test_acquire_creates_and_connects(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         from audio_graphy.adapters.real import streaming_funasr_pool as pool_mod
 
@@ -470,7 +484,8 @@ class TestFunASRPoolLifecycle:
 
             async def connect(self, *, session_id, tenant_id, hotwords):
                 self.connected_with = {
-                    "session_id": session_id, "tenant_id": tenant_id,
+                    "session_id": session_id,
+                    "tenant_id": tenant_id,
                     "hotwords": tuple(hotwords),
                 }
 
@@ -480,7 +495,8 @@ class TestFunASRPoolLifecycle:
 
         monkeypatch.setattr(pool_mod, "StreamingFunASRAdapter", _FakeAdapter)
         pool = pool_mod.FunASRConnectionPool(
-            ws_url="ws://funasr:10095/", pool_size_per_tenant=2,
+            ws_url="ws://funasr:10095/",
+            pool_size_per_tenant=2,
         )
         adapter = await pool.acquire("t1", "s1", ("hot",))
         assert adapter.connected_with["hotwords"] == ("hot",)
@@ -524,7 +540,8 @@ class TestFunASRPoolLifecycle:
 
     @pytest.mark.asyncio
     async def test_acquire_skips_dead_free_adapter(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         from audio_graphy.adapters.real import streaming_funasr_pool as pool_mod
 
@@ -561,7 +578,9 @@ class TestFunASRPoolLifecycle:
         )
 
         pool = FunASRConnectionPool(
-            ws_url="ws://x", pool_size_per_tenant=1, max_wait_sec=0.05,
+            ws_url="ws://x",
+            pool_size_per_tenant=1,
+            max_wait_sec=0.05,
         )
         tenant_pool = await pool._ensure_pool("t1")
         # Drain the only permit.
@@ -632,7 +651,7 @@ class _FakeDBSession:
         self.added: list[Any] = []
         self.commits = 0
 
-    async def __aenter__(self) -> "_FakeDBSession":
+    async def __aenter__(self) -> _FakeDBSession:
         return self
 
     async def __aexit__(self, *exc: Any) -> None:
@@ -690,8 +709,10 @@ class TestDeltaGraphUpdaterPaths:
         db = _FakeDBSession()
         updater, store = _make_updater(tmp_path, db=db)
         chunk = ChunkRecord(
-            segment_ids=[0], text="客户A 询问了 长安CS75 的价格",
-            token_n=10, content_hash="qa-hash-1",
+            segment_ids=[0],
+            text="客户A 询问了 长安CS75 的价格",
+            token_n=10,
+            content_hash="qa-hash-1",
         )
         report = await updater.update(chunk, recording_id=1, tenant_id="t1")
         assert report.skipped_by_hash is False
@@ -704,9 +725,12 @@ class TestDeltaGraphUpdaterPaths:
     @pytest.mark.asyncio
     async def test_update_skips_on_hash_hit(self, tmp_path: Path) -> None:
         db = _FakeDBSession(existing_chunk_id=55)
-        updater, store = _make_updater(tmp_path, db=db)
+        updater, _store = _make_updater(tmp_path, db=db)
         chunk = ChunkRecord(
-            segment_ids=[0], text="重复文本", token_n=2, content_hash="dup",
+            segment_ids=[0],
+            text="重复文本",
+            token_n=2,
+            content_hash="dup",
         )
         report = await updater.update(chunk, recording_id=1, tenant_id="t1")
         assert report.skipped_by_hash is True
@@ -716,14 +740,19 @@ class TestDeltaGraphUpdaterPaths:
 
     @pytest.mark.asyncio
     async def test_remapped_endpoint_marks_edge_ambiguous(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         db = _FakeDBSession()
         updater, _store = _make_updater(
-            tmp_path, db=db, merger_remap={"客户A": "客户A- canonical"},
+            tmp_path,
+            db=db,
+            merger_remap={"客户A": "客户A- canonical"},
         )
         chunk = ChunkRecord(
-            segment_ids=[0], text="客户A 询问 长安CS75", token_n=5,
+            segment_ids=[0],
+            text="客户A 询问 长安CS75",
+            token_n=5,
             content_hash="qa-hash-2",
         )
         report = await updater.update(chunk, recording_id=1, tenant_id="t1")
@@ -767,8 +796,9 @@ class TestStreamSessionRemainingBranches:
     async def test_attach_confirmed_text_appends_to_existing(self) -> None:
         session = _make_session()
         session.confirmed_segments.append(
-            SegmentRecord(idx=0, start_sec=0.0, end_sec=1.0,
-                          transcript="hello", speaker=None, vad_conf=1.0)
+            SegmentRecord(
+                idx=0, start_sec=0.0, end_sec=1.0, transcript="hello", speaker=None, vad_conf=1.0
+            )
         )
         session._attach_confirmed_text("world")
         assert session.confirmed_segments[-1].transcript == "hello world"
@@ -789,8 +819,14 @@ class TestStreamSessionRemainingBranches:
         session = _make_session(confirmed_flush_threshold=2)
         for i in range(6):
             session.confirmed_segments.append(
-                SegmentRecord(idx=i, start_sec=0.0, end_sec=1.0,
-                              transcript=f"t{i}", speaker=None, vad_conf=1.0)
+                SegmentRecord(
+                    idx=i,
+                    start_sec=0.0,
+                    end_sec=1.0,
+                    transcript=f"t{i}",
+                    speaker=None,
+                    vad_conf=1.0,
+                )
             )
             session._enforce_confirmed_cap()
         # Cap = 2×threshold → keep most recent 4.
@@ -809,16 +845,26 @@ class TestStreamSessionRemainingBranches:
                 self.calls += 1
                 if self.calls == 1:
                     return VADEvent(
-                        seq=seq, timestamp_sec=0.0, onset_score=0.9,
-                        state="SILENCE", transition="segment_end",
+                        seq=seq,
+                        timestamp_sec=0.0,
+                        onset_score=0.9,
+                        state="SILENCE",
+                        transition="segment_end",
                         segment=SegmentRecord(
-                            idx=0, start_sec=0.0, end_sec=1.0,
-                            transcript="", speaker=None, vad_conf=1.0,
+                            idx=0,
+                            start_sec=0.0,
+                            end_sec=1.0,
+                            transcript="",
+                            speaker=None,
+                            vad_conf=1.0,
                         ),
                     )
                 return VADEvent(
-                    seq=seq, timestamp_sec=0.0, onset_score=0.0,
-                    state="SILENCE", transition="chunk",
+                    seq=seq,
+                    timestamp_sec=0.0,
+                    onset_score=0.0,
+                    state="SILENCE",
+                    transition="chunk",
                 )
 
             def reset_state(self) -> None:
@@ -831,8 +877,10 @@ class TestStreamSessionRemainingBranches:
                 pass
 
         asr = MockStreamingASRAdapter(
-            connect_latency_ms=0, push_latency_ms=0,
-            realtime_interval=1, confirmed_interval=2,
+            connect_latency_ms=0,
+            push_latency_ms=0,
+            realtime_interval=1,
+            confirmed_interval=2,
         )
         await asr.connect(session_id="s", tenant_id="t1")
         session = _make_session(vad_adapter=_ClosingVAD(), asr_adapter=asr)
@@ -876,7 +924,9 @@ def _ws_app(tmp_path: Path, **settings_over: Any) -> tuple[FastAPI, TestClient]:
 
 def _token(app: FastAPI, tenant: str = "t1") -> str:
     return app.state.jwt_manager.create_access_token(
-        user_id=1, tenant_id=tenant, role="agent",
+        user_id=1,
+        tenant_id=tenant,
+        role="agent",
     )
 
 
@@ -885,62 +935,90 @@ class TestWSInitValidation:
         from starlette.websockets import WebSocketDisconnect
 
         app, client = _ws_app(tmp_path)
-        with client:
-            with pytest.raises(WebSocketDisconnect) as exc_info:
-                with client.websocket_connect(f"/ws/stream?token={_token(app)}") as ws:
-                    ws.send_text("not json at all")
-                    ws.receive_text()
+        with (
+            client,
+            pytest.raises(WebSocketDisconnect) as exc_info,
+            client.websocket_connect(f"/ws/stream?token={_token(app)}") as ws,
+        ):
+            ws.send_text("not json at all")
+            ws.receive_text()
         assert exc_info.value.code == 4001
 
     def test_first_frame_wrong_type(self, tmp_path: Path) -> None:
         from starlette.websockets import WebSocketDisconnect
 
         app, client = _ws_app(tmp_path)
-        with client:
-            with pytest.raises(WebSocketDisconnect) as exc_info:
-                with client.websocket_connect(f"/ws/stream?token={_token(app)}") as ws:
-                    ws.send_text(json.dumps({"type": "finalize"}))
-                    ws.receive_text()
+        with (
+            client,
+            pytest.raises(WebSocketDisconnect) as exc_info,
+            client.websocket_connect(f"/ws/stream?token={_token(app)}") as ws,
+        ):
+            ws.send_text(json.dumps({"type": "finalize"}))
+            ws.receive_text()
         assert exc_info.value.code == 4001
 
     def test_missing_session_id(self, tmp_path: Path) -> None:
         from starlette.websockets import WebSocketDisconnect
 
         app, client = _ws_app(tmp_path)
-        with client:
-            with pytest.raises(WebSocketDisconnect) as exc_info:
-                with client.websocket_connect(f"/ws/stream?token={_token(app)}") as ws:
-                    ws.send_text(json.dumps({
-                        "type": "init", "recording_id": 1, "consent_token": "x",
-                    }))
-                    ws.receive_text()
+        with (
+            client,
+            pytest.raises(WebSocketDisconnect) as exc_info,
+            client.websocket_connect(f"/ws/stream?token={_token(app)}") as ws,
+        ):
+            ws.send_text(
+                json.dumps(
+                    {
+                        "type": "init",
+                        "recording_id": 1,
+                        "consent_token": "x",
+                    }
+                )
+            )
+            ws.receive_text()
         assert exc_info.value.code == 4001
 
     def test_invalid_recording_id(self, tmp_path: Path) -> None:
         from starlette.websockets import WebSocketDisconnect
 
         app, client = _ws_app(tmp_path)
-        with client:
-            with pytest.raises(WebSocketDisconnect) as exc_info:
-                with client.websocket_connect(f"/ws/stream?token={_token(app)}") as ws:
-                    ws.send_text(json.dumps({
-                        "type": "init", "session_id": "s1",
-                        "recording_id": -5, "consent_token": "x",
-                    }))
-                    ws.receive_text()
+        with (
+            client,
+            pytest.raises(WebSocketDisconnect) as exc_info,
+            client.websocket_connect(f"/ws/stream?token={_token(app)}") as ws,
+        ):
+            ws.send_text(
+                json.dumps(
+                    {
+                        "type": "init",
+                        "session_id": "s1",
+                        "recording_id": -5,
+                        "consent_token": "x",
+                    }
+                )
+            )
+            ws.receive_text()
         assert exc_info.value.code == 4001
 
     def test_missing_consent_closes_4002(self, tmp_path: Path) -> None:
         from starlette.websockets import WebSocketDisconnect
 
         app, client = _ws_app(tmp_path)
-        with client:
-            with pytest.raises(WebSocketDisconnect) as exc_info:
-                with client.websocket_connect(f"/ws/stream?token={_token(app)}") as ws:
-                    ws.send_text(json.dumps({
-                        "type": "init", "session_id": "s1", "recording_id": 1,
-                    }))
-                    ws.receive_text()
+        with (
+            client,
+            pytest.raises(WebSocketDisconnect) as exc_info,
+            client.websocket_connect(f"/ws/stream?token={_token(app)}") as ws,
+        ):
+            ws.send_text(
+                json.dumps(
+                    {
+                        "type": "init",
+                        "session_id": "s1",
+                        "recording_id": 1,
+                    }
+                )
+            )
+            ws.receive_text()
         assert exc_info.value.code == 4002
 
 
@@ -949,10 +1027,16 @@ def _open(client: TestClient, app: FastAPI, session_id: str) -> Any:
         def __enter__(self) -> Any:
             self._cm = client.websocket_connect(f"/ws/stream?token={_token(app)}")
             self._ws = self._cm.__enter__()
-            self._ws.send_text(json.dumps({
-                "type": "init", "session_id": session_id,
-                "recording_id": 1, "consent_token": "yes",
-            }))
+            self._ws.send_text(
+                json.dumps(
+                    {
+                        "type": "init",
+                        "session_id": session_id,
+                        "recording_id": 1,
+                        "consent_token": "yes",
+                    }
+                )
+            )
             first = json.loads(self._ws.receive_text())
             assert first["type"] == "session_opened"
             return self._ws

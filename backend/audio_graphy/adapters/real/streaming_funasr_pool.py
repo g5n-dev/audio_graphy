@@ -61,9 +61,7 @@ class _TenantPool:
 
     free: list[StreamingFunASRAdapter] = field(default_factory=list)
     in_use: set[StreamingFunASRAdapter] = field(default_factory=set)
-    semaphore: asyncio.Semaphore = field(
-        default_factory=lambda: asyncio.Semaphore(8)
-    )
+    semaphore: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(8))
 
 
 class FunASRConnectionPool:
@@ -233,7 +231,8 @@ class FunASRConnectionPool:
                 self._pools[tenant_id] = pool
                 logger.debug(
                     "funASR pool created tenant=%s size=%d",
-                    tenant_id, self._pool_size,
+                    tenant_id,
+                    self._pool_size,
                 )
             return pool
 

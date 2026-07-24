@@ -102,6 +102,36 @@ class TestContentHash:
 
 
 @pytest.mark.unit
+def test_pii_is_scrubbed_before_chunking_or_persistence(
+    mock_bundle: object,
+) -> None:
+    from audio_graphy.core.pii import PIIScrubber
+
+    chunker = Chunker(
+        mock_bundle,  # type: ignore[arg-type]
+        pii_scrubber=PIIScrubber(),
+    )
+    segments = [
+        SegmentRecord(
+            idx=0,
+            start_sec=0,
+            end_sec=2,
+            transcript="手机号 13812345678，邮箱 alice@example.com",
+            speaker="customer",
+            vad_conf=0.9,
+        )
+    ]
+
+    scrubbed = chunker._scrub_segments(segments)
+    chunks = chunker._pack_chunks(scrubbed)
+
+    assert "13812345678" not in scrubbed[0].transcript
+    assert "alice@example.com" not in scrubbed[0].transcript
+    assert "13812345678" not in chunks[0].text
+    assert "alice@example.com" not in chunks[0].text
+
+
+@pytest.mark.unit
 class TestChunkPacking:
     """Token budget packing logic."""
 

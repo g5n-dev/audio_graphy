@@ -1,375 +1,299 @@
-# AudioGraphy Deployment Guide
+# AudioGraphy 模型部署指南
 
-> 部署指南 — covers mock mode (zero-dependency dev) and real mode (GPU-backed
-> vLLM + Silero + bge-m3 + funASR). M5 code-ready.
+本指南描述当前 `docker-compose.yml` 的四种互斥拓扑。所有检查都可以通过
+`docker compose config` 完成，不需要拉取或启动大模型。
 
-| Section | What you get |
+## 1. Profile 总览
+
+| Profile | 启动的模型服务 | GPU | 适用场景 |
+|---|---|---:|---|
+| `mock` | 无；所有 adapter 保持 mock | 0 | 开发、CI、前端联调 |
+| `models-cpu` | funASR、BGE-M3 CPU、CAM++ | 0 | CPU 验证、离线小批量处理 |
+| `models-single-gpu` | CPU 服务 + vLLM strong、BGE-M3 GPU、CLAP | 1 | 单卡推理；strong/weak 逻辑共用一个 vLLM |
+| `models-multi-gpu` | 单卡全部服务 + vLLM weak | 2+ | strong/weak 分卡部署 |
+
+Profile 是互斥的。不要在同一命令同时启用 `models-cpu` 和 GPU profile，
+因为 CPU/GPU BGE 服务会同时占用相同的网络别名与宿主机端口。
+
+核心服务 `mysql`、`backend`、`frontend` 在所有拓扑中都会启动；
+`adminer` 只属于 `mock` profile。
+
+## 2. 固定镜像与安全边界
+
+| 服务 | 镜像或固定基础镜像 |
 |---|---|
-| [§1 Hardware](#1-hardware-requirements) | min vRAM / disk / GPU per topology |
-| [§2 Quick start](#2-quick-start) | one command for mock, one for real |
-| [§3 Model download](#3-model-download) | HF CLI + `HF_TOKEN` for gated Qwen |
-| [§4 Per-adapter enablement](#4-per-adapter-enablement) | flip one env var per adapter |
-| [§5 Mixed mode](#5-mixed-mode) | e.g. real VAD + mock LLM |
-| [§6 Troubleshooting](#6-troubleshooting-faq) | 10 most common failures + fixes |
-| [§7 Environment reference](#7-environment-variable-reference) | full env table |
+| MySQL | `mysql:8.0.41` |
+| Adminer | `adminer:5.3.0` |
+| vLLM strong / weak | `vllm/vllm-openai:v0.7.2` |
+| BGE-M3 CPU | `ghcr.io/huggingface/text-embeddings-inference:cpu-1.8.2` |
+| BGE-M3 GPU | `ghcr.io/huggingface/text-embeddings-inference:cuda-1.8.2` |
+| funASR | `funasr/server:1.0.5` |
+| CLAP | 自建；基础镜像 `pytorch/pytorch:2.3.1-cuda12.1-cudnn8-runtime` |
+| CAM++ | 自建；基础镜像 `python:3.11.11-slim-bookworm` |
 
----
+Compose 与两个自建模型 Dockerfile 中没有 `:latest`。CLAP/CAM++ 使用固定
+UID/GID `10001` 的非 root 用户；模型服务统一启用
+`no-new-privileges` 与 `cap_drop: ALL`。兼容的服务还启用了只读根文件系统，
+只给 `/tmp` 和模型缓存卷写权限。
 
-## 1. Hardware requirements
+录音主密钥不写入镜像、仓库或环境变量。Compose 会先运行一次性的
+`master-key-init`，在独立 `audiography_master_key` 卷中生成或校验 0600
+Fernet 密钥；backend 仅以只读方式挂载该卷，并在启动时立即校验。密钥缺失或
+损坏时服务失败关闭，不会退回明文录音。该卷必须与音频数据分开备份，删除它会
+使既有密文不可恢复。Kubernetes/生产编排应改为外部 KMS 或 Secret 挂载同一路径，
+并移除本地初始化器。
 
-| Topology | CPU | RAM | GPU | Disk | Use case |
-|---|---|---|---|---|---|
-| **Dev / CI** | 4 cores | 4 GB | none | 5 GB | mock adapters only — runs anywhere |
-| **VAD-only** | 4 cores | 8 GB | optional (Silero runs on CPU) | 10 GB | speech-segmentation evaluation |
-| **Embed-only** | 4 cores | 8 GB | 1× 16 GB (e.g. T4 / 4090) | 15 GB | bge-m3 indexing |
-| **Full real** | 8 cores | 32 GB | **2× A100 80 GB** or **2× 4090** (24 GB each) | 200 GB | full pipeline |
+Backend 还在 ASGI 入口同时校验 `Content-Length` 和分块累计字节，默认拒绝超过
+16 MiB 的 HTTP 请求体，防止合法但超大的标签快照在 Pydantic 解析前占满内存；
+反向代理应设置不高于 `MAX_REQUEST_BODY_BYTES` 的同等限制。
 
-### Per-service vRAM budget (full real)
+注意：Compose 的 `deploy.resources.limits.memory` 限制的是主机内存，不是
+显存。显存边界由显式 `device_ids`、vLLM 的
+`--gpu-memory-utilization` 以及模型服务本身共同控制。
 
-| Service | Image | vRAM peak | Notes |
-|---|---|---|---|
-| `vllm-strong` (Qwen3.6-27B FP16) | `vllm/vllm-openai:v0.7.2` | ~55 GB | 27B weights + KV cache (`--gpu-memory-utilization 0.90`) |
-| `vllm-weak` (Qwen3.6-35B-A3B FP16) | `vllm/vllm-openai:v0.7.2` | ~70 GB | MoE — only 3B activated parameters per token |
-| `bge-m3` | `ghcr.io/huggingface/text-embeddings-inference:1.5` | ~3 GB | small but required |
-| `silero-vad` | `jetresearch/silero-vad-server:latest` | <1 GB | CPU-only OK |
-| `funasr` (M5) | `funasr/server:1.0.5` | ~2 GB CPU / ~6 GB GPU | OpenAI-compat HTTP API; CPU works for `fun-asr-nano` |
+## 3. 快速启动
 
-> **Single-GPU alternative**: run `vllm-strong` and `vllm-weak` sequentially
-> with `--tensor-parallel-size 1` and `--gpu-memory-utilization 0.45` each,
-> OR put them on different GPUs with `deploy.resources.reservations.devices`.
-
-### Validate GPU before first run
-
-```bash
-nvidia-smi                                                 # host driver check
-docker run --rm --gpus all nvidia/cuda:12.4.0-base-ubuntu22.04 nvidia-smi
-docker compose --profile real up -d vllm-strong
-docker compose --profile real logs --tail=50 vllm-strong  # watch for OOM
-```
-
----
-
-## 2. Quick start
-
-### 2.1 Mock mode (zero dependencies, dev/CI default)
-
-```bash
-cp .env.example .env                  # all defaults are mock-safe
-docker compose up -d                  # mysql + adminer + backend + frontend
-curl http://localhost:8000/health     # → {"status":"ok"}
-```
-
-No GPU, no model download, no `HF_TOKEN`. Backend uses `MockVADAdapter`,
-`MockASRAdapter`, `MockLLMAdapter` × 2, `MockEmbedAdapter`.
-
-### 2.2 Real mode (all 4 real adapters)
+### 3.1 Mock
 
 ```bash
 cp .env.example .env
-# Edit .env:
-#   ADAPTER_VAD_MODE=real
-#   ADAPTER_LLM_MODE=real
-#   ADAPTER_EMBED_MODE=real
-#   JWT_SECRET=<32+ random chars>            # required when any mode is real
-#   HF_TOKEN=hf_<your token>                 # required for gated Qwen models
-
-docker compose --profile real up -d    # 9 services total
-docker compose --profile real ps       # wait until all "healthy"
-curl http://localhost:8000/health
+docker compose --profile mock up -d
+docker compose --profile mock ps
+curl http://127.0.0.1:8000/health
 ```
 
-> **`ADAPTER_ASR_MODE=real` is enabled in M5** — set it to `real` along with
-> `FUNASR_URL=http://funasr:8000` to call the funASR OpenAI-compat API. The
-> M4 placeholder image (`funasr-runtime-sdk-online-cpu-0.1.12`) is no longer
-> used; switch to `funasr/server:1.0.5` (already in compose).
+`.env.example` 默认全部为 mock，不下载模型，也不需要 GPU。
 
-### 2.3 M5: real ASR (funASR only)
+### 3.2 CPU 模型
 
-```bash
-cp .env.example .env
-# Edit .env:
-#   ADAPTER_ASR_MODE=real
-#   FUNASR_URL=http://funasr:8000
-#   FUNASR_MODEL=fun-asr-nano        # CPU-friendly; set fun-asr-large for GPU
-#   JWT_SECRET=<32+ random chars>
-
-docker compose --profile real up -d funasr backend
-```
-
-funASR runs on CPU with `fun-asr-nano` (about 2 GB RAM, ~40s cold start). For
-GPU inference switch to `fun-asr-large` and set `FUNASR_DEVICE=cuda` plus the
-`deploy.resources` GPU stanza (see compose comments).
-
-### 2.4 Evaluation CLI (M5)
-
-The eval CLI is one-shot — no new compose service. Run it inside the backend
-container so it can reach vLLM over the internal network:
-
-```bash
-# Mock judge (CI / no GPU available)
-docker compose run --rm backend python -m audio_graphy.eval \
-  --gold-set examples/eval/smoke.yaml \
-  --report-dir reports/ \
-  --no-judge
-
-# Real judge (requires vllm-strong healthy)
-docker compose --profile real run --rm backend python -m audio_graphy.eval \
-  --gold-set examples/eval/smoke.yaml \
-  --report-dir reports/
-```
-
-See [`docs/m5-eval.md`](./m5-eval.md) for the full CLI reference.
-
-### 2.5 M6: PIPL §14.3 + Prometheus metrics + rapidfuzz
-
-M6 adds three optional-but-recommended capabilities. All are
-**opt-in via env vars** and have safe defaults for mock-mode dev:
-
-```bash
-cp .env.example .env
-# Edit .env — M6 section:
-#   MASTER_KEY_PATH=/run/secrets/audiography_master.key    # PIPL audio encryption
-#   ENTITY_FUZZY_THRESHOLD=0.85                            # rapidfuzz threshold
-#   EVAL_POSITION_DEBIAS=true                              # judge de-bias
-
-# Provision the master key (one-time, per environment):
-python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())" \
-  > /run/secrets/audiography_master.key
-chmod 0600 /run/secrets/audiography_master.key
-
-# Start normally — PIPL is auto-enabled when the key file exists.
-docker compose up -d
-
-# Verify PIPL:
-curl http://localhost:8000/health                            # backend up
-curl http://localhost:8000/metrics | grep audiography_audit  # prometheus exposes audit counter
-```
-
-**What M6 enables:**
-- AES envelope encryption for audio files at rest (`core/crypto.py`).
-- PII scrubbing for 6 categories in transcripts + LLM answers (`core/pii.py`).
-- Daily 03:00 cron hard-deletes recordings past `RECORDING_RETENTION_DAYS`.
-- 3 admin-only DSAR endpoints (`/api/v1/dsar/{export,erase,audit}`).
-- Prometheus `/metrics` endpoint on port 8000 (Q4 locked — main app reused).
-- rapidfuzz WRatio ≥ 0.85 clusters near-dup Chinese entities (`core/entity_merger.py`).
-- 4 async eval REST endpoints (`/api/v1/eval/runs*`) — replaces eval CLI for prod.
-- Position de-bias for LLM-judge metrics (run twice, original + reversed).
-
-See [`docs/m6-pipl.md`](./m6-pipl.md) for the PIPL compliance guide and
-[`docs/m6-eval.md`](./m6-eval.md) for the eval REST API reference.
-
-### 2.6 Prometheus scraping
-
-The `/metrics` endpoint is unauthenticated and lives on the main FastAPI
-port (8000). Add a scrape job to your `prometheus.yml`:
-
-```yaml
-scrape_configs:
-  - job_name: audiography
-    scrape_interval: 15s
-    metrics_path: /metrics
-    static_configs:
-      - targets: ["audiography-backend:8000"]
-```
-
-Key metrics to alert on (M6):
-- `audiography_audit_log_written_total{action}` — compliance dashboard.
-- `audiography_retention_deletes_total` — retention health.
-- `audiography_http_requests_total{status="500"}` — error budget.
-- `audiography_pipeline_seconds{stage="request"}` — p99 latency.
-
----
-
-## 3. Model download
-
-### 3.1 Required HuggingFace weights
-
-| Service | Repo ID | Gated? | Size |
-|---|---|---|---|
-| vllm-strong | `Qwen/Qwen3.6-27B` | **yes** | ~55 GB |
-| vllm-weak | `Qwen/Qwen3.6-35B-A3B` | **yes** | ~70 GB |
-| bge-m3 | `BAAI/bge-m3` | no | ~2 GB |
-| silero-vad | baked into image | — | — |
-
-### 3.2 Auth for gated models
-
-```bash
-pip install -U "huggingface_hub[cli]"
-huggingface-cli login                  # paste your HF token
-# or set HF_TOKEN in .env — compose passes it through to vLLM/TEI containers
-```
-
-The `vllm_cache` volume caches weights across container restarts, so the
-~125 GB download only happens once.
-
-### 3.3 Pre-pull (optional, recommended for offline hosts)
-
-```bash
-docker compose --profile real pull vllm-strong vllm-weak bge-m3 silero-vad funasr
-```
-
----
-
-## 4. Per-adapter enablement
-
-Each adapter is an independent switch. The backend `Settings` validator reads
-them at startup — see `backend/audio_graphy/config.py`.
-
-| To enable | Env var | Compose service |
-|---|---|---|
-| Silero VAD | `ADAPTER_VAD_MODE=real` | `silero-vad` |
-| vLLM strong+weak LLM | `ADAPTER_LLM_MODE=real` | `vllm-strong`, `vllm-weak` |
-| bge-m3 embedding | `ADAPTER_EMBED_MODE=real` | `bge-m3` |
-| funASR (M5) | `ADAPTER_ASR_MODE=real` | `funasr` (`funasr/server:1.0.5`, port `10095:8000`) |
-
-> **Important**: `ADAPTER_MODE` (legacy global) does **not** auto-propagate to
-> the per-adapter fields. You must set each of the 4 fields explicitly.
-> This was a deliberate simplification (Q5, see `docs/m4-architecture.md` §1.6).
-
----
-
-## 5. Mixed mode
-
-You can mix mock + real freely. Only the services whose mode is `real` need
-to be started.
-
-### 5.1 Example: real VAD + real embed, mock LLM (low-cost indexing box)
+在 `.env` 至少设置：
 
 ```dotenv
-ADAPTER_VAD_MODE=real
-ADAPTER_LLM_MODE=mock
+ADAPTER_ASR_MODE=real
 ADAPTER_EMBED_MODE=real
+ADAPTER_VOICEPRINT_MODE=real
+ENABLE_VOICEPRINT=true
+
+ADAPTER_LLM_MODE=mock
+ADAPTER_VAD_MODE=mock
+ADAPTER_AUDIO_EMBED_MODE=mock
 ```
+
+然后启动：
 
 ```bash
-docker compose --profile real up -d silero-vad bge-m3 backend mysql
+docker compose --profile models-cpu up -d
+docker compose --profile models-cpu ps
 ```
 
-### 5.2 Example: only real LLM (debugging prompt quality)
+CPU profile 不含 CLAP，因为 CLAP 服务在本项目中强制使用 CUDA。
+
+### 3.3 单 GPU
+
+单卡 profile 只启动 `vllm-strong`。后端仍保留 strong/weak 两个逻辑角色，
+因此把 weak 指向同一服务，并让两个逻辑模型名都匹配 strong 的
+`--served-model-name`：
 
 ```dotenv
+ADAPTER_ASR_MODE=real
+ADAPTER_EMBED_MODE=real
 ADAPTER_LLM_MODE=real
+ADAPTER_AUDIO_EMBED_MODE=real
+ADAPTER_VOICEPRINT_MODE=real
+ENABLE_CLAP=true
+ENABLE_VOICEPRINT=true
+ADAPTER_VAD_MODE=mock
+
+OPENAI_BASE_URL_STRONG=http://vllm-strong:8000/v1
+OPENAI_BASE_URL_WEAK=http://vllm-strong:8000/v1
+LLM_STRONG_MODEL=qwen3.6-27b
+LLM_WEAK_MODEL=qwen3.6-27b
 ```
 
 ```bash
-docker compose --profile real up -d vllm-strong vllm-weak backend mysql
+docker compose --profile models-single-gpu up -d
+docker compose --profile models-single-gpu ps
 ```
 
-### 5.3 What happens internally
+默认模型需要大显存卡。24 GB 单卡应通过 `VLLM_STRONG_MODEL` 和
+`VLLM_STRONG_SERVED_NAME` 换成经过验证的小模型或量化模型，同时同步
+`LLM_STRONG_MODEL` / `LLM_WEAK_MODEL`。
 
-The `build_adapters()` factory inspects the 4 modes; if **any** is `"real"` it
-calls `build_hybrid_bundle()` which constructs each adapter independently:
+### 3.4 多 GPU
 
-| Adapter | mock | real |
+默认分配如下：
+
+| 服务 | 默认宿主 GPU |
+|---|---:|
+| `vllm-strong` | `0` |
+| `vllm-weak` | `1` |
+| `bge-m3-gpu` | `0` |
+| `clap-service` | `0` |
+
+```dotenv
+ADAPTER_ASR_MODE=real
+ADAPTER_EMBED_MODE=real
+ADAPTER_LLM_MODE=real
+ADAPTER_AUDIO_EMBED_MODE=real
+ADAPTER_VOICEPRINT_MODE=real
+ENABLE_CLAP=true
+ENABLE_VOICEPRINT=true
+ADAPTER_VAD_MODE=mock
+
+OPENAI_BASE_URL_STRONG=http://vllm-strong:8000/v1
+OPENAI_BASE_URL_WEAK=http://vllm-weak:8000/v1
+```
+
+```bash
+docker compose --profile models-multi-gpu up -d
+docker compose --profile models-multi-gpu ps
+```
+
+可通过以下变量重新分配设备，不需要改 YAML：
+
+```dotenv
+VLLM_STRONG_GPU_ID=0
+VLLM_WEAK_GPU_ID=1
+BGE_M3_GPU_ID=0
+CLAP_GPU_ID=0
+
+VLLM_STRONG_GPU_MEMORY_UTILIZATION=0.72
+VLLM_WEAK_GPU_MEMORY_UTILIZATION=0.82
+```
+
+每个 GPU 服务只申请一个明确的 `device_id`，不会再使用 `count: all`。
+
+## 4. 端口与服务发现
+
+容器间通信必须使用服务名和容器端口；宿主端口只用于本机诊断。应用端口由
+`COMPOSE_APP_BIND_HOST` 控制，数据库、Adminer 和模型 API 由
+`COMPOSE_PRIVATE_BIND_HOST` 控制；两者默认都是 `127.0.0.1`，不会直接暴露
+到局域网或公网。
+
+| 服务 | 容器内地址 | 默认宿主地址 |
 |---|---|---|
-| VAD | `MockVADAdapter` | `SileroVADAdapter` (url from `SILERO_VAD_URL`) |
-| ASR | `MockASRAdapter` | `FunASRAdapter` (url from `FUNASR_URL`; reuses `OPENAI_API_KEY` as Bearer) |
-| LLM strong+weak | `MockLLMAdapter` × 2 | `LLMOpenAIAdapter` × 2 (urls from `OPENAI_BASE_URL_*`) |
-| Embed | `MockEmbedAdapter` | `BGEEmbedAdapter` (url from `BGE_M3_URL`) |
+| MySQL | `mysql:3306` | `127.0.0.1:3307` |
+| Adminer | `adminer:8080` | `127.0.0.1:8081` |
+| backend | `backend:8000` | `127.0.0.1:8000` |
+| frontend | `frontend:5173` | `127.0.0.1:5173` |
+| vLLM strong | `vllm-strong:8000` | `127.0.0.1:18000` |
+| vLLM weak | `vllm-weak:8000` | `127.0.0.1:18001` |
+| BGE-M3 | `bge-m3:80` | `127.0.0.1:18080` |
+| funASR | `funasr:8000` | `127.0.0.1:10095` |
+| CLAP | `clap-service:8006` | `127.0.0.1:18006` |
+| CAM++ | `campplus-service:8007` | `127.0.0.1:18007` |
 
-Startup log shows the chosen combination:
-`Building HYBRID adapter bundle (asr=mock vad=real llm=mock embed=real)`.
+这消除了后端与 `vllm-strong` 同时发布宿主机 `8000` 的冲突。宿主端口可通过
+`*_HOST_PORT` 环境变量修改。
 
----
+如确需让反向代理从其他主机访问前后端，可只开放应用端口：
 
-## 6. Troubleshooting FAQ
+```dotenv
+COMPOSE_APP_BIND_HOST=0.0.0.0
+COMPOSE_PRIVATE_BIND_HOST=127.0.0.1
+```
 
-### 6.1 vLLM container OOM on startup
-**Symptom**: `CUDA out of memory` in `docker compose logs vllm-strong`.
-**Fix**: lower `--gpu-memory-utilization 0.90` to `0.70` in compose, or upgrade
-to A100 80 GB. Two 4090s (24 GB each) are NOT enough for Qwen3.6-27B FP16 —
-switch to AWQ quantized weights in M5+.
+生产环境应优先保留回环绑定，由同机反向代理只转发 frontend/backend。不要
+把 `COMPOSE_PRIVATE_BIND_HOST` 改为 `0.0.0.0`；如果隔离网络中的远程推理
+节点确实需要访问，应同时配置宿主防火墙、TLS、认证，并将
+`MYSQL_ROOT_PASSWORD`、`MYSQL_PASSWORD`、`JWT_SECRET`、`OPENAI_API_KEY`
+替换为独立强密钥。Adminer 不应在生产 profile 启动。
 
-### 6.2 vLLM returns HTTP 500 on `/v1/chat/completions`
-**Symptom**: backend logs `LLMServerError: LLM 500`.
-**Diagnostic**: `docker compose --profile real logs --tail=100 vllm-strong`.
-**Common causes**: model name mismatch (the `--served-model-name` in compose
-MUST equal `LLM_STRONG_MODEL` in `.env`), prompt exceeds context window, or
-weights partially downloaded (delete `vllm_cache` volume and re-pull).
+## 5. VAD 部署边界
 
-### 6.3 bge-m3 dim mismatch
-**Symptom**: backend logs `EmbedDimMismatchError: expected 1024, got 512`.
-**Cause**: TEI container launched with the wrong `--model-id` (e.g. bge-small
-instead of bge-m3). Verify compose `command:` is `--model-id BAAI/bge-m3`.
-Also check `EMBEDDING_DIM=1024` in `.env`.
+### 5.1 Batch VAD
 
-### 6.4 Silero VAD image trust warning
-**Symptom**: "should I trust `jetresearch/silero-vad-server:latest`?"
-**Context**: this image is **community-maintained, NOT official Silero**.
-**Mitigation**:
-1. Pin a digest: `image: jetresearch/silero-vad-server@sha256:<digest>`.
-2. Audit the source: <https://github.com/jetresearch/silero-vad-server>.
-3. Or fall back to `ADAPTER_VAD_MODE=mock` until you self-host.
+旧 Compose 使用的 `jetresearch/silero-vad-server:latest` 无法验证公开版本和
+镜像来源，已从拓扑移除。不要用虚构 tag 代替可审计供应链。
 
-### 6.5 `REAL adapter ON but JWT_SECRET is placeholder` warning
-**Symptom**: backend startup logs this warning.
-**Fix**: edit `.env` and set `JWT_SECRET=<32+ random chars>`. The validator
-emits this whenever any `ADAPTER_*_MODE=real` is enabled. It does NOT block
-startup, but real services should never run with the placeholder secret.
+Batch VAD 默认保持：
 
-### 6.6 Network timeout calling real adapter
-**Symptom**: `LLMTimeoutError` / `VADTimeoutError` in backend logs.
-**Fix**: check the target container is healthy (`docker compose ps`), check
-DNS resolution from inside the backend container
-(`docker compose exec backend python -c "import socket; print(socket.gethostbyname('vllm-strong'))"`),
-verify the URL in `.env` has the right port (`8000` for vLLM internal,
-`8002` for Silero external, `8080` for bge-m3).
+```dotenv
+ADAPTER_VAD_MODE=mock
+SILERO_VAD_URL=http://silero-vad.invalid:8000
+```
 
-### 6.7 Port conflict on host (8000 / 8001 / 8002 / 8080)
-**Symptom**: `bind: address already in use` when running `docker compose up`.
-**Fix**: change the LEFT side of the `ports:` mapping
-(e.g. `"18000:8000"`). The backend talks to containers over the internal
-docker network, so the host port mapping is only for your direct testing.
+如需真实 batch VAD，用户必须提供经过审计、兼容以下契约的外部服务，并将
+`SILERO_VAD_URL` 指向它：
 
-### 6.8 `--served-model-name` mismatch
-**Symptom**: `LLMBadRequest: model not found` from vLLM.
-**Fix**: the model name the backend sends (from `LLM_STRONG_MODEL`) MUST
-exactly match `--served-model-name` in the vLLM compose command.
-`.env` default `LLM_STRONG_MODEL=qwen3.6-27b` matches compose
-`--served-model-name qwen3.6-27b`. Case-sensitive.
+- `POST /v1/vad/segment`
+- multipart 字段 `audio`、`min_segment_sec`、`max_segment_sec`
+- 返回 `segments[].start_sec/end_sec/confidence`
 
-### 6.9 File permission errors in `working_dir`
-**Symptom**: backend logs `PermissionError: /data/working_dir/...`.
-**Fix**: `docker compose down && sudo chown -R 1000:1000 ./working_dir`
-(or whatever UID the backend container runs as). The `working_dir` volume
-must be writable by the backend for VideoRAG file index.
+### 5.2 Streaming VAD
 
-### 6.10 Volume mount issues — model re-downloads every restart
-**Symptom**: each `docker compose --profile real up` re-pulls ~125 GB.
-**Fix**: confirm `vllm_cache` and `tei_cache` volumes exist:
-`docker volume ls | grep audiography`. If missing, the compose YAML in
-`docker-compose.yml` was edited — the `volumes:` block at the bottom must
-declare both. Don't `docker compose down -v` (the `-v` flag wipes volumes).
+Streaming VAD 使用项目内 ONNX adapter，不依赖 batch VAD HTTP 容器。使用
+只读模型挂载 overlay：
 
----
+```bash
+SILERO_VAD_MODEL_FILE=/absolute/path/silero_vad.onnx \
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.streaming-vad.yml \
+  --profile mock up -d
+```
 
-## 7. Environment variable reference
+Overlay 会设置：
 
-| Var | Default | Purpose |
-|---|---|---|
-| `ADAPTER_MODE` | `mock` | legacy global — does NOT drive resolution (M4) |
-| `ADAPTER_ASR_MODE` | `mock` | M5: `real` → `funasr` service (OpenAI-compat port `:8000`) |
-| `ADAPTER_VAD_MODE` | `mock` | `real` → `silero-vad` service |
-| `ADAPTER_LLM_MODE` | `mock` | `real` → `vllm-strong` + `vllm-weak` |
-| `ADAPTER_EMBED_MODE` | `mock` | `real` → `bge-m3` service |
-| `FUNASR_URL` | `http://funasr:8000` | OpenAI-compat endpoint (M5+) |
-| `FUNASR_MODEL` | `fun-asr-nano` | must match `--served-model-name` |
-| `FUNASR_DEVICE` | `cpu` | `cpu` for nano, `cuda` for large |
-| `SILERO_VAD_URL` | `http://silero-vad:8002` | adapter appends `/v1/vad/segment` |
-| `BGE_M3_URL` | `http://bge-m3:8080` | adapter appends `/v1/embeddings` |
-| `OPENAI_BASE_URL_STRONG` | `http://vllm-strong:8000/v1` | full path with `/v1` |
-| `OPENAI_BASE_URL_WEAK` | `http://vllm-weak:8001/v1` | full path with `/v1` |
-| `OPENAI_API_KEY` | `dummy` | vLLM ignores value; also reused as funASR Bearer |
-| `LLM_STRONG_MODEL` | `qwen3.6-27b` | MUST match vLLM `--served-model-name` |
-| `LLM_WEAK_MODEL` | `qwen3.6-35b-a3b` | MUST match vLLM `--served-model-name` |
-| `JUDGE_LLM_MODEL` | empty | empty → use `LLM_STRONG_MODEL` |
-| `EVAL_CONCURRENCY` | `4` | parallel examples during evaluation |
-| `EMBEDDING_DIM` | `1024` | bge-m3 native dim — do not change |
-| `HF_TOKEN` | empty | required for gated Qwen models on HuggingFace |
-| `JWT_SECRET` | `change-me-...` | **override when any `ADAPTER_*_MODE=real`** |
-| `MYSQL_HOST` / `MYSQL_PORT` | `mysql` / `3306` | docker-internal |
-| `WORKING_DIR` | `/data/working_dir` | VideoRAG file index root |
+```dotenv
+ADAPTER_STREAMING_VAD_MODE=real
+SILERO_VAD_MODEL_PATH=/models/silero_vad.onnx
+```
 
----
+## 6. 静态验证（不拉模型）
 
-**Owner**: 寇豆码 (backend) · **Reviewer**: 高见远 (architect) · **Sign-off**: 齐活林 (PM)
+```bash
+for profile in mock models-cpu models-single-gpu models-multi-gpu; do
+  docker compose --env-file /dev/null \
+    --profile "$profile" config --quiet
+done
+
+cd backend
+uv run pytest tests/infrastructure/test_compose_profiles.py -q --no-cov
+```
+
+配置测试覆盖：
+
+- 每个 profile 的精确服务集合；
+- 宿主端口不冲突；
+- 所有宿主端口默认仅绑定 `127.0.0.1`；
+- 所有镜像禁止 `:latest`；
+- GPU 服务只保留一个显式 `device_id`；
+- 模型服务健康检查与基础安全边界；
+- CLAP/CAM++ 非 root 与只读根文件系统；
+- streaming VAD ONNX 挂载只读；
+- 后端使用正确的容器内端口。
+
+## 7. 常见问题
+
+### vLLM 启动时 OOM
+
+降低 `VLLM_*_GPU_MEMORY_UTILIZATION`，换用更小或量化模型，或把
+`BGE_M3_GPU_ID` / `CLAP_GPU_ID` 调整到其他 GPU。不要让多个大模型在单卡上
+各自声明接近 `0.9` 的显存利用率。
+
+### 单卡模式 weak 请求失败
+
+确认 `.env` 同时满足：
+
+```dotenv
+OPENAI_BASE_URL_WEAK=http://vllm-strong:8000/v1
+LLM_WEAK_MODEL=qwen3.6-27b
+```
+
+### BGE 连接失败
+
+容器内 URL 必须是 `http://bge-m3:80`，不能写宿主调试端口 `18080`。
+CPU/GPU 两个服务通过网络别名统一为 `bge-m3`。
+
+### 模型缓存每次重下
+
+检查 `audiography_vllm_cache`、`audiography_tei_cache`、
+`audiography_funasr_cache`、`audiography_clap_cache` 和
+`audiography_campplus_cache` 是否存在。不要执行
+`docker compose down -v`，该命令会删除模型与数据库卷。
+
+### CLAP/CAM++ 权限错误
+
+两个镜像以 UID/GID `10001` 运行。Compose 命名卷会自动提供容器内缓存；
+如果改成宿主 bind mount，必须预先把目录授权给 `10001:10001`。

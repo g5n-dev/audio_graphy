@@ -19,7 +19,6 @@ Cases:
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -73,7 +72,7 @@ def _complete_run(
         md_path = report_dir / f"eval_run_{run_id}.md"
         md_path.write_text(f"# Eval Report {run_id}\n\nmock content\n", encoding="utf-8")
         json_path = report_dir / f"eval_run_{run_id}.json"
-        json_path.write_text('{"run_id": "%s"}' % run_id, encoding="utf-8")
+        json_path.write_text(f'{{"run_id": "{run_id}"}}', encoding="utf-8")
 
     async def _go() -> None:
         await state.transition_to(run_id, "running")

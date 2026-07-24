@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from fastapi.testclient import TestClient
 
-from audio_graphy.main import create_app
+from audio_graphy.main import _build_audio_crypto, create_app
 
 
 @pytest.fixture
@@ -75,3 +77,55 @@ class TestRootEndpoint:
         assert resp.status_code == 200
         body = resp.json()
         assert body["docs"] == "/docs"
+
+
+def test_audio_crypto_startup_validation_fails_closed_without_key(tmp_path) -> None:
+    settings = SimpleNamespace(
+        master_key_path=str(tmp_path / "missing.key"),
+        log_level="INFO",
+        audio_crypto_chunk_size_bytes=4096,
+        max_recording_audio_bytes=1024 * 1024,
+    )
+
+    with pytest.raises(FileNotFoundError, match="Master key not found"):
+        _build_audio_crypto(settings)
+
+
+def test_audio_crypto_debug_startup_generates_and_validates_key(tmp_path) -> None:
+    key_path = tmp_path / "dev.key"
+    settings = SimpleNamespace(
+        master_key_path=str(key_path),
+        log_level="DEBUG",
+        audio_crypto_chunk_size_bytes=4096,
+        max_recording_audio_bytes=1024 * 1024,
+    )
+
+    crypto = _build_audio_crypto(settings)
+
+    assert key_path.exists()
+    crypto.validate_master_key()
+
+
+@pytest.mark.asyncio
+async def test_graph_store_factory_cold_loads_and_reuses_tenant_store(
+    tmp_path,
+) -> None:
+    """The lifespan factory must not skip a tenant merely because cache is cold."""
+    from audio_graphy.core.types import _list_to_str
+    from audio_graphy.main import _build_graph_store_factory
+    from audio_graphy.storage.graph_networkx import NetworkXGraphStore
+
+    seeded = NetworkXGraphStore(tmp_path, tenant_id="tenant-a")
+    await seeded.load()
+    seeded.graph.add_node("persisted", recording_ids=_list_to_str(["7"]))
+    seeded.invalidate_path_projection()
+    await seeded.save()
+
+    stores = {}
+    factory = _build_graph_store_factory(stores, tmp_path)
+    first = await factory("tenant-a")
+    second = await factory("tenant-a")
+
+    assert first is second
+    assert first.graph.has_node("persisted")
+    assert stores["tenant-a"] is first

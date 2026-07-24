@@ -81,7 +81,9 @@ class LLMOpenAIAdapter:
             cached = self._cache[cache_key]
             logger.debug(
                 "LLM cache HIT key=%s model=%s hash=%s",
-                cache_key[:8], self.model, prompt_hash[:8],
+                cache_key[:8],
+                self.model,
+                prompt_hash[:8],
             )
             return LLMResponse(
                 text=cached.text,
@@ -104,7 +106,9 @@ class LLMOpenAIAdapter:
         headers = {"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"}
         logger.debug(
             "LLM complete url=%s model=%s hash=%s",
-            _redact(full_url), self.model, prompt_hash[:8],
+            _redact(full_url),
+            self.model,
+            prompt_hash[:8],
         )
 
         try:
@@ -113,13 +117,15 @@ class LLMOpenAIAdapter:
             logger.warning("LLM timeout model=%s err=%s", self.model, exc)
             raise LLMTimeoutError(
                 f"LLM timeout model={self.model}: {exc}",
-                url=self._base_url, model=self.model,
+                url=self._base_url,
+                model=self.model,
             ) from exc
         except httpx.HTTPError as exc:
             logger.warning("LLM transport error model=%s err=%s", self.model, exc)
             raise LLMServerError(
                 f"LLM transport error: {exc}",
-                url=self._base_url, model=self.model,
+                url=self._base_url,
+                model=self.model,
             ) from exc
 
         self._raise_for_status(resp, full_url)
@@ -139,7 +145,9 @@ class LLMOpenAIAdapter:
 
         logger.debug(
             "LLM OK model=%s hash=%s tokens=%s",
-            self.model, prompt_hash[:8], response.usage,
+            self.model,
+            prompt_hash[:8],
+            response.usage,
         )
         return response
 
@@ -172,18 +180,24 @@ class LLMOpenAIAdapter:
             logger.warning("LLM 400 model=%s body=%s", self.model, body_preview)
             raise LLMBadRequest(
                 f"LLM 400: {body_preview}",
-                url=self._base_url, status_code=400, model=self.model,
+                url=self._base_url,
+                status_code=400,
+                model=self.model,
             )
         if resp.status_code == 429:
             logger.warning("LLM 429 model=%s", self.model)
             raise LLMRateLimitError(
                 "LLM 429: rate limited",
-                url=self._base_url, status_code=429, model=self.model,
+                url=self._base_url,
+                status_code=429,
+                model=self.model,
             )
         logger.warning("LLM %d model=%s body=%s", resp.status_code, self.model, body_preview)
         raise LLMServerError(
             f"LLM {resp.status_code}: {body_preview}",
-            url=self._base_url, status_code=resp.status_code, model=self.model,
+            url=self._base_url,
+            status_code=resp.status_code,
+            model=self.model,
         )
 
     def _parse_response(self, resp: httpx.Response) -> tuple[str, dict[str, int]]:
@@ -193,7 +207,9 @@ class LLMOpenAIAdapter:
             logger.warning("LLM non-JSON response: %s", exc)
             raise LLMServerError(
                 f"LLM non-JSON response: {exc}",
-                url=self._base_url, status_code=resp.status_code, model=self.model,
+                url=self._base_url,
+                status_code=resp.status_code,
+                model=self.model,
             ) from exc
 
         try:
@@ -201,7 +217,9 @@ class LLMOpenAIAdapter:
         except (KeyError, IndexError, TypeError) as exc:
             raise LLMServerError(
                 f"LLM JSON missing choices[0].message.content: {str(body)[:200]}",
-                url=self._base_url, status_code=resp.status_code, model=self.model,
+                url=self._base_url,
+                status_code=resp.status_code,
+                model=self.model,
             ) from exc
 
         usage_raw = body.get("usage") or {}
@@ -215,5 +233,7 @@ class LLMOpenAIAdapter:
 
 # Protocol satisfaction check.
 _LLM_PROTOCOL_CHECK: LLMAdapter = LLMOpenAIAdapter(
-    base_url="http://example/v1", api_key="dummy", model="x",
+    base_url="http://example/v1",
+    api_key="dummy",
+    model="x",
 )

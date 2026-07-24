@@ -25,9 +25,7 @@ _URL = "http://campplus-service:8007"
 
 def _ok_diarize_payload(segments: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     if segments is None:
-        segments = [
-            {"start_sec": 0.0, "end_sec": 1.5, "speaker_id": "spk_0", "confidence": 0.9}
-        ]
+        segments = [{"start_sec": 0.0, "end_sec": 1.5, "speaker_id": "spk_0", "confidence": 0.9}]
     return {
         "segments": segments,
         "num_speakers": 1,
@@ -84,9 +82,7 @@ async def test_diarize_handles_malformed_segments(tmp_path, adapter):
         {"start_sec": "bad", "end_sec": 2.0},  # missing speaker + bad start
         {"start_sec": 2.0, "end_sec": 3.0, "speaker_id": "spk_1"},  # OK
     ]
-    respx.post(f"{_URL}/v1/diarize").respond(
-        200, json=_ok_diarize_payload(segments=segments)
-    )
+    respx.post(f"{_URL}/v1/diarize").respond(200, json=_ok_diarize_payload(segments=segments))
     result = await adapter.diarize(str(wav))
     assert len(result.segments) == 2
 
@@ -120,9 +116,7 @@ async def test_diarize_500_raises_server_error(tmp_path, adapter):
 async def test_diarize_timeout_raises_timeout_error(tmp_path, adapter):
     wav = tmp_path / "a.wav"
     wav.write_bytes(b"x")
-    respx.post(f"{_URL}/v1/diarize").mock(
-        side_effect=httpx.TimeoutException("timed out")
-    )
+    respx.post(f"{_URL}/v1/diarize").mock(side_effect=httpx.TimeoutException("timed out"))
     with pytest.raises(VoiceprintTimeoutError):
         await adapter.diarize(str(wav))
 
@@ -131,9 +125,7 @@ async def test_diarize_timeout_raises_timeout_error(tmp_path, adapter):
 async def test_diarize_http_error_raises_server_error(tmp_path, adapter):
     wav = tmp_path / "a.wav"
     wav.write_bytes(b"x")
-    respx.post(f"{_URL}/v1/diarize").mock(
-        side_effect=httpx.ConnectError("refused")
-    )
+    respx.post(f"{_URL}/v1/diarize").mock(side_effect=httpx.ConnectError("refused"))
     with pytest.raises(VoiceprintServerError, match="transport error"):
         await adapter.diarize(str(wav))
 
@@ -165,9 +157,7 @@ async def test_diarize_missing_segments_key_raises(tmp_path, adapter):
 async def test_extract_voiceprint_happy_path(tmp_path, adapter):
     wav = tmp_path / "a.wav"
     wav.write_bytes(b"x" * 100)
-    respx.post(f"{_URL}/v1/voiceprint/extract").respond(
-        200, json=_ok_voiceprint_payload()
-    )
+    respx.post(f"{_URL}/v1/voiceprint/extract").respond(200, json=_ok_voiceprint_payload())
     result = await adapter.extract_voiceprint(str(wav), speaker_id="spk_0")
     assert result.dim == 192
     assert result.speaker_id == "spk_0"
@@ -214,9 +204,7 @@ async def test_extract_voiceprint_missing_key_raises(tmp_path, adapter):
 async def test_extract_voiceprint_empty_list_raises(tmp_path, adapter):
     wav = tmp_path / "a.wav"
     wav.write_bytes(b"x")
-    respx.post(f"{_URL}/v1/voiceprint/extract").respond(
-        200, json={"voiceprint": [], "dim": 0}
-    )
+    respx.post(f"{_URL}/v1/voiceprint/extract").respond(200, json={"voiceprint": [], "dim": 0})
     with pytest.raises(VoiceprintServerError, match="non-empty list"):
         await adapter.extract_voiceprint(str(wav))
 
@@ -245,18 +233,14 @@ async def test_extract_voiceprint_length_mismatch_raises(tmp_path, adapter):
 
 
 @respx.mock
-async def test_extract_voiceprint_unnormalised_logs_warning(
-    tmp_path, adapter, caplog
-):
+async def test_extract_voiceprint_unnormalised_logs_warning(tmp_path, adapter, caplog):
     wav = tmp_path / "a.wav"
     wav.write_bytes(b"x")
     bad_vec = [1.0] * 192  # norm way off
     respx.post(f"{_URL}/v1/voiceprint/extract").respond(
         200, json={"voiceprint": bad_vec, "dim": 192}
     )
-    with caplog.at_level(
-        "WARNING", logger="audio_graphy.adapters.real.voiceprint_cam"
-    ):
+    with caplog.at_level("WARNING", logger="audio_graphy.adapters.real.voiceprint_cam"):
         result = await adapter.extract_voiceprint(str(wav))
     assert result.dim == 192
     assert any("L2 norm" in r.message for r in caplog.records)

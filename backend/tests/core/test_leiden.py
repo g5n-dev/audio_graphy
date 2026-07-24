@@ -13,7 +13,6 @@ Covers:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -96,8 +95,13 @@ def test_compute_diff_added_below_threshold(svc: IncrementalLeidenService) -> No
     )
     diff = svc.compute_diff(
         current_nodes=[
-            _node("A"), _node("B"), _node("C"),
-            _node("D"), _node("E"), _node("F"), _node("G"),  # 1 new
+            _node("A"),
+            _node("B"),
+            _node("C"),
+            _node("D"),
+            _node("E"),
+            _node("F"),
+            _node("G"),  # 1 new
         ],
         current_edge_count=5,
         prior=prior,
@@ -297,20 +301,14 @@ def test_is_close_to_zero_helper() -> None:
 
 def test_invalid_threshold_raises(tmp_path: Path) -> None:
     with pytest.raises(ValueError):
-        IncrementalLeidenService(
-            snapshot_dir=tmp_path, threshold_percent=-1.0
-        )
+        IncrementalLeidenService(snapshot_dir=tmp_path, threshold_percent=-1.0)
     with pytest.raises(ValueError):
-        IncrementalLeidenService(
-            snapshot_dir=tmp_path, threshold_percent=150.0
-        )
+        IncrementalLeidenService(snapshot_dir=tmp_path, threshold_percent=150.0)
 
 
 def test_invalid_lib_raises(tmp_path: Path) -> None:
     with pytest.raises(ValueError):
-        IncrementalLeidenService(
-            snapshot_dir=tmp_path, preferred_lib="bogus"
-        )
+        IncrementalLeidenService(snapshot_dir=tmp_path, preferred_lib="bogus")
 
 
 # ============================================================

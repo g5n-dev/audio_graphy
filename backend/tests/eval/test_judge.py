@@ -88,9 +88,7 @@ async def test_judge_faithfulness_parses_jsonl(respx_mock: respx.MockRouter) -> 
 async def test_judge_relevance_parses_float(respx_mock: respx.MockRouter) -> None:
     """Single-float response "1.0" → 1.0."""
     judge, adapter = _make_judge()
-    respx_mock.post(_LLM_URL).mock(
-        return_value=httpx.Response(200, json=_openai_text("1.0"))
-    )
+    respx_mock.post(_LLM_URL).mock(return_value=httpx.Response(200, json=_openai_text("1.0")))
     try:
         score = await judge.judge_relevance("q", "a")
         assert score == pytest.approx(1.0)
@@ -104,9 +102,7 @@ async def test_judge_relevance_malformed_fallback(
 ) -> None:
     """Non-numeric response → 0.0 + WARNING log."""
     judge, adapter = _make_judge()
-    respx_mock.post(_LLM_URL).mock(
-        return_value=httpx.Response(200, json=_openai_text("无法判断"))
-    )
+    respx_mock.post(_LLM_URL).mock(return_value=httpx.Response(200, json=_openai_text("无法判断")))
     try:
         with caplog.at_level("WARNING", logger="audio_graphy.eval.judge"):
             score = await judge.judge_relevance("q", "a")
@@ -131,9 +127,7 @@ async def test_judge_relevance_snaps_out_of_set(
 ) -> None:
     """Numeric but out-of-set value (0.7) snaps to nearest allowed (0.5)."""
     judge, adapter = _make_judge()
-    respx_mock.post(_LLM_URL).mock(
-        return_value=httpx.Response(200, json=_openai_text("0.7"))
-    )
+    respx_mock.post(_LLM_URL).mock(return_value=httpx.Response(200, json=_openai_text("0.7")))
     try:
         with caplog.at_level("WARNING", logger="audio_graphy.eval.judge"):
             score = await judge.judge_relevance("q", "a")
@@ -144,14 +138,10 @@ async def test_judge_relevance_snaps_out_of_set(
 
 
 @pytest.mark.asyncio
-async def test_judge_relevance_wraps_backticks(
-    respx_mock: respx.MockRouter
-) -> None:
+async def test_judge_relevance_wraps_backticks(respx_mock: respx.MockRouter) -> None:
     """Relevance wrapped in markdown fences (`1.0`) → 1.0."""
     judge, adapter = _make_judge()
-    respx_mock.post(_LLM_URL).mock(
-        return_value=httpx.Response(200, json=_openai_text("`1.0`"))
-    )
+    respx_mock.post(_LLM_URL).mock(return_value=httpx.Response(200, json=_openai_text("`1.0`")))
     try:
         score = await judge.judge_relevance("q", "a")
         assert score == pytest.approx(1.0)
@@ -169,9 +159,7 @@ async def test_judge_faithfulness_malformed_line(
         return_value=httpx.Response(
             200,
             json=_openai_text(
-                '{"id": 1, "supported": true}\n'
-                "garbage-not-json\n"
-                '{"id": 3, "supported": false}\n'
+                '{"id": 1, "supported": true}\ngarbage-not-json\n{"id": 3, "supported": false}\n'
             ),
         )
     )
@@ -185,9 +173,7 @@ async def test_judge_faithfulness_malformed_line(
 
 
 @pytest.mark.asyncio
-async def test_judge_faithfulness_pad_when_llm_under_returns(
-    respx_mock: respx.MockRouter
-) -> None:
+async def test_judge_faithfulness_pad_when_llm_under_returns(respx_mock: respx.MockRouter) -> None:
     """LLM returns fewer verdicts than facts → pad with False + WARNING."""
     judge, adapter = _make_judge()
     respx_mock.post(_LLM_URL).mock(
@@ -204,9 +190,7 @@ async def test_judge_faithfulness_pad_when_llm_under_returns(
 
 
 @pytest.mark.asyncio
-async def test_judge_faithfulness_truncate_when_over_returns(
-    respx_mock: respx.MockRouter
-) -> None:
+async def test_judge_faithfulness_truncate_when_over_returns(respx_mock: respx.MockRouter) -> None:
     """LLM returns more verdicts than facts → truncate to expected count."""
     judge, adapter = _make_judge()
     respx_mock.post(_LLM_URL).mock(
@@ -227,9 +211,7 @@ async def test_judge_faithfulness_truncate_when_over_returns(
 
 
 @pytest.mark.asyncio
-async def test_judge_faithfulness_empty_facts_short_circuits(
-    respx_mock: respx.MockRouter
-) -> None:
+async def test_judge_faithfulness_empty_facts_short_circuits(respx_mock: respx.MockRouter) -> None:
     """Empty facts list → no LLM call, returns []."""
     judge, adapter = _make_judge()
     try:
@@ -245,9 +227,7 @@ async def test_judge_extract_facts_no_lines(
 ) -> None:
     """LLM returns empty / non-bulleted gibberish → [] + WARNING."""
     judge, adapter = _make_judge()
-    respx_mock.post(_LLM_URL).mock(
-        return_value=httpx.Response(200, json=_openai_text(""))
-    )
+    respx_mock.post(_LLM_URL).mock(return_value=httpx.Response(200, json=_openai_text("")))
     try:
         with caplog.at_level("WARNING", logger="audio_graphy.eval.judge"):
             facts = await judge.extract_facts("dummy")
@@ -258,9 +238,7 @@ async def test_judge_extract_facts_no_lines(
 
 
 @pytest.mark.asyncio
-async def test_judge_extract_facts_strips_numbered_prefix(
-    respx_mock: respx.MockRouter
-) -> None:
+async def test_judge_extract_facts_strips_numbered_prefix(respx_mock: respx.MockRouter) -> None:
     """Lines like ``1. fact`` are normalized to bare text."""
     judge, adapter = _make_judge()
     respx_mock.post(_LLM_URL).mock(
@@ -290,14 +268,10 @@ async def test_judge_aclose_forwards_to_llm() -> None:
 
 
 @pytest.mark.asyncio
-async def test_judge_relevance_markdown_asterisk(
-    respx_mock: respx.MockRouter
-) -> None:
+async def test_judge_relevance_markdown_asterisk(respx_mock: respx.MockRouter) -> None:
     """``**1.0**`` (markdown bold) → 1.0."""
     judge, adapter = _make_judge()
-    respx_mock.post(_LLM_URL).mock(
-        return_value=httpx.Response(200, json=_openai_text("**1.0**"))
-    )
+    respx_mock.post(_LLM_URL).mock(return_value=httpx.Response(200, json=_openai_text("**1.0**")))
     try:
         score = await judge.judge_relevance("q", "a")
         assert score == pytest.approx(1.0)

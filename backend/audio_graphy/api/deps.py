@@ -173,17 +173,21 @@ async def get_current_user(request: Request) -> AuthUser:
                 )
             )
             db_user = result.scalar_one_or_none()
-            if db_user is not None:
-                user = AuthUser(
-                    id=db_user.id,
-                    name=str(db_user.name),
-                    email=str(db_user.email),
-                    role=str(db_user.role),
-                    tenant_id=str(db_user.tenant_id),
-                )
-                request.state.user = user
-                # Set agent_filter for agent role
-                if user.role == "agent":
-                    request.state.agent_filter = user.name
+            if db_user is None:
+                # JWTs and native-audio playback grants must stop working as
+                # soon as the backing account is removed. Never fall back to
+                # stale claims when the authoritative row no longer exists.
+                raise InvalidTokenError("User no longer exists")
+            user = AuthUser(
+                id=db_user.id,
+                name=str(db_user.name),
+                email=str(db_user.email),
+                role=str(db_user.role),
+                tenant_id=str(db_user.tenant_id),
+            )
+            request.state.user = user
+            # Set agent_filter for agent role
+            if user.role == "agent":
+                request.state.agent_filter = user.name
 
     return user

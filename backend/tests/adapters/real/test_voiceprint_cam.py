@@ -34,6 +34,7 @@ def _fake_voiceprint(dim: int = 192) -> list[float]:
 # diarize endpoint
 # ============================================================
 
+
 @pytest.mark.asyncio
 async def test_diarize_happy(respx_mock: respx.MockRouter, tmp_wav: Path) -> None:
     adapter = _make_adapter()
@@ -72,9 +73,7 @@ async def test_diarize_missing_file() -> None:
 @pytest.mark.asyncio
 async def test_diarize_400(respx_mock: respx.MockRouter, tmp_wav: Path) -> None:
     adapter = _make_adapter()
-    respx_mock.post(_DIARIZE_URL).mock(
-        return_value=httpx.Response(400, text="bad")
-    )
+    respx_mock.post(_DIARIZE_URL).mock(return_value=httpx.Response(400, text="bad"))
     try:
         with pytest.raises(VoiceprintRequestError):
             await adapter.diarize(str(tmp_wav))
@@ -85,9 +84,7 @@ async def test_diarize_400(respx_mock: respx.MockRouter, tmp_wav: Path) -> None:
 @pytest.mark.asyncio
 async def test_diarize_500(respx_mock: respx.MockRouter, tmp_wav: Path) -> None:
     adapter = _make_adapter()
-    respx_mock.post(_DIARIZE_URL).mock(
-        return_value=httpx.Response(500, text="err")
-    )
+    respx_mock.post(_DIARIZE_URL).mock(return_value=httpx.Response(500, text="err"))
     try:
         with pytest.raises(VoiceprintServerError):
             await adapter.diarize(str(tmp_wav))
@@ -98,9 +95,7 @@ async def test_diarize_500(respx_mock: respx.MockRouter, tmp_wav: Path) -> None:
 @pytest.mark.asyncio
 async def test_diarize_timeout(respx_mock: respx.MockRouter, tmp_wav: Path) -> None:
     adapter = _make_adapter()
-    respx_mock.post(_DIARIZE_URL).mock(
-        side_effect=httpx.TimeoutException("t")
-    )
+    respx_mock.post(_DIARIZE_URL).mock(side_effect=httpx.TimeoutException("t"))
     try:
         with pytest.raises(VoiceprintTimeoutError):
             await adapter.diarize(str(tmp_wav))
@@ -111,9 +106,7 @@ async def test_diarize_timeout(respx_mock: respx.MockRouter, tmp_wav: Path) -> N
 @pytest.mark.asyncio
 async def test_diarize_bad_json(respx_mock: respx.MockRouter, tmp_wav: Path) -> None:
     adapter = _make_adapter()
-    respx_mock.post(_DIARIZE_URL).mock(
-        return_value=httpx.Response(200, text="<html/>")
-    )
+    respx_mock.post(_DIARIZE_URL).mock(return_value=httpx.Response(200, text="<html/>"))
     try:
         with pytest.raises(VoiceprintServerError):
             await adapter.diarize(str(tmp_wav))
@@ -122,13 +115,9 @@ async def test_diarize_bad_json(respx_mock: respx.MockRouter, tmp_wav: Path) -> 
 
 
 @pytest.mark.asyncio
-async def test_diarize_missing_segments_key(
-    respx_mock: respx.MockRouter, tmp_wav: Path
-) -> None:
+async def test_diarize_missing_segments_key(respx_mock: respx.MockRouter, tmp_wav: Path) -> None:
     adapter = _make_adapter()
-    respx_mock.post(_DIARIZE_URL).mock(
-        return_value=httpx.Response(200, json={"foo": "bar"})
-    )
+    respx_mock.post(_DIARIZE_URL).mock(return_value=httpx.Response(200, json={"foo": "bar"}))
     try:
         with pytest.raises(VoiceprintServerError):
             await adapter.diarize(str(tmp_wav))
@@ -166,6 +155,7 @@ async def test_diarize_skips_malformed_segments(
 # extract_voiceprint endpoint
 # ============================================================
 
+
 @pytest.mark.asyncio
 async def test_voiceprint_happy(respx_mock: respx.MockRouter, tmp_wav: Path) -> None:
     adapter = _make_adapter()
@@ -192,9 +182,7 @@ async def test_voiceprint_happy(respx_mock: respx.MockRouter, tmp_wav: Path) -> 
 
 
 @pytest.mark.asyncio
-async def test_voiceprint_with_crop(
-    respx_mock: respx.MockRouter, tmp_wav: Path
-) -> None:
+async def test_voiceprint_with_crop(respx_mock: respx.MockRouter, tmp_wav: Path) -> None:
     """start_sec / end_sec are forwarded as multipart fields."""
     adapter = _make_adapter()
     route = respx_mock.post(_VOICEPRINT_URL).mock(
@@ -228,9 +216,7 @@ async def test_voiceprint_missing_file() -> None:
 @pytest.mark.asyncio
 async def test_voiceprint_400(respx_mock: respx.MockRouter, tmp_wav: Path) -> None:
     adapter = _make_adapter()
-    respx_mock.post(_VOICEPRINT_URL).mock(
-        return_value=httpx.Response(400, text="bad")
-    )
+    respx_mock.post(_VOICEPRINT_URL).mock(return_value=httpx.Response(400, text="bad"))
     try:
         with pytest.raises(VoiceprintRequestError):
             await adapter.extract_voiceprint(str(tmp_wav))
@@ -241,9 +227,7 @@ async def test_voiceprint_400(respx_mock: respx.MockRouter, tmp_wav: Path) -> No
 @pytest.mark.asyncio
 async def test_voiceprint_500(respx_mock: respx.MockRouter, tmp_wav: Path) -> None:
     adapter = _make_adapter()
-    respx_mock.post(_VOICEPRINT_URL).mock(
-        return_value=httpx.Response(500, text="err")
-    )
+    respx_mock.post(_VOICEPRINT_URL).mock(return_value=httpx.Response(500, text="err"))
     try:
         with pytest.raises(VoiceprintServerError):
             await adapter.extract_voiceprint(str(tmp_wav))
@@ -252,13 +236,9 @@ async def test_voiceprint_500(respx_mock: respx.MockRouter, tmp_wav: Path) -> No
 
 
 @pytest.mark.asyncio
-async def test_voiceprint_timeout(
-    respx_mock: respx.MockRouter, tmp_wav: Path
-) -> None:
+async def test_voiceprint_timeout(respx_mock: respx.MockRouter, tmp_wav: Path) -> None:
     adapter = _make_adapter()
-    respx_mock.post(_VOICEPRINT_URL).mock(
-        side_effect=httpx.TimeoutException("t")
-    )
+    respx_mock.post(_VOICEPRINT_URL).mock(side_effect=httpx.TimeoutException("t"))
     try:
         with pytest.raises(VoiceprintTimeoutError):
             await adapter.extract_voiceprint(str(tmp_wav))
@@ -267,9 +247,7 @@ async def test_voiceprint_timeout(
 
 
 @pytest.mark.asyncio
-async def test_voiceprint_dim_mismatch(
-    respx_mock: respx.MockRouter, tmp_wav: Path
-) -> None:
+async def test_voiceprint_dim_mismatch(respx_mock: respx.MockRouter, tmp_wav: Path) -> None:
     adapter = _make_adapter()
     respx_mock.post(_VOICEPRINT_URL).mock(
         return_value=httpx.Response(
@@ -285,13 +263,9 @@ async def test_voiceprint_dim_mismatch(
 
 
 @pytest.mark.asyncio
-async def test_voiceprint_missing_key(
-    respx_mock: respx.MockRouter, tmp_wav: Path
-) -> None:
+async def test_voiceprint_missing_key(respx_mock: respx.MockRouter, tmp_wav: Path) -> None:
     adapter = _make_adapter()
-    respx_mock.post(_VOICEPRINT_URL).mock(
-        return_value=httpx.Response(200, json={"foo": "bar"})
-    )
+    respx_mock.post(_VOICEPRINT_URL).mock(return_value=httpx.Response(200, json={"foo": "bar"}))
     try:
         with pytest.raises(VoiceprintServerError):
             await adapter.extract_voiceprint(str(tmp_wav))
@@ -300,13 +274,9 @@ async def test_voiceprint_missing_key(
 
 
 @pytest.mark.asyncio
-async def test_voiceprint_transport_error(
-    respx_mock: respx.MockRouter, tmp_wav: Path
-) -> None:
+async def test_voiceprint_transport_error(respx_mock: respx.MockRouter, tmp_wav: Path) -> None:
     adapter = _make_adapter()
-    respx_mock.post(_VOICEPRINT_URL).mock(
-        side_effect=httpx.ConnectError("nope")
-    )
+    respx_mock.post(_VOICEPRINT_URL).mock(side_effect=httpx.ConnectError("nope"))
     try:
         with pytest.raises(VoiceprintServerError):
             await adapter.extract_voiceprint(str(tmp_wav))

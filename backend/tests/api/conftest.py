@@ -332,17 +332,26 @@ async def seed_recording(
     status: str = "indexed",
     pipeline_state: str = "done",
     recording_id: int | None = None,
+    agent_user_id: int | None = None,
 ) -> int:
     """Seed a recording into the test DB and return its ID."""
     from datetime import UTC, datetime
 
     from audio_graphy.models import Recording
+    from audio_graphy.services.agent_identity import resolve_unique_agent_user_id
 
     async with factory() as session:
+        if agent_user_id is None:
+            agent_user_id = await resolve_unique_agent_user_id(
+                session,
+                tenant_id=tenant_id,
+                agent_name=agent_name,
+            )
         rec = Recording(
             tenant_id=tenant_id,
             store_id=store_id,
             agent_name=agent_name,
+            agent_user_id=agent_user_id,
             customer_hash="cust_hash_001",
             path=f"/tmp/test_{store_id}_{agent_name}.wav",
             status=status,

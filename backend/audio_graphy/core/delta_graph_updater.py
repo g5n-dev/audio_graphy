@@ -187,12 +187,15 @@ class DeltaGraphUpdater:
         async with self._session_factory() as session:
             # Step 1: content_hash dedup (L8).
             existing = await self._find_chunk_by_hash(
-                session, chunk.content_hash, tenant_id,
+                session,
+                chunk.content_hash,
+                tenant_id,
             )
             if existing is not None:
                 logger.info(
                     "DeltaGraphUpdater skipped chunk by content_hash=%s (session=%s)",
-                    chunk.content_hash[:12], self._session_id,
+                    chunk.content_hash[:12],
+                    self._session_id,
                 )
                 return DeltaUpdateReport(
                     chunk_id=existing,
@@ -433,24 +436,30 @@ class DeltaGraphUpdater:
 
             bt_service = BiTemporalEdgeService(tenant_id=tenant_id)
 
-        events_buffer: list[EdgeEvent] | None = (
-            [] if bt_service is not None else None
-        )
+        events_buffer: list[EdgeEvent] | None = [] if bt_service is not None else None
 
         # Build edges.
         for rel, conf in edges_with_conf:
-            source_id = merged_pairs[
-                next(
-                    (i for i, e in enumerate(entities) if e.name == rel.source_name),
-                    0,
-                )
-            ][0] if entities else rel.source_name
-            target_id = merged_pairs[
-                next(
-                    (i for i, e in enumerate(entities) if e.name == rel.target_name),
-                    0,
-                )
-            ][0] if entities else rel.target_name
+            source_id = (
+                merged_pairs[
+                    next(
+                        (i for i, e in enumerate(entities) if e.name == rel.source_name),
+                        0,
+                    )
+                ][0]
+                if entities
+                else rel.source_name
+            )
+            target_id = (
+                merged_pairs[
+                    next(
+                        (i for i, e in enumerate(entities) if e.name == rel.target_name),
+                        0,
+                    )
+                ][0]
+                if entities
+                else rel.target_name
+            )
 
             if bt_service is not None:
                 # M9 path — bi-temporal timestamps + supersede pointer populated.

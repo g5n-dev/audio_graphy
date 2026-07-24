@@ -111,7 +111,10 @@ class TestListSpeakers:
     """GET /api/v1/speakers — list endpoint."""
 
     def test_empty_list_returns_valid_response(
-        self, test_client: Any, auth_headers: Any, db_session_factory: Any,
+        self,
+        test_client: Any,
+        auth_headers: Any,
+        db_session_factory: Any,
     ) -> None:
         """Empty tenant → returns {items: [], total: 0}."""
         # Ensure no speakers seeded.
@@ -124,12 +127,13 @@ class TestListSpeakers:
         assert body == {"items": [], "total": 0}
 
     def test_returns_speakers_for_tenant(
-        self, test_client: Any, auth_headers: Any, db_session_factory: Any,
+        self,
+        test_client: Any,
+        auth_headers: Any,
+        db_session_factory: Any,
     ) -> None:
         """Seeded speaker shows up in the list."""
-        speaker_id = _run_async(
-            seed_speaker_node(db_session_factory, tenant_id="chang_an")
-        )
+        speaker_id = _run_async(seed_speaker_node(db_session_factory, tenant_id="chang_an"))
         resp = test_client.get(
             "/api/v1/speakers",
             headers=auth_headers["inspector_t1"],
@@ -143,7 +147,10 @@ class TestListSpeakers:
         assert item["speaker_role"] == "agent"
 
     def test_voiceprint_hash_truncated_to_8_chars(
-        self, test_client: Any, auth_headers: Any, db_session_factory: Any,
+        self,
+        test_client: Any,
+        auth_headers: Any,
+        db_session_factory: Any,
     ) -> None:
         """voiceprint_hash field exposes only first 8 chars (PIPL compliance)."""
         _run_async(
@@ -163,7 +170,10 @@ class TestListSpeakers:
         assert "0123456789abcdef0123456789abcdef" not in str(body)
 
     def test_role_filter_works(
-        self, test_client: Any, auth_headers: Any, db_session_factory: Any,
+        self,
+        test_client: Any,
+        auth_headers: Any,
+        db_session_factory: Any,
     ) -> None:
         """?speaker_role=customer returns only customer speakers."""
         _run_async(
@@ -191,7 +201,10 @@ class TestListSpeakers:
         assert body["total"] >= 1
 
     def test_ambiguity_filter_works(
-        self, test_client: Any, auth_headers: Any, db_session_factory: Any,
+        self,
+        test_client: Any,
+        auth_headers: Any,
+        db_session_factory: Any,
     ) -> None:
         """?ambiguity=AMBIGUOUS returns only ambiguous speakers."""
         _run_async(
@@ -219,7 +232,9 @@ class TestListSpeakers:
         assert body["total"] >= 1
 
     def test_agent_role_forbidden(
-        self, test_client: Any, auth_headers: Any,
+        self,
+        test_client: Any,
+        auth_headers: Any,
     ) -> None:
         """Agent role cannot list speakers (403)."""
         resp = test_client.get(
@@ -229,7 +244,9 @@ class TestListSpeakers:
         assert resp.status_code == 403
 
     def test_viewer_role_forbidden(
-        self, test_client: Any, auth_headers: Any,
+        self,
+        test_client: Any,
+        auth_headers: Any,
     ) -> None:
         """Viewer role cannot list speakers (403)."""
         resp = test_client.get(
@@ -244,7 +261,10 @@ class TestListSpeakers:
         assert resp.status_code == 401
 
     def test_tenant_isolation(
-        self, test_client: Any, auth_headers: Any, db_session_factory: Any,
+        self,
+        test_client: Any,
+        auth_headers: Any,
+        db_session_factory: Any,
     ) -> None:
         """chang_an speaker does NOT appear in byd tenant's list."""
         _run_async(
@@ -272,7 +292,10 @@ class TestGetSpeaker:
     """GET /api/v1/speakers/{id} — detail endpoint."""
 
     def test_returns_speaker_detail(
-        self, test_client: Any, auth_headers: Any, db_session_factory: Any,
+        self,
+        test_client: Any,
+        auth_headers: Any,
+        db_session_factory: Any,
     ) -> None:
         """Happy path — returns full speaker detail with recordings_list."""
         speaker_id = _run_async(
@@ -295,7 +318,9 @@ class TestGetSpeaker:
         assert body["voiceprint_hash"] == "vp_a1b2c3d4"
 
     def test_404_when_not_found(
-        self, test_client: Any, auth_headers: Any,
+        self,
+        test_client: Any,
+        auth_headers: Any,
     ) -> None:
         """Non-existent speaker_id → 404."""
         resp = test_client.get(
@@ -305,7 +330,10 @@ class TestGetSpeaker:
         assert resp.status_code == 404
 
     def test_404_when_cross_tenant(
-        self, test_client: Any, auth_headers: Any, db_session_factory: Any,
+        self,
+        test_client: Any,
+        auth_headers: Any,
+        db_session_factory: Any,
     ) -> None:
         """byd speaker queried by chang_an inspector → 404 (cross-tenant isolation)."""
         speaker_id = _run_async(
@@ -322,7 +350,10 @@ class TestGetSpeaker:
         assert resp.status_code == 404
 
     def test_includes_related_recordings(
-        self, test_client: Any, auth_headers: Any, db_session_factory: Any,
+        self,
+        test_client: Any,
+        auth_headers: Any,
+        db_session_factory: Any,
     ) -> None:
         """related_recordings populated from speaker_links table."""
         speaker_id = _run_async(

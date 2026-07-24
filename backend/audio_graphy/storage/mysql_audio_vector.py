@@ -15,7 +15,9 @@ for < 100k vectors (M7 small-scale).
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -24,11 +26,32 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from audio_graphy.core.types import VectorSearchHit
 from audio_graphy.models.vector_audio import VectorAudio
+from audio_graphy.storage.vector_index_cache import (
+    NormalizedVectorIndex,
+    TenantVectorIndexCache,
+    VectorCacheStats,
+    VectorLoadResult,
+    build_normalized_index,
+    search_normalized_index,
+    stream_normalized_index,
+    validate_vector_load_options,
+)
 
 if TYPE_CHECKING:
     pass
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class AudioVectorSearchHit:
+    """Similarity hit resolved back to its tenant-owned source identity."""
+
+    vector_id: int
+    recording_id: int
+    segment_id: int
+    chunk_id: int | None
+    score: float
 
 
 class MySQLAudioVectorStore:
@@ -44,14 +67,47 @@ class MySQLAudioVectorStore:
         session_factory: async_sessionmaker[AsyncSession],
         *,
         dim: int = 512,
+        cache_ttl_seconds: float = 60.0,
+        cache_max_entries: int = 32,
+        cache_max_bytes: int = 512 * 1024 * 1024,
+        load_batch_rows: int = 512,
+        load_max_rows: int = 100_000,
+        load_max_source_bytes: int = 512 * 1024 * 1024,
+        load_max_memory_bytes: int = 512 * 1024 * 1024,
     ) -> None:
+        validate_vector_load_options(
+            batch_rows=load_batch_rows,
+            max_rows=load_max_rows,
+            max_source_bytes=load_max_source_bytes,
+            max_memory_bytes=load_max_memory_bytes,
+        )
         self._session_factory = session_factory
         self._dim = dim
+        self._load_batch_rows = load_batch_rows
+        self._load_max_rows = load_max_rows
+        self._load_max_source_bytes = load_max_source_bytes
+        self._load_max_memory_bytes = load_max_memory_bytes
+        self._index_cache = TenantVectorIndexCache(
+            ttl_seconds=cache_ttl_seconds,
+            max_entries=cache_max_entries,
+            max_bytes=cache_max_bytes,
+        )
 
     @property
     def dim(self) -> int:
         """Vector dimension."""
         return self._dim
+
+    @property
+    def cache_stats(self) -> VectorCacheStats:
+        """Process-local normalized-index cache counters."""
+
+        return self._index_cache.stats
+
+    def invalidate_tenant(self, tenant_id: str) -> None:
+        """Invalidate one tenant after a bulk import performed elsewhere."""
+
+        self._index_cache.invalidate(("audio", tenant_id))
 
     # ------------------------------------------------------------------
     # Write API
@@ -98,6 +154,7 @@ class MySQLAudioVectorStore:
             )
             session.add(row)
             await session.commit()
+        self._index_cache.invalidate(("audio", tenant_id))
 
     # ------------------------------------------------------------------
     # Read API
@@ -109,11 +166,12 @@ class MySQLAudioVectorStore:
         query_vec: tuple[float, ...],
         *,
         top_k: int = 10,
-    ) -> list[VectorSearchHit]:
+    ) -> list[AudioVectorSearchHit]:
         """Brute-force cosine top-k search over CLAP audio vectors.
 
-        Each hit's ``id`` is the ``segment_id`` (int). Callers reverse-lookup
-        the chunk_id / recording_id via the candidate-build helper.
+        The normalized matrix is cached by immutable ``vectors_audio.id``.
+        Top hits are then resolved in one tenant-scoped metadata query so a
+        segment index can never be mistaken for a globally unique chunk ID.
 
         Args:
             tenant_id: Tenant scope.
@@ -121,11 +179,36 @@ class MySQLAudioVectorStore:
             top_k: Number of results to return.
 
         Returns:
-            List of VectorSearchHit sorted by descending cosine similarity.
-            ``id`` is ``segment_id`` (int).
+            Metadata-rich hits sorted by descending cosine similarity.
         """
-        rows = await self._load_vectors(tenant_id)
-        return self._brute_cosine(rows, query_vec, top_k)
+
+        async def load() -> VectorLoadResult:
+            return await self._load_vectors(tenant_id)
+
+        index = await self._index_cache.get_or_load(
+            ("audio", tenant_id),
+            load,
+            dim=self._dim,
+        )
+        raw_hits = await asyncio.to_thread(
+            search_normalized_index,
+            index,
+            query_vec,
+            top_k=top_k,
+        )
+        vector_ids = [int(hit.id) for hit in raw_hits if isinstance(hit.id, int)]
+        metadata = await self._load_hit_metadata(tenant_id, vector_ids)
+        return [
+            AudioVectorSearchHit(
+                vector_id=int(hit.id),
+                recording_id=metadata[int(hit.id)][0],
+                segment_id=metadata[int(hit.id)][1],
+                chunk_id=metadata[int(hit.id)][2],
+                score=hit.score,
+            )
+            for hit in raw_hits
+            if isinstance(hit.id, int) and int(hit.id) in metadata
+        ]
 
     async def get_audio_vectors_for_recording(
         self,
@@ -163,20 +246,51 @@ class MySQLAudioVectorStore:
     async def _load_vectors(
         self,
         tenant_id: str,
-    ) -> list[tuple[int, bytes]]:
-        """Load all (segment_id, blob) rows for a tenant."""
-        rows: list[tuple[int, bytes]] = []
+    ) -> NormalizedVectorIndex:
+        """Stream immutable row IDs and BLOBs into one bounded tenant index."""
+
+        return await stream_normalized_index(
+            self._session_factory,
+            id_column=VectorAudio.id,
+            blob_column=VectorAudio.vector,
+            tenant_column=VectorAudio.tenant_id,
+            tenant_id=tenant_id,
+            dim=self._dim,
+            batch_rows=self._load_batch_rows,
+            max_rows=self._load_max_rows,
+            max_source_bytes=self._load_max_source_bytes,
+            max_memory_bytes=self._load_max_memory_bytes,
+            log_label=f"{VectorAudio.__tablename__}/{tenant_id}",
+        )
+
+    async def _load_hit_metadata(
+        self,
+        tenant_id: str,
+        vector_ids: list[int],
+    ) -> dict[int, tuple[int, int, int | None]]:
+        """Resolve top-hit row IDs without crossing a tenant boundary."""
+        if not vector_ids:
+            return {}
+
         async with self._session_factory() as session:
-            stmt = select(VectorAudio).where(VectorAudio.tenant_id == tenant_id)
+            stmt = select(
+                VectorAudio.id,
+                VectorAudio.recording_id,
+                VectorAudio.segment_id,
+                VectorAudio.chunk_id,
+            ).where(
+                VectorAudio.tenant_id == tenant_id,
+                VectorAudio.id.in_(vector_ids),
+            )
             result = await session.execute(stmt)
-            for row in result.scalars():
-                try:
-                    rows.append((int(row.segment_id), row.vector))
-                except Exception as exc:
-                    logger.warning(
-                        "Skipping corrupted audio vector row: %s", exc
-                    )
-        return rows
+            return {
+                int(vector_id): (
+                    int(recording_id),
+                    int(segment_id),
+                    int(chunk_id) if chunk_id is not None else None,
+                )
+                for vector_id, recording_id, segment_id, chunk_id in result.all()
+            }
 
     def _brute_cosine(
         self,
@@ -185,58 +299,12 @@ class MySQLAudioVectorStore:
         top_k: int,
     ) -> list[VectorSearchHit]:
         """Numpy matrix cosine similarity + argpartition top-k."""
-        if not rows:
-            return []
-
-        ids: list[int] = []
-        vectors: list[np.ndarray] = []
-        for seg_id, blob in rows:
-            try:
-                vec = np.frombuffer(blob, dtype=np.float32)
-                if vec.shape[0] != self._dim:
-                    logger.warning(
-                        "Audio vector dim mismatch: expected %d, got %d — skipping",
-                        self._dim,
-                        vec.shape[0],
-                    )
-                    continue
-                ids.append(seg_id)
-                vectors.append(vec)
-            except Exception as exc:
-                logger.warning(
-                    "Failed to deserialize audio vector for segment_id=%s: %s",
-                    seg_id,
-                    exc,
-                )
-
-        if not vectors:
-            return []
-
-        matrix = np.stack(vectors)
-        query = np.asarray(query_vec, dtype=np.float32)
-
-        norms = np.linalg.norm(matrix, axis=1, keepdims=True)
-        norms = np.clip(norms, 1e-12, None)
-        normalized = matrix / norms
-
-        query_norm = float(np.linalg.norm(query))
-        if query_norm < 1e-12:
-            query_norm = 1e-12
-        query_normalized = query / query_norm
-
-        scores = normalized @ query_normalized
-
-        k = min(top_k, len(scores))
-        if k <= 0:
-            return []
-
-        top_k_idx = np.argpartition(scores, -k)[-k:]
-        top_k_sorted = top_k_idx[np.argsort(scores[top_k_idx])[::-1]]
-
-        return [
-            VectorSearchHit(id=ids[idx], score=float(scores[idx]))
-            for idx in top_k_sorted
-        ]
+        index = build_normalized_index(
+            rows,
+            dim=self._dim,
+            log_label="audio",
+        )
+        return search_normalized_index(index, query_vec, top_k=top_k)
 
     @staticmethod
     def _serialize(vec: tuple[float, ...]) -> bytes:
@@ -251,4 +319,4 @@ class MySQLAudioVectorStore:
         return tuple(float(v) for v in arr)
 
 
-__all__ = ["MySQLAudioVectorStore"]
+__all__ = ["AudioVectorSearchHit", "MySQLAudioVectorStore"]

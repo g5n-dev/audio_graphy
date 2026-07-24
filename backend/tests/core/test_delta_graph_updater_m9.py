@@ -26,13 +26,11 @@ from sqlalchemy.pool import StaticPool
 
 import audio_graphy.models  # noqa: F401
 from audio_graphy.adapters.bundle import AdapterBundle
-from audio_graphy.adapters.protocols import EdgeConfidence
 from audio_graphy.core.chunker import ChunkRecord
 from audio_graphy.core.delta_graph_updater import DeltaGraphUpdater
 from audio_graphy.core.extractor import ExtractedEntity, ExtractedRelation
 from audio_graphy.core.streaming_rwlock import StreamingRWLock
 from audio_graphy.models.base import Base
-
 
 # ============================================================
 # Fakes — minimal stand-ins to avoid touching real LLM / merger / store
@@ -59,16 +57,12 @@ class _FakeExtractorShim:
     def __init__(self, extraction: Any) -> None:
         self._extraction = extraction
 
-    async def extract_from_chunk(
-        self, *, chunk_id: int, chunk_text: str, recording_id: int
-    ) -> Any:
+    async def extract_from_chunk(self, *, chunk_id: int, chunk_text: str, recording_id: int) -> Any:
         return self._extraction
 
 
 class _FakeMerger:
-    async def merge(
-        self, pairs: list[tuple[str, str]]
-    ) -> list[tuple[str, str]]:
+    async def merge(self, pairs: list[tuple[str, str]]) -> list[tuple[str, str]]:
         # identity merge — canonical names equal the originals
         return pairs
 
@@ -101,9 +95,7 @@ async def dgu_engine() -> AsyncIterator[Any]:
 async def dgu_factory(
     dgu_engine: Any,
 ) -> async_sessionmaker[AsyncSession]:
-    return async_sessionmaker(
-        dgu_engine, class_=AsyncSession, expire_on_commit=False
-    )
+    return async_sessionmaker(dgu_engine, class_=AsyncSession, expire_on_commit=False)
 
 
 def _make_extraction() -> Any:
@@ -192,9 +184,7 @@ async def test_flag_false_zero_regression(
 ) -> None:
     """M1-M8 path: edges have None bi-temporal fields, no events buffer."""
     gs = _FakeGraphStore()
-    updater = _build_updater(
-        dgu_factory, enable_advanced_graph=False, graph_store=gs
-    )
+    updater = _build_updater(dgu_factory, enable_advanced_graph=False, graph_store=gs)
 
     report = await updater.update(
         chunk=_make_chunk(),
@@ -220,9 +210,7 @@ async def test_flag_true_populates_bitemporal_and_events(
 ) -> None:
     """M9 path: 4 timestamps + supersede pointer + EdgeEvent buffer."""
     gs = _FakeGraphStore()
-    updater = _build_updater(
-        dgu_factory, enable_advanced_graph=True, graph_store=gs
-    )
+    updater = _build_updater(dgu_factory, enable_advanced_graph=True, graph_store=gs)
 
     report = await updater.update(
         chunk=_make_chunk(),
@@ -254,9 +242,7 @@ async def test_skipped_by_hash_returns_none_events(
 ) -> None:
     """When content_hash dedup fires, m9_edge_events must be None (regression)."""
     gs = _FakeGraphStore()
-    updater = _build_updater(
-        dgu_factory, enable_advanced_graph=True, graph_store=gs
-    )
+    updater = _build_updater(dgu_factory, enable_advanced_graph=True, graph_store=gs)
 
     # First call seeds the chunk row.
     await updater.update(

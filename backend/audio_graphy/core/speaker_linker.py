@@ -51,7 +51,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from audio_graphy.models.speaker_link import SpeakerLink
@@ -203,9 +203,7 @@ class SpeakerLinker:
             match = self._best_voiceprint_match(cand, existing)
             if match is not None:
                 node, cosine, ambiguity_tag = match
-                await self._merge_into_existing(
-                    cand, node, cosine, ambiguity_tag, recording_id
-                )
+                await self._merge_into_existing(cand, node, cosine, ambiguity_tag, recording_id)
                 merge_count += 1
                 if ambiguity_tag == "AMBIGUOUS":
                     ambiguous += 1
@@ -231,8 +229,11 @@ class SpeakerLinker:
                 if fuzzy_result is not None:
                     node, ambiguity_tag, fuzzy_score, vp_score = fuzzy_result
                     await self._merge_into_existing(
-                        cand, node, vp_score if vp_score is not None else 0.0,
-                        ambiguity_tag, recording_id,
+                        cand,
+                        node,
+                        vp_score if vp_score is not None else 0.0,
+                        ambiguity_tag,
+                        recording_id,
                     )
                     merge_count += 1
                     fuzzy_count += 1
@@ -364,22 +365,19 @@ class SpeakerLinker:
             query_voiceprint=candidate.voiceprint,
         )
 
-        if result.verdict == "NO_MATCH":
+        matched_candidate = result.matched_candidate
+        if result.verdict == "NO_MATCH" or matched_candidate is None:
             return None
 
         # Find the matching SpeakerNode ORM by id.
         matched_sn = next(
-            (sn for sn in existing if sn.id == result.matched_candidate.speaker_node_id),
+            (sn for sn in existing if sn.id == matched_candidate.speaker_node_id),
             None,
         )
         if matched_sn is None:
             return None
 
-        ambiguity_tag = (
-            None
-            if result.verdict == "CONFIRMED"
-            else "AMBIGUOUS"
-        )
+        ambiguity_tag = None if result.verdict == "CONFIRMED" else "AMBIGUOUS"
 
         # Q1/L8: AMBIGUOUS verdicts are enqueued for reconfirm.
         if result.needs_reconfirm:
@@ -442,9 +440,10 @@ class SpeakerLinker:
                 await session.commit()
         except Exception as exc:
             logger.warning(
-                "SpeakerMergePending insert failed (recording_id=%s, "
-                "candidate=%s): %s",
-                recording_id, candidate_name, exc,
+                "SpeakerMergePending insert failed (recording_id=%s, candidate=%s): %s",
+                recording_id,
+                candidate_name,
+                exc,
             )
 
     # ------------------------------------------------------------------
@@ -483,11 +482,7 @@ class SpeakerLinker:
         if best_node is None or best_cos < self._vp_threshold:
             return None
 
-        ambiguity_tag: str | None
-        if best_cos >= self._ambiguity_threshold:
-            ambiguity_tag = None
-        else:
-            ambiguity_tag = "AMBIGUOUS"
+        ambiguity_tag = None if best_cos >= self._ambiguity_threshold else "AMBIGUOUS"
         return best_node, best_cos, ambiguity_tag
 
     def _get_cached_decrypted_vector(self, node: SpeakerNode) -> tuple[float, ...] | None:
@@ -508,35 +503,56 @@ class SpeakerLinker:
     # DB helpers
     # ------------------------------------------------------------------
     async def _load_existing_speakers(self) -> list[SpeakerNode]:
-        """Load all SpeakerNodes for this tenant + their decrypted vectors."""
+        """Load tenant speakers and each speaker's latest voiceprint in two queries."""
         async with self._session_factory() as session:
             stmt = select(SpeakerNode).where(SpeakerNode.tenant_id == self._tenant_id)
             result = await session.execute(stmt)
             nodes = list(result.scalars().all())
 
-        # Decrypt the canonical voiceprint for each node and cache it on
-        # the in-memory attrs dict for cosine matching.
-        for node in nodes:
-            try:
-                async with self._session_factory() as session:
-                    vp_stmt = (
-                        select(VoiceprintVector)
-                        .where(
-                            VoiceprintVector.tenant_id == self._tenant_id,
-                            VoiceprintVector.speaker_entity_id == node.id,
-                        )
-                        .order_by(VoiceprintVector.created_at.desc())
-                        .limit(1)
+            if not nodes:
+                return []
+
+            ranked_voiceprints = (
+                select(
+                    VoiceprintVector.id.label("voiceprint_row_id"),
+                    func.row_number()
+                    .over(
+                        partition_by=VoiceprintVector.speaker_entity_id,
+                        order_by=(
+                            VoiceprintVector.created_at.desc(),
+                            VoiceprintVector.id.desc(),
+                        ),
                     )
-                    vp_result = await session.execute(vp_stmt)
-                    vp_row = vp_result.scalar_one_or_none()
+                    .label("row_number"),
+                )
+                .where(VoiceprintVector.tenant_id == self._tenant_id)
+                .subquery()
+            )
+            latest_stmt = (
+                select(VoiceprintVector)
+                .join(
+                    ranked_voiceprints,
+                    VoiceprintVector.id == ranked_voiceprints.c.voiceprint_row_id,
+                )
+                .where(
+                    ranked_voiceprints.c.row_number == 1,
+                    VoiceprintVector.tenant_id == self._tenant_id,
+                )
+            )
+            latest_result = await session.execute(latest_stmt)
+            latest_by_speaker = {
+                row.speaker_entity_id: row for row in latest_result.scalars().all()
+            }
+
+        # Decrypt outside the session: all encrypted payload columns are loaded,
+        # and the runtime vectors must never be persisted back onto ORM rows.
+        for node in nodes:
+            vp_row = latest_by_speaker.get(node.id)
+            try:
                 if vp_row is not None:
                     decrypted = vp_row.decrypted_vector(self._crypto)
-                    # attrs is JSON column — cannot persist tuple; stash as list.
                     # Use a non-persisted attribute to avoid triggering updates.
-                    object.__setattr__(
-                        node, "_runtime_vec", tuple(float(x) for x in decrypted)
-                    )
+                    object.__setattr__(node, "_runtime_vec", tuple(float(x) for x in decrypted))
                 else:
                     object.__setattr__(node, "_runtime_vec", None)
             except Exception as exc:
@@ -573,10 +589,8 @@ class SpeakerLinker:
             db_node.recordings_list = recordings_list
             db_node.recordings_count = len(recordings_list)
             db_node.total_speech_sec = float(node.total_speech_sec or 0.0) + candidate.speech_sec
-            if (
-                db_node.first_seen is None
-                or (candidate.first_seen is not None
-                    and candidate.first_seen < db_node.first_seen)
+            if db_node.first_seen is None or (
+                candidate.first_seen is not None and candidate.first_seen < db_node.first_seen
             ):
                 db_node.first_seen = candidate.first_seen
             db_node.merge_confidence = max(float(db_node.merge_confidence or 0.0), cosine)

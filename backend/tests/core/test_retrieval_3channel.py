@@ -109,12 +109,21 @@ class _FakeAudioVectorStore:
         *,
         top_k: int = 10,
     ) -> list[Any]:
-        from audio_graphy.core.types import VectorSearchHit
+        from audio_graphy.storage.mysql_audio_vector import AudioVectorSearchHit
 
         self.search_calls += 1
         if self._raise:
             raise RuntimeError("boom")
-        return [VectorSearchHit(id=sid, score=score) for sid, score in self._hits]
+        return [
+            AudioVectorSearchHit(
+                vector_id=sid,
+                recording_id=1,
+                segment_id=sid,
+                chunk_id=sid,
+                score=score,
+            )
+            for sid, score in self._hits
+        ]
 
 
 class _FakeAudioEmbed:
@@ -236,44 +245,51 @@ class TestThreeChannelRetriever:
     """Three-channel retrieval — audio channel enable/disable matrix."""
 
     async def test_audio_disabled_returns_zero_audio_hits(
-        self, mock_bundle: Any, tmp_working_dir: Any,
+        self,
+        mock_bundle: Any,
+        tmp_working_dir: Any,
     ) -> None:
         """enable_audio_channel=False → audio channel skipped."""
         from audio_graphy.storage.graph_networkx import NetworkXGraphStore
 
         graph = NetworkXGraphStore(tmp_working_dir, tenant_id="default")
+
         # Use a stub vector store — naive channel will return [].
         class _Stub:
-            async def search_chunks(
-                self, *args: object, **kwargs: object
-            ) -> list[Any]:
+            async def search_chunks(self, *args: object, **kwargs: object) -> list[Any]:
                 return []
 
         retriever = ThreeChannelRetriever(
-            mock_bundle, _Stub(), graph,  # type: ignore[arg-type]
+            mock_bundle,
+            _Stub(),
+            graph,  # type: ignore[arg-type]
             enable_audio_channel=False,
             audio_vector_store=_FakeAudioVectorStore(hits=[(1, 0.9)]),
         )
         result = await retriever.retrieve(
-            "query", tenant_id="t1", audio_query_path="/tmp/foo.wav",
+            "query",
+            tenant_id="t1",
+            audio_query_path="/tmp/foo.wav",
         )
         assert result.audio_hits == 0
 
     async def test_audio_no_query_path_returns_zero_audio_hits(
-        self, mock_bundle: Any, tmp_working_dir: Any,
+        self,
+        mock_bundle: Any,
+        tmp_working_dir: Any,
     ) -> None:
         """audio_query_path=None → audio channel skipped."""
         from audio_graphy.storage.graph_networkx import NetworkXGraphStore
 
         class _Stub:
-            async def search_chunks(
-                self, *args: object, **kwargs: object
-            ) -> list[Any]:
+            async def search_chunks(self, *args: object, **kwargs: object) -> list[Any]:
                 return []
 
         graph = NetworkXGraphStore(tmp_working_dir, tenant_id="default")
         retriever = ThreeChannelRetriever(
-            mock_bundle, _Stub(), graph,  # type: ignore[arg-type]
+            mock_bundle,
+            _Stub(),
+            graph,  # type: ignore[arg-type]
             enable_audio_channel=True,
             audio_vector_store=_FakeAudioVectorStore(hits=[(1, 0.9)]),
         )
@@ -281,54 +297,64 @@ class TestThreeChannelRetriever:
         assert result.audio_hits == 0
 
     async def test_audio_no_vector_store_returns_zero_audio_hits(
-        self, mock_bundle: Any, tmp_working_dir: Any,
+        self,
+        mock_bundle: Any,
+        tmp_working_dir: Any,
     ) -> None:
         """audio_vector_store=None → audio channel skipped."""
         from audio_graphy.storage.graph_networkx import NetworkXGraphStore
 
         class _Stub:
-            async def search_chunks(
-                self, *args: object, **kwargs: object
-            ) -> list[Any]:
+            async def search_chunks(self, *args: object, **kwargs: object) -> list[Any]:
                 return []
 
         graph = NetworkXGraphStore(tmp_working_dir, tenant_id="default")
         retriever = ThreeChannelRetriever(
-            mock_bundle, _Stub(), graph,  # type: ignore[arg-type]
+            mock_bundle,
+            _Stub(),
+            graph,  # type: ignore[arg-type]
             enable_audio_channel=True,
             audio_vector_store=None,
         )
         result = await retriever.retrieve(
-            "query", tenant_id="t1", audio_query_path="/tmp/foo.wav",
+            "query",
+            tenant_id="t1",
+            audio_query_path="/tmp/foo.wav",
         )
         assert result.audio_hits == 0
 
     async def test_audio_bundle_missing_adapter_returns_zero(
-        self, mock_bundle: Any, tmp_working_dir: Any,
+        self,
+        mock_bundle: Any,
+        tmp_working_dir: Any,
     ) -> None:
         """bundle.audio_embed=None → audio channel skipped."""
         from audio_graphy.storage.graph_networkx import NetworkXGraphStore
 
         class _Stub:
-            async def search_chunks(
-                self, *args: object, **kwargs: object
-            ) -> list[Any]:
+            async def search_chunks(self, *args: object, **kwargs: object) -> list[Any]:
                 return []
 
         graph = NetworkXGraphStore(tmp_working_dir, tenant_id="default")
         # mock_bundle has no audio_embed set by default.
         retriever = ThreeChannelRetriever(
-            mock_bundle, _Stub(), graph,  # type: ignore[arg-type]
+            mock_bundle,
+            _Stub(),
+            graph,  # type: ignore[arg-type]
             enable_audio_channel=True,
             audio_vector_store=_FakeAudioVectorStore(hits=[(1, 0.9)]),
         )
         result = await retriever.retrieve(
-            "query", tenant_id="t1", audio_query_path="/tmp/foo.wav",
+            "query",
+            tenant_id="t1",
+            audio_query_path="/tmp/foo.wav",
         )
         assert result.audio_hits == 0
 
     async def test_audio_returns_hits_when_all_conditions_met(
-        self, mock_bundle: Any, tmp_working_dir: Any,
+        self,
+        mock_bundle: Any,
+        tmp_working_dir: Any,
     ) -> None:
         """All conditions met → audio channel produces hits."""
         from dataclasses import replace
@@ -336,9 +362,7 @@ class TestThreeChannelRetriever:
         from audio_graphy.storage.graph_networkx import NetworkXGraphStore
 
         class _Stub:
-            async def search_chunks(
-                self, *args: object, **kwargs: object
-            ) -> list[Any]:
+            async def search_chunks(self, *args: object, **kwargs: object) -> list[Any]:
                 return []
 
         # AdapterBundle is frozen — use dataclasses.replace to inject.
@@ -347,12 +371,16 @@ class TestThreeChannelRetriever:
             graph = NetworkXGraphStore(tmp_working_dir, tenant_id="default")
             av_store = _FakeAudioVectorStore(hits=[(10, 0.9), (20, 0.8)])
             retriever = ThreeChannelRetriever(
-                bundle_with_audio, _Stub(), graph,  # type: ignore[arg-type]
+                bundle_with_audio,
+                _Stub(),
+                graph,  # type: ignore[arg-type]
                 enable_audio_channel=True,
                 audio_vector_store=av_store,
             )
             result = await retriever.retrieve(
-                "query", tenant_id="t1", audio_query_path="/tmp/foo.wav",
+                "query",
+                tenant_id="t1",
+                audio_query_path="/tmp/foo.wav",
             )
             assert result.audio_hits == 2
             chunk_ids = {c.chunk_id for c in result.candidates}
@@ -361,7 +389,9 @@ class TestThreeChannelRetriever:
             pass
 
     async def test_audio_channel_exception_returns_empty(
-        self, mock_bundle: Any, tmp_working_dir: Any,
+        self,
+        mock_bundle: Any,
+        tmp_working_dir: Any,
     ) -> None:
         """Audio channel exception → audio_hits=0, other channels unaffected."""
         from dataclasses import replace
@@ -369,28 +399,33 @@ class TestThreeChannelRetriever:
         from audio_graphy.storage.graph_networkx import NetworkXGraphStore
 
         class _Stub:
-            async def search_chunks(
-                self, *args: object, **kwargs: object
-            ) -> list[Any]:
+            async def search_chunks(self, *args: object, **kwargs: object) -> list[Any]:
                 return []
 
         bundle_with_audio = replace(
-            mock_bundle, audio_embed=_FakeAudioEmbed(raise_on_embed=True),
+            mock_bundle,
+            audio_embed=_FakeAudioEmbed(raise_on_embed=True),
         )
         graph = NetworkXGraphStore(tmp_working_dir, tenant_id="default")
         retriever = ThreeChannelRetriever(
-            bundle_with_audio, _Stub(), graph,  # type: ignore[arg-type]
+            bundle_with_audio,
+            _Stub(),
+            graph,  # type: ignore[arg-type]
             enable_audio_channel=True,
             audio_vector_store=_FakeAudioVectorStore(hits=[(1, 0.9)]),
         )
         result = await retriever.retrieve(
-            "query", tenant_id="t1", audio_query_path="/tmp/foo.wav",
+            "query",
+            tenant_id="t1",
+            audio_query_path="/tmp/foo.wav",
         )
         assert result.audio_hits == 0
         # Other channels should still have run (no exception propagated).
 
     async def test_audio_vector_store_search_exception_returns_empty(
-        self, mock_bundle: Any, tmp_working_dir: Any,
+        self,
+        mock_bundle: Any,
+        tmp_working_dir: Any,
     ) -> None:
         """search_audio exception → audio_hits=0."""
         from dataclasses import replace
@@ -398,21 +433,23 @@ class TestThreeChannelRetriever:
         from audio_graphy.storage.graph_networkx import NetworkXGraphStore
 
         class _Stub:
-            async def search_chunks(
-                self, *args: object, **kwargs: object
-            ) -> list[Any]:
+            async def search_chunks(self, *args: object, **kwargs: object) -> list[Any]:
                 return []
 
         bundle_with_audio = replace(mock_bundle, audio_embed=_FakeAudioEmbed())
         graph = NetworkXGraphStore(tmp_working_dir, tenant_id="default")
         av_store = _FakeAudioVectorStore(raise_on_search=True)
         retriever = ThreeChannelRetriever(
-            bundle_with_audio, _Stub(), graph,  # type: ignore[arg-type]
+            bundle_with_audio,
+            _Stub(),
+            graph,  # type: ignore[arg-type]
             enable_audio_channel=True,
             audio_vector_store=av_store,
         )
         result = await retriever.retrieve(
-            "query", tenant_id="t1", audio_query_path="/tmp/foo.wav",
+            "query",
+            tenant_id="t1",
+            audio_query_path="/tmp/foo.wav",
         )
         assert result.audio_hits == 0
 
@@ -454,15 +491,22 @@ class TestRetrievalResultAudioHits:
 
     def test_default_audio_hits_is_zero(self) -> None:
         r = RetrievalResult(
-            query="q", candidates=[], naive_hits=0, graph_hits=0,
+            query="q",
+            candidates=[],
+            naive_hits=0,
+            graph_hits=0,
             filtered_by_time=0,
         )
         assert r.audio_hits == 0
 
     def test_explicit_audio_hits(self) -> None:
         r = RetrievalResult(
-            query="q", candidates=[], naive_hits=0, graph_hits=0,
-            filtered_by_time=0, audio_hits=5,
+            query="q",
+            candidates=[],
+            naive_hits=0,
+            graph_hits=0,
+            filtered_by_time=0,
+            audio_hits=5,
         )
         assert r.audio_hits == 5
 
@@ -495,7 +539,8 @@ class TestRerankerWeightedScoring:
         assert r._weighted_score(c) == pytest.approx(0.2)
 
     def test_weighted_score_unknown_channel_defaults_to_text(
-        self, mock_bundle: Any,
+        self,
+        mock_bundle: Any,
     ) -> None:
         r = Reranker(mock_bundle, channel_weights=ChannelWeights())  # type: ignore[arg-type]
         c = _candidate(score=1.0, source_channel="legacy")
@@ -503,7 +548,8 @@ class TestRerankerWeightedScoring:
         assert r._weighted_score(c) == pytest.approx(0.5)
 
     def test_weighted_score_respects_zero_audio_weight(
-        self, mock_bundle: Any,
+        self,
+        mock_bundle: Any,
     ) -> None:
         """When audio weight = 0, audio candidates contribute 0."""
         cw = ChannelWeights(text=0.625, graph=0.375, audio=0.0)
@@ -512,7 +558,9 @@ class TestRerankerWeightedScoring:
         assert r._weighted_score(c) == pytest.approx(0.0)
 
     def test_weighted_score_applies_ambiguous_penalty(
-        self, mock_bundle: Any, tmp_working_dir: Any,
+        self,
+        mock_bundle: Any,
+        tmp_working_dir: Any,
     ) -> None:
         """Candidate from AMBIGUOUS speaker → score × 0.7."""
         from audio_graphy.storage.graph_networkx import NetworkXGraphStore
@@ -526,7 +574,8 @@ class TestRerankerWeightedScoring:
             source_ids=["1_5"],  # recording_id=1, chunk_id=5
         )
         r = Reranker(
-            mock_bundle, graph_store=graph,  # type: ignore[arg-type]
+            mock_bundle,
+            graph_store=graph,  # type: ignore[arg-type]
             channel_weights=ChannelWeights(),
         )
         c = _candidate(chunk_id=5, recording_id=1, score=1.0, source_channel="naive")
@@ -534,7 +583,9 @@ class TestRerankerWeightedScoring:
         assert r._weighted_score(c) == pytest.approx(0.35)
 
     def test_weighted_score_no_penalty_for_non_ambiguous_speaker(
-        self, mock_bundle: Any, tmp_working_dir: Any,
+        self,
+        mock_bundle: Any,
+        tmp_working_dir: Any,
     ) -> None:
         """Candidate from non-AMBIGUOUS SPEAKER → no penalty."""
         from audio_graphy.storage.graph_networkx import NetworkXGraphStore
@@ -547,7 +598,8 @@ class TestRerankerWeightedScoring:
             source_ids=["1_5"],
         )
         r = Reranker(
-            mock_bundle, graph_store=graph,  # type: ignore[arg-type]
+            mock_bundle,
+            graph_store=graph,  # type: ignore[arg-type]
             channel_weights=ChannelWeights(),
         )
         c = _candidate(chunk_id=5, recording_id=1, score=1.0, source_channel="naive")
@@ -555,7 +607,8 @@ class TestRerankerWeightedScoring:
         assert r._weighted_score(c) == pytest.approx(0.5)
 
     def test_weighted_score_no_penalty_when_graph_store_none(
-        self, mock_bundle: Any,
+        self,
+        mock_bundle: Any,
     ) -> None:
         """No graph_store → no AMBIGUOUS detection → no penalty."""
         r = Reranker(mock_bundle, channel_weights=ChannelWeights())  # type: ignore[arg-type]
@@ -603,15 +656,15 @@ class TestRegressionLegacyRetriever:
     """DualChannelRetriever must continue to work unchanged."""
 
     async def test_dual_channel_still_returns_audio_hits_zero(
-        self, mock_bundle: Any, tmp_working_dir: Any,
+        self,
+        mock_bundle: Any,
+        tmp_working_dir: Any,
     ) -> None:
         """DualChannelRetriever.retrieve returns audio_hits=0 (default)."""
         from audio_graphy.storage.graph_networkx import NetworkXGraphStore
 
         class _Stub:
-            async def search_chunks(
-                self, *args: object, **kwargs: object
-            ) -> list[Any]:
+            async def search_chunks(self, *args: object, **kwargs: object) -> list[Any]:
                 return []
 
         graph = NetworkXGraphStore(tmp_working_dir, tenant_id="default")

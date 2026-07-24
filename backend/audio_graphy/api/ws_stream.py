@@ -111,7 +111,8 @@ async def ws_stream(
     await ws.accept()
     logger.info(
         "WS /ws/stream accepted user=%s tenant=%s",
-        user.user_id, user.tenant_id,
+        user.user_id,
+        user.tenant_id,
     )
 
     # --- 4. Wait for init frame ---
@@ -151,7 +152,8 @@ async def ws_stream(
         # PRD §5.3 R10 — missing consent closes the connection + audit.
         logger.warning(
             "WS /ws/stream consent missing session=%s tenant=%s",
-            session_id_value, user.tenant_id,
+            session_id_value,
+            user.tenant_id,
         )
         await ws.close(code=WS_CLOSE_CONSENT_MISSING, reason="consent_token required")
         return
@@ -293,16 +295,17 @@ async def _run_recv_loop(
 
     while True:
         # Exit loop if session has been finalized (CLOSED) or is draining.
-        if session.status in (SessionStatus.CLOSED, SessionStatus.DRAINING) or session.end_reason is not None:
+        if (
+            session.status in (SessionStatus.CLOSED, SessionStatus.DRAINING)
+            or session.end_reason is not None
+        ):
             return
 
         # Heartbeat: send ping every interval.
         now = time.monotonic()
         if now - last_pong >= heartbeat_interval:
             try:
-                await ws.send_text(
-                    json.dumps({"type": "ping", "ts": int(now * 1000)})
-                )
+                await ws.send_text(json.dumps({"type": "ping", "ts": int(now * 1000)}))
             except Exception:
                 return
             last_pong = now
@@ -387,9 +390,7 @@ async def _handle_binary(
         elif event_type == "realtime_text":
             STREAMING_SEGMENTS_TOTAL.labels(mode="realtime").inc()
         elif event_type == "vad_reset":
-            STREAMING_VAD_RESETS_TOTAL.labels(
-                reason=str(event.get("reason", "unknown"))
-            ).inc()
+            STREAMING_VAD_RESETS_TOTAL.labels(reason=str(event.get("reason", "unknown"))).inc()
         await ws.send_text(json.dumps(event, ensure_ascii=False))
 
 
@@ -403,9 +404,7 @@ async def _maybe_emit_tag_update(
     batch = await tag_scheduler.on_segment_confirmed(seq)
     if batch is None:
         return
-    STREAMING_TAG_RECOMPUTES_TOTAL.labels(
-        status="error" if batch.error else "ok"
-    ).inc()
+    STREAMING_TAG_RECOMPUTES_TOTAL.labels(status="error" if batch.error else "ok").inc()
     event: dict[str, Any] = {
         "type": "tags_updated",
         "session_id": session.session_id.value,
@@ -466,13 +465,17 @@ async def _handle_query(
     """Handle a ``query`` control frame → ``retrieval_result`` event (T10)."""
     if not getattr(settings, "enable_streaming_retrieval", False):
         await _send_error(
-            ws, session, "RETRIEVAL_DISABLED",
+            ws,
+            session,
+            "RETRIEVAL_DISABLED",
             "streaming retrieval is disabled (enable_streaming_retrieval=False)",
         )
         return
     if retriever is None:
         await _send_error(
-            ws, session, "RETRIEVER_UNAVAILABLE",
+            ws,
+            session,
+            "RETRIEVER_UNAVAILABLE",
             "no streaming retriever configured on this server",
         )
         return
@@ -484,9 +487,7 @@ async def _handle_query(
     top_k = top_k_raw if isinstance(top_k_raw, int) and top_k_raw > 0 else 5
     min_conf_raw = payload.get("min_confidence")
     min_confidence = (
-        min_conf_raw
-        if min_conf_raw in ("EXTRACTED", "INFERRED", "AMBIGUOUS")
-        else None
+        min_conf_raw if min_conf_raw in ("EXTRACTED", "INFERRED", "AMBIGUOUS") else None
     )
     try:
         result = await retriever.retrieve(
@@ -499,7 +500,8 @@ async def _handle_query(
     except Exception as exc:
         logger.warning(
             "streaming retrieval failed session=%s: %s",
-            session.session_id.value, exc,
+            session.session_id.value,
+            exc,
         )
         await _send_error(ws, session, "RETRIEVAL_FAILED", str(exc)[:200])
         return

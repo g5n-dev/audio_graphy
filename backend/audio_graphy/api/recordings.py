@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from audio_graphy.api.deps import get_current_user, get_db, get_session_factory
 from audio_graphy.auth.middleware import AuthUser
 from audio_graphy.auth.roles import require_admin
-from audio_graphy.auth.tenants import get_agent_filter, get_tenant_id
+from audio_graphy.auth.tenants import get_tenant_id
 from audio_graphy.schemas.recordings import (
     RecordingCreate,
     RecordingListItem,
@@ -31,6 +31,18 @@ from audio_graphy.services.ingestion import IngestionService
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/recordings", tags=["recordings"])
+
+
+def _service(request: Request) -> IngestionService:
+    """Build the ingestion service with lifespan-managed privacy controls."""
+    return IngestionService(
+        get_session_factory(request),
+        crypto=getattr(request.app.state, "audio_crypto", None),
+        pii_scrubber=getattr(request.app.state, "pii_scrubber", None),
+        audit=getattr(request.app.state, "audit_writer", None),
+        allowed_root=request.app.state.settings.working_dir,
+        max_audio_bytes=request.app.state.settings.max_recording_audio_bytes,
+    )
 
 
 async def _write_audit(
@@ -74,17 +86,16 @@ async def create_recording(
     Role: admin only.
     """
     tenant_id = get_tenant_id(request)
-    factory = get_session_factory(request)
-    svc = IngestionService(factory)
+    svc = _service(request)
     recording = await svc.register_recording(tenant_id, body)
 
     return RecordingResponse(
         id=recording.id,
         tenant_id=str(recording.tenant_id),
         store_id=str(recording.store_id),
-        agent_name=str(recording.agent_name),
+        agent_name=recording.agent_name,
+        agent_user_id=recording.agent_user_id,
         customer_hash=recording.customer_hash,
-        path=str(recording.path),
         status=str(recording.status),
         pipeline_state=str(recording.pipeline_state),
         recorded_at=recording.recorded_at,
@@ -108,20 +119,19 @@ async def list_recordings(
     recorded_from: datetime | None = Query(default=None),
     recorded_to: datetime | None = Query(default=None),
     sort: str = Query(default="-recorded_at"),
-    _user: AuthUser = Depends(get_current_user),
+    user: AuthUser = Depends(get_current_user),
 ) -> RecordingListResponse:
     """List recordings with filters and pagination.
 
-    Agent role: only sees own recordings (agent_name = self).
+    Agent role: only sees recordings owned by the authenticated user ID.
     """
     tenant_id = get_tenant_id(request)
-    agent_filter = get_agent_filter(request)
-    factory = get_session_factory(request)
-    svc = IngestionService(factory)
+    agent_user_id = user.id if user.role == "agent" else None
+    svc = _service(request)
 
     recordings, total = await svc.list_recordings(
         tenant_id,
-        agent_filter=agent_filter,
+        agent_user_id=agent_user_id,
         store_id=store_id,
         status=status,
         agent_name=agent_name,
@@ -137,6 +147,7 @@ async def list_recordings(
             id=r.id,
             store_id=r.store_id,
             agent_name=r.agent_name,
+            agent_user_id=r.agent_user_id,
             status=r.status,
             pipeline_state=r.pipeline_state,
             recorded_at=r.recorded_at,
@@ -153,18 +164,21 @@ async def list_recordings(
 async def get_recording(
     recording_id: int,
     request: Request,
-    _user: AuthUser = Depends(get_current_user),
+    user: AuthUser = Depends(get_current_user),
 ) -> RecordingResponse:
     """Get recording detail with segments_count, chunks_count, and current tags.
 
     Cross-tenant access returns 404 (not 403).
     """
     tenant_id = get_tenant_id(request)
-    agent_filter = get_agent_filter(request)
-    factory = get_session_factory(request)
-    svc = IngestionService(factory)
+    agent_user_id = user.id if user.role == "agent" else None
+    svc = _service(request)
 
-    detail = await svc.get_recording_detail(recording_id, tenant_id, agent_filter=agent_filter)
+    detail = await svc.get_recording_detail(
+        recording_id,
+        tenant_id,
+        agent_user_id=agent_user_id,
+    )
     recording = detail["recording"]
 
     current_tags = [
@@ -181,9 +195,9 @@ async def get_recording(
         id=recording.id,
         tenant_id=str(recording.tenant_id),
         store_id=str(recording.store_id),
-        agent_name=str(recording.agent_name),
+        agent_name=recording.agent_name,
+        agent_user_id=recording.agent_user_id,
         customer_hash=recording.customer_hash,
-        path=str(recording.path),
         status=str(recording.status),
         pipeline_state=str(recording.pipeline_state),
         recorded_at=recording.recorded_at,
@@ -202,24 +216,31 @@ async def get_recording(
 async def get_recording_status(
     recording_id: int,
     request: Request,
-    _user: AuthUser = Depends(get_current_user),
+    user: AuthUser = Depends(get_current_user),
 ) -> RecordingStatusResponse:
     """Get recording processing status (lightweight)."""
     tenant_id = get_tenant_id(request)
-    agent_filter = get_agent_filter(request)
-    factory = get_session_factory(request)
-    svc = IngestionService(factory)
+    agent_user_id = user.id if user.role == "agent" else None
+    svc = _service(request)
 
-    recording = await svc.get_recording(recording_id, tenant_id, agent_filter=agent_filter)
+    recording = await svc.get_recording(
+        recording_id,
+        tenant_id,
+        agent_user_id=agent_user_id,
+    )
     return RecordingStatusResponse(
         id=recording.id,
+        agent_user_id=recording.agent_user_id,
         status=recording.status,
         pipeline_state=recording.pipeline_state,
         indexed_at=recording.indexed_at,
     )
 
 
-@router.post("/{recording_id}/reindex", response_model=ReindexResponse, summary="Trigger re-index",
+@router.post(
+    "/{recording_id}/reindex",
+    response_model=ReindexResponse,
+    summary="Trigger re-index",
     dependencies=[Depends(require_admin())],
 )
 async def reindex_recording(
@@ -233,8 +254,7 @@ async def reindex_recording(
     Role: admin only. Writes audit_log(action="recording.reindex").
     """
     tenant_id = get_tenant_id(request)
-    factory = get_session_factory(request)
-    svc = IngestionService(factory)
+    svc = _service(request)
 
     force = body.force if body is not None else False
     recording = await svc.trigger_reindex(recording_id, tenant_id, force=force)

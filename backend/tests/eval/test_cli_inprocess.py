@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import logging
 import os
-import sys
 from pathlib import Path
 
 import pytest
@@ -29,7 +28,7 @@ Path(os.environ["WORKING_DIR"]).mkdir(parents=True, exist_ok=True)
 def _tiny_gold(path: Path) -> Path:
     path.write_text(
         '- query: "q"\n  gold_answer: "a"\n  gold_context_ids: ["c1"]\n'
-        '  gold_entities: []\n  gold_edges: []\n  gold_tags: []\n',
+        "  gold_entities: []\n  gold_edges: []\n  gold_tags: []\n",
         encoding="utf-8",
     )
     return path
@@ -50,7 +49,8 @@ def test_cli_missing_gold_set_returns_2(tmp_path: Path) -> None:
 
     rc = main(
         [
-            "--gold-set", str(tmp_path / "nonexistent.yaml"),
+            "--gold-set",
+            str(tmp_path / "nonexistent.yaml"),
             "--no-judge",
         ]
     )
@@ -64,9 +64,11 @@ def test_cli_pipeline_rag_rejected_returns_2(tmp_path: Path) -> None:
     gold = _tiny_gold(tmp_path / "gold.yaml")
     rc = main(
         [
-            "--gold-set", str(gold),
+            "--gold-set",
+            str(gold),
             "--no-judge",
-            "--pipeline", "rag",
+            "--pipeline",
+            "rag",
         ]
     )
     assert rc == 2
@@ -83,8 +85,10 @@ def test_cli_no_judge_exits_zero(tmp_path: Path) -> None:
     out_dir = tmp_path / "out"
     rc = main(
         [
-            "--gold-set", str(gold),
-            "--report-dir", str(out_dir),
+            "--gold-set",
+            str(gold),
+            "--report-dir",
+            str(out_dir),
             "--no-judge",
         ]
     )
@@ -102,8 +106,8 @@ def test_cli_judge_init_failure_falls_back_to_no_judge(
     get_settings.cache_clear()
 
     # Force build_adapters to raise by monkey-patching.
-    import audio_graphy.eval.cli as cli_mod
     import audio_graphy.config as cfg_mod
+    import audio_graphy.eval.cli as cli_mod
 
     def _boom(_settings: object) -> None:
         raise RuntimeError("simulated adapter build failure")
@@ -115,17 +119,17 @@ def test_cli_judge_init_failure_falls_back_to_no_judge(
     with caplog.at_level(logging.WARNING, logger="audio_graphy.eval.cli"):
         rc = cli_mod.main(
             [
-                "--gold-set", str(gold),
-                "--report-dir", str(out_dir),
+                "--gold-set",
+                str(gold),
+                "--report-dir",
+                str(out_dir),
                 # NOTE: not passing --no-judge — judge path attempted then falls back.
             ]
         )
     assert rc == 0
     assert list(out_dir.glob("eval-*.json"))
     # Warning logged about judge init failure (case-insensitive substring).
-    assert any(
-        "judge init failed" in r.message.lower() for r in caplog.records
-    )
+    assert any("judge init failed" in r.message.lower() for r in caplog.records)
 
 
 def test_cli_judge_llm_override_recorded_in_config(tmp_path: Path) -> None:
@@ -139,10 +143,13 @@ def test_cli_judge_llm_override_recorded_in_config(tmp_path: Path) -> None:
     out_dir = tmp_path / "out"
     rc = main(
         [
-            "--gold-set", str(gold),
-            "--report-dir", str(out_dir),
+            "--gold-set",
+            str(gold),
+            "--report-dir",
+            str(out_dir),
             "--no-judge",
-            "--judge-llm", "custom-model",
+            "--judge-llm",
+            "custom-model",
         ]
     )
     assert rc == 0

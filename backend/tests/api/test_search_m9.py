@@ -257,9 +257,7 @@ def test_drill_down_parent_missing_404(test_client, auth_headers, seeded_search_
     assert resp.status_code == 404, resp.text
 
 
-def test_drill_down_at_level_2_returns_400(
-    test_client, auth_headers, seeded_search_data
-):
+def test_drill_down_at_level_2_returns_400(test_client, auth_headers, seeded_search_data):
     """Cannot drill below level 2 (Q2 cap)."""
     resp = test_client.post(
         "/api/v1/search/communities/1/drill-down",

@@ -144,13 +144,19 @@ class TestStreamSessionFinalize:
         class FailingVAD:
             async def push_chunk(self, pcm: bytes, *, seq: int) -> VADEvent:
                 return VADEvent(
-                    seq=seq, timestamp_sec=0.0, onset_score=0.0,
-                    state="SILENCE", transition="chunk",
+                    seq=seq,
+                    timestamp_sec=0.0,
+                    onset_score=0.0,
+                    state="SILENCE",
+                    transition="chunk",
                 )
+
             def reset_state(self) -> None:
                 pass
+
             async def finalize(self):
                 raise RuntimeError("vad finalize failed")
+
             async def aclose(self) -> None:
                 pass
 
@@ -175,8 +181,10 @@ class TestStreamSessionFinalize:
         class FailingASR:
             async def push_pcm(self, pcm: bytes, *, seq: int):
                 raise RuntimeError("asr push failed")
+
             async def finalize(self):
                 raise RuntimeError("asr finalize failed")
+
             async def aclose(self) -> None:
                 pass
 
@@ -465,9 +473,11 @@ class TestStreamingFunASRErrorPaths:
             StreamingFunASRAdapter,
         )
 
-        ws = _MockWebSocketClient(recv_payloads=[
-            json.dumps({"mode": "2pass-offline", "text": "confirmed text", "is_final": True}),
-        ])
+        ws = _MockWebSocketClient(
+            recv_payloads=[
+                json.dumps({"mode": "2pass-offline", "text": "confirmed text", "is_final": True}),
+            ]
+        )
         adapter = StreamingFunASRAdapter(
             ws_url="ws://funasr:10095",
             ws_client=ws,
@@ -533,6 +543,7 @@ class TestFunASRPoolAdditional:
         pool = FunASRConnectionPool(ws_url="ws://x")
         # Build a stub that fails the liveness check (closed=True).
         from tests.adapters.test_m8_streaming import _PoolingASRAdapter
+
         stub = _PoolingASRAdapter()  # type: ignore[abstract]
         stub._tenant_id = "t1"
         stub._closed = True  # mark dead
@@ -613,8 +624,12 @@ class TestStreamingChunkerAdditional:
 
         chunker = StreamingChunker(token_budget=1200)
         seg = SegmentRecord(
-            idx=0, start_sec=0.0, end_sec=1.0,
-            transcript="hello world", speaker=None, vad_conf=1.0,
+            idx=0,
+            start_sec=0.0,
+            end_sec=1.0,
+            transcript="hello world",
+            speaker=None,
+            vad_conf=1.0,
         )
         chunker.push_segment(seg)
         assert len(chunker._buffer_segments) > 0
@@ -628,9 +643,12 @@ class TestStreamingChunkerAdditional:
         # Push enough to trigger at least one flush.
         for i in range(2):
             seg = SegmentRecord(
-                idx=i, start_sec=float(i), end_sec=float(i + 1),
+                idx=i,
+                start_sec=float(i),
+                end_sec=float(i + 1),
                 transcript="artificial intelligence systems pipeline architecture",
-                speaker=None, vad_conf=1.0,
+                speaker=None,
+                vad_conf=1.0,
             )
             result = chunker.push_segment(seg)
             if result is not None:
@@ -647,9 +665,12 @@ class TestStreamingChunkerAdditional:
         chunker2 = StreamingChunker(token_budget=5)
         for i in range(2):
             seg = SegmentRecord(
-                idx=i, start_sec=float(i), end_sec=float(i + 1),
+                idx=i,
+                start_sec=float(i),
+                end_sec=float(i + 1),
                 transcript=f"segment number {i}",
-                speaker=None, vad_conf=1.0,
+                speaker=None,
+                vad_conf=1.0,
             )
             r1 = chunker1.push_segment(seg)
             r2 = chunker2.push_segment(seg)
@@ -729,8 +750,10 @@ class TestMockStreamingASRAdditional:
     @pytest.mark.asyncio
     async def test_realtime_interval_emits_partial(self) -> None:
         asr = MockStreamingASRAdapter(
-            connect_latency_ms=0, push_latency_ms=0,
-            realtime_interval=2, confirmed_interval=100,
+            connect_latency_ms=0,
+            push_latency_ms=0,
+            realtime_interval=2,
+            confirmed_interval=100,
         )
         await asr.connect(session_id="s1", tenant_id="t1")
         realtime_count = 0
@@ -743,8 +766,10 @@ class TestMockStreamingASRAdditional:
     @pytest.mark.asyncio
     async def test_confirmed_interval_emits_final(self) -> None:
         asr = MockStreamingASRAdapter(
-            connect_latency_ms=0, push_latency_ms=0,
-            realtime_interval=1, confirmed_interval=2,
+            connect_latency_ms=0,
+            push_latency_ms=0,
+            realtime_interval=1,
+            confirmed_interval=2,
         )
         await asr.connect(session_id="s1", tenant_id="t1")
         confirmed_count = 0
@@ -768,5 +793,6 @@ class TestMockStreamingASRAdditional:
             _CONFIRMED_CORPUS,
             _REALTIME_PARTIALS,
         )
+
         assert len(_CONFIRMED_CORPUS) > 0
         assert len(_REALTIME_PARTIALS) > 0

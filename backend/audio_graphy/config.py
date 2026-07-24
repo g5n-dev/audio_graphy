@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import functools
 import logging
+import math
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -45,7 +46,7 @@ class Settings(BaseSettings):
     adapter_mode: AdapterMode = "mock"
     # Per-adapter modes (M4). Default "mock" preserves M3 all-mock behavior.
     # Set to "real" to enable the corresponding service via docker-compose `--profile real`.
-    adapter_asr_mode: AdapterMode = "mock"   # M5: set to "real" to enable funASR
+    adapter_asr_mode: AdapterMode = "mock"  # M5: set to "real" to enable funASR
     adapter_vad_mode: AdapterMode = "mock"
     adapter_llm_mode: AdapterMode = "mock"
     adapter_embed_mode: AdapterMode = "mock"
@@ -80,6 +81,14 @@ class Settings(BaseSettings):
 
     # --- Storage ---
     working_dir: Path = Path("/data/working_dir")
+    vector_index_cache_ttl_seconds: float = 60.0
+    vector_index_cache_max_entries: int = 32
+    vector_index_cache_max_bytes: int = 512 * 1024 * 1024
+    vector_index_load_batch_rows: int = 512
+    vector_index_load_max_rows: int = 100_000
+    vector_index_load_max_source_bytes: int = 512 * 1024 * 1024
+    vector_index_load_max_memory_bytes: int = 512 * 1024 * 1024
+    graph_store_cache_max_entries: int = 64
 
     # --- Multi-tenancy ---
     default_tenant_id: str = "default"
@@ -102,6 +111,18 @@ class Settings(BaseSettings):
 
     # --- PIPL §14.3 (M6) — audio encryption ---
     master_key_path: str = "/run/secrets/audiography_master.key"
+    max_recording_audio_bytes: int = 512 * 1024 * 1024
+    audio_crypto_chunk_size_bytes: int = 4 * 1024 * 1024
+    max_request_body_bytes: int = 16 * 1024 * 1024
+
+    # --- Physical reception audio assembly ---
+    audio_assembly_max_sources: int = 128
+    audio_assembly_max_total_bytes: int = 2 * 1024 * 1024 * 1024
+    audio_assembly_max_estimated_pcm_bytes: int = 2 * 1024 * 1024 * 1024
+    audio_assembly_max_temporary_bytes: int = 2 * 1024 * 1024 * 1024
+    audio_assembly_ffprobe_timeout_sec: float = 30.0
+    audio_assembly_ffmpeg_timeout_sec: float = 15 * 60.0
+    audio_assembly_max_processes: int = 2
 
     # --- Entity fuzzy matching (M6 WS-3) ---
     # rapidfuzz fuzz.WRatio threshold for clustering near-duplicate entity
@@ -168,7 +189,7 @@ class Settings(BaseSettings):
     streaming_vad_min_speech_sec: float = 0.25
     streaming_vad_min_silence_sec: float = 0.10
     streaming_vad_chunk_samples: int = 512  # L3 — do NOT change
-    streaming_vad_reset_seq_gap: int = 3    # Q2 — reset threshold
+    streaming_vad_reset_seq_gap: int = 3  # Q2 — reset threshold
 
     # --- M8 Phase 4 — funASR streaming config ---
     streaming_asr_chunk_interval: int = 10
@@ -178,7 +199,7 @@ class Settings(BaseSettings):
     streaming_asr_pool_size_per_tenant: int = 8  # Q1
 
     # --- M8 Phase 4 — session & WS lifecycle ---
-    streaming_tag_interval: int = 5             # L7
+    streaming_tag_interval: int = 5  # L7
     streaming_tag_debounce_ms: float = 500.0
     streaming_session_timeout_sec: float = 300.0  # PRD §5.3
     streaming_session_pcm_buffer_max_sec: float = 60.0  # PIPL cap
@@ -209,9 +230,7 @@ class Settings(BaseSettings):
     # Preferred Leiden backend: ``"leidenalg"`` (best, optional dep),
     # ``"networkx"`` (always-available fallback), ``"fail-fast"``
     # (raise if leidenalg is missing).
-    leiden_lib: Literal[
-        "leidenalg", "networkx", "fail-fast"
-    ] = "networkx"
+    leiden_lib: Literal["leidenalg", "networkx", "fail-fast"] = "networkx"
     # Maximum Leiden hierarchy levels actually persisted (Q2 cap=2; level 3
     # dropped). Must be in [0, 3].
     leiden_max_levels: int = 2
@@ -220,9 +239,7 @@ class Settings(BaseSettings):
     # Strategy: ``eager`` = generate level-0 + leaf at Leiden time;
     # ``lazy``   = generate levels 1-2 only on retrieval request;
     # ``disabled`` = do not generate summaries at all.
-    community_summary_strategy: Literal[
-        "eager", "lazy", "disabled"
-    ] = "eager"
+    community_summary_strategy: Literal["eager", "lazy", "disabled"] = "eager"
 
     # Compression (architecture §9 / Q3 SOFT-only).
     enable_compression: bool = True
@@ -308,6 +325,28 @@ class Settings(BaseSettings):
         v.mkdir(parents=True, exist_ok=True)
         return v.resolve()
 
+    @field_validator(
+        "vector_index_cache_max_entries",
+        "vector_index_cache_max_bytes",
+        "vector_index_load_batch_rows",
+        "vector_index_load_max_rows",
+        "vector_index_load_max_source_bytes",
+        "vector_index_load_max_memory_bytes",
+        "graph_store_cache_max_entries",
+    )
+    @classmethod
+    def _validate_positive_cache_resource_integer(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("cache and vector load resource limits must be positive")
+        return v
+
+    @field_validator("vector_index_cache_ttl_seconds")
+    @classmethod
+    def _validate_vector_cache_ttl(cls, v: float) -> float:
+        if not math.isfinite(v) or v < 0:
+            raise ValueError("VECTOR_INDEX_CACHE_TTL_SECONDS must be finite and non-negative")
+        return v
+
     @model_validator(mode="after")
     def _validate_combinations(self) -> Settings:
         """Cross-field validation / 跨字段校验."""
@@ -344,9 +383,7 @@ class Settings(BaseSettings):
         # M9 R1 T15 — advanced-graph sanity checks.
         # Leiden levels cap (Q2 cap=2 in practice; allow 0..3 for forward-compat).
         if not 0 <= self.leiden_max_levels <= 3:
-            raise ValueError(
-                f"LEIDEN_MAX_LEVELS must be in [0, 3], got {self.leiden_max_levels}"
-            )
+            raise ValueError(f"LEIDEN_MAX_LEVELS must be in [0, 3], got {self.leiden_max_levels}")
         # L8 — inferred ≤ ambiguous.
         if self.speaker_fuzzy_inferred_threshold > self.speaker_fuzzy_ambiguous_threshold:
             raise ValueError(
@@ -381,18 +418,47 @@ class Settings(BaseSettings):
     @classmethod
     def _validate_vp_cosine_threshold(cls, v: float) -> float:
         if not 0.0 <= v <= 1.0:
-            raise ValueError(
-                f"VOICEPRINT_COSINE_THRESHOLD must be in [0, 1], got {v}"
-            )
+            raise ValueError(f"VOICEPRINT_COSINE_THRESHOLD must be in [0, 1], got {v}")
+        return v
+
+    @field_validator(
+        "max_recording_audio_bytes",
+        "audio_crypto_chunk_size_bytes",
+        "max_request_body_bytes",
+        "audio_assembly_max_sources",
+        "audio_assembly_max_total_bytes",
+        "audio_assembly_max_estimated_pcm_bytes",
+        "audio_assembly_max_temporary_bytes",
+        "audio_assembly_max_processes",
+    )
+    @classmethod
+    def _validate_positive_audio_resource_integer(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("audio resource limits must be positive")
+        return v
+
+    @field_validator("audio_crypto_chunk_size_bytes")
+    @classmethod
+    def _validate_audio_crypto_chunk_size(cls, v: int) -> int:
+        if not 1024 <= v <= 16 * 1024 * 1024:
+            raise ValueError("AUDIO_CRYPTO_CHUNK_SIZE_BYTES must be in [1024, 16777216]")
+        return v
+
+    @field_validator(
+        "audio_assembly_ffprobe_timeout_sec",
+        "audio_assembly_ffmpeg_timeout_sec",
+    )
+    @classmethod
+    def _validate_positive_audio_timeout(cls, v: float) -> float:
+        if not math.isfinite(v) or v <= 0:
+            raise ValueError("audio process timeouts must be positive")
         return v
 
     @field_validator("voiceprint_ambiguous_threshold")
     @classmethod
     def _validate_vp_ambiguous_threshold(cls, v: float) -> float:
         if not 0.0 <= v <= 1.0:
-            raise ValueError(
-                f"VOICEPRINT_AMBIGUOUS_THRESHOLD must be in [0, 1], got {v}"
-            )
+            raise ValueError(f"VOICEPRINT_AMBIGUOUS_THRESHOLD must be in [0, 1], got {v}")
         return v
 
     # ----------------------------------------------------------
@@ -402,27 +468,21 @@ class Settings(BaseSettings):
     @classmethod
     def _validate_leiden_threshold(cls, v: float) -> float:
         if not 0.0 <= v <= 100.0:
-            raise ValueError(
-                f"LEIDEN_THRESHOLD_PERCENT must be in [0, 100], got {v}"
-            )
+            raise ValueError(f"LEIDEN_THRESHOLD_PERCENT must be in [0, 100], got {v}")
         return v
 
     @field_validator("speaker_fuzzy_ambiguous_threshold")
     @classmethod
     def _validate_speaker_fuzzy_ambiguous(cls, v: float) -> float:
         if not 0.0 <= v <= 1.0:
-            raise ValueError(
-                f"SPEAKER_FUZZY_AMBIGUOUS_THRESHOLD must be in [0, 1], got {v}"
-            )
+            raise ValueError(f"SPEAKER_FUZZY_AMBIGUOUS_THRESHOLD must be in [0, 1], got {v}")
         return v
 
     @field_validator("speaker_fuzzy_inferred_threshold")
     @classmethod
     def _validate_speaker_fuzzy_inferred(cls, v: float) -> float:
         if not 0.0 <= v <= 1.0:
-            raise ValueError(
-                f"SPEAKER_FUZZY_INFERRED_THRESHOLD must be in [0, 1], got {v}"
-            )
+            raise ValueError(f"SPEAKER_FUZZY_INFERRED_THRESHOLD must be in [0, 1], got {v}")
         return v
 
     @field_validator("speaker_fuzzy_voiceprint_reconfirm_cosine")
@@ -430,21 +490,16 @@ class Settings(BaseSettings):
     def _validate_speaker_fuzzy_vp_cosine(cls, v: float) -> float:
         if not 0.0 <= v <= 1.0:
             raise ValueError(
-                "SPEAKER_FUZZY_VOICEPRINT_RECONFIRM_COSINE must be in "
-                f"[0, 1], got {v}"
+                f"SPEAKER_FUZZY_VOICEPRINT_RECONFIRM_COSINE must be in [0, 1], got {v}"
             )
         return v
 
     @field_validator("rerank_channel_weights")
     @classmethod
-    def _validate_rerank_weights(
-        cls, v: tuple[float, float, float]
-    ) -> tuple[float, float, float]:
+    def _validate_rerank_weights(cls, v: tuple[float, float, float]) -> tuple[float, float, float]:
         total = sum(v)
         if not 0.99 <= total <= 1.01:
-            raise ValueError(
-                f"RERANK_CHANNEL_WEIGHTS must sum to 1.0, got {v} (sum={total})"
-            )
+            raise ValueError(f"RERANK_CHANNEL_WEIGHTS must sum to 1.0, got {v} (sum={total})")
         if not all(0.0 <= x <= 1.0 for x in v):
             raise ValueError(f"All weights must be in [0, 1], got {v}")
         return v
@@ -456,54 +511,42 @@ class Settings(BaseSettings):
     @classmethod
     def _validate_streaming_vad_onset(cls, v: float) -> float:
         if not 0.0 <= v <= 1.0:
-            raise ValueError(
-                f"STREAMING_VAD_ONSET_THRESHOLD must be in [0, 1], got {v}"
-            )
+            raise ValueError(f"STREAMING_VAD_ONSET_THRESHOLD must be in [0, 1], got {v}")
         return v
 
     @field_validator("streaming_vad_offset_threshold")
     @classmethod
     def _validate_streaming_vad_offset(cls, v: float) -> float:
         if not 0.0 <= v <= 1.0:
-            raise ValueError(
-                f"STREAMING_VAD_OFFSET_THRESHOLD must be in [0, 1], got {v}"
-            )
+            raise ValueError(f"STREAMING_VAD_OFFSET_THRESHOLD must be in [0, 1], got {v}")
         return v
 
     @field_validator("streaming_ambiguous_edge_weight")
     @classmethod
     def _validate_streaming_ambiguous_w(cls, v: float) -> float:
         if not 0.0 <= v <= 1.0:
-            raise ValueError(
-                f"STREAMING_AMBIGUOUS_EDGE_WEIGHT must be in [0, 1], got {v}"
-            )
+            raise ValueError(f"STREAMING_AMBIGUOUS_EDGE_WEIGHT must be in [0, 1], got {v}")
         return v
 
     @field_validator("streaming_inferred_edge_weight")
     @classmethod
     def _validate_streaming_inferred_w(cls, v: float) -> float:
         if not 0.0 <= v <= 1.0:
-            raise ValueError(
-                f"STREAMING_INFERRED_EDGE_WEIGHT must be in [0, 1], got {v}"
-            )
+            raise ValueError(f"STREAMING_INFERRED_EDGE_WEIGHT must be in [0, 1], got {v}")
         return v
 
     @field_validator("streaming_vad_reset_seq_gap")
     @classmethod
     def _validate_streaming_reset_gap(cls, v: int) -> int:
         if v < 1:
-            raise ValueError(
-                f"STREAMING_VAD_RESET_SEQ_GAP must be ≥ 1, got {v}"
-            )
+            raise ValueError(f"STREAMING_VAD_RESET_SEQ_GAP must be ≥ 1, got {v}")
         return v
 
     @field_validator("streaming_asr_pool_size_per_tenant")
     @classmethod
     def _validate_pool_size(cls, v: int) -> int:
         if v < 1:
-            raise ValueError(
-                f"STREAMING_ASR_POOL_SIZE_PER_TENANT must be ≥ 1, got {v}"
-            )
+            raise ValueError(f"STREAMING_ASR_POOL_SIZE_PER_TENANT must be ≥ 1, got {v}")
         return v
 
 
@@ -536,18 +579,23 @@ def build_adapters(settings: Settings) -> AdapterBundle:
     """
     from audio_graphy.adapters.bundle import build_hybrid_bundle, build_mock_bundle
 
-    all_mock = all(m == "mock" for m in (
-        settings.adapter_asr_mode,
-        settings.adapter_vad_mode,
-        settings.adapter_llm_mode,
-        settings.adapter_embed_mode,
-    ))
+    all_mock = all(
+        m == "mock"
+        for m in (
+            settings.adapter_asr_mode,
+            settings.adapter_vad_mode,
+            settings.adapter_llm_mode,
+            settings.adapter_embed_mode,
+        )
+    )
     if all_mock:
         logger.info("Building MOCK adapter bundle (all-mock)")
         return build_mock_bundle(settings)
     logger.info(
         "Building HYBRID adapter bundle (asr=%s vad=%s llm=%s embed=%s)",
-        settings.adapter_asr_mode, settings.adapter_vad_mode,
-        settings.adapter_llm_mode, settings.adapter_embed_mode,
+        settings.adapter_asr_mode,
+        settings.adapter_vad_mode,
+        settings.adapter_llm_mode,
+        settings.adapter_embed_mode,
     )
     return build_hybrid_bundle(settings)

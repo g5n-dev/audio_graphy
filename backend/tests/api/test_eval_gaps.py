@@ -304,7 +304,9 @@ def test_post_run_writes_audit_when_writer_attached(
                         await session.execute(
                             select(AuditLog).where(AuditLog.action == "eval.run.created")
                         )
-                    ).scalars().all()
+                    )
+                    .scalars()
+                    .all()
                 )
             return len(rows)
 

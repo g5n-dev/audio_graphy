@@ -4,7 +4,6 @@ import "@testing-library/jest-dom/vitest";
 // jsdom does not implement window.matchMedia — Arco Design uses it for
 // responsive observer (Descriptions, Grid, etc.). Provide a no-op stub.
 if (typeof window !== "undefined" && !window.matchMedia) {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   window.matchMedia = ((query: string): MediaQueryList => ({
     matches: false,
     media: query,

@@ -90,9 +90,7 @@ async def test_asr_happy_verbose_json(respx_mock: respx.MockRouter, tmp_wav: Pat
 async def test_asr_happy_minimal_json(respx_mock: respx.MockRouter, tmp_wav: Path) -> None:
     """200 + only text field → ASRResult with empty words, fallback confidence."""
     adapter = _make_adapter()
-    respx_mock.post(_ASR_URL).mock(
-        return_value=httpx.Response(200, json={"text": "仅一句文本。"})
-    )
+    respx_mock.post(_ASR_URL).mock(return_value=httpx.Response(200, json={"text": "仅一句文本。"}))
     try:
         result = await adapter.transcribe(str(tmp_wav))
         assert result.text == "仅一句文本。"
@@ -108,9 +106,7 @@ async def test_asr_happy_minimal_json(respx_mock: respx.MockRouter, tmp_wav: Pat
 async def test_asr_err_400_bad_audio(respx_mock: respx.MockRouter, tmp_wav: Path) -> None:
     """HTTP 400 → ASRRequestError with status_code=400."""
     adapter = _make_adapter()
-    respx_mock.post(_ASR_URL).mock(
-        return_value=httpx.Response(400, text="unsupported codec")
-    )
+    respx_mock.post(_ASR_URL).mock(return_value=httpx.Response(400, text="unsupported codec"))
     try:
         with pytest.raises(ASRRequestError) as exc_info:
             await adapter.transcribe(str(tmp_wav))
@@ -206,14 +202,10 @@ async def test_asr_err_401_auth(respx_mock: respx.MockRouter, tmp_wav: Path) -> 
 
 
 @pytest.mark.asyncio
-async def test_asr_err_transport_error(
-    respx_mock: respx.MockRouter, tmp_wav: Path
-) -> None:
+async def test_asr_err_transport_error(respx_mock: respx.MockRouter, tmp_wav: Path) -> None:
     """Generic httpx.HTTPError (not timeout) → ASRServerError."""
     adapter = _make_adapter()
-    respx_mock.post(_ASR_URL).mock(
-        side_effect=httpx.NetworkError("connection reset")
-    )
+    respx_mock.post(_ASR_URL).mock(side_effect=httpx.NetworkError("connection reset"))
     try:
         with pytest.raises(ASRServerError):
             await adapter.transcribe(str(tmp_wav))
@@ -222,14 +214,10 @@ async def test_asr_err_transport_error(
 
 
 @pytest.mark.asyncio
-async def test_asr_err_non_json_response(
-    respx_mock: respx.MockRouter, tmp_wav: Path
-) -> None:
+async def test_asr_err_non_json_response(respx_mock: respx.MockRouter, tmp_wav: Path) -> None:
     """200 + non-JSON body → ASRServerError."""
     adapter = _make_adapter()
-    respx_mock.post(_ASR_URL).mock(
-        return_value=httpx.Response(200, text="<html>not json</html>")
-    )
+    respx_mock.post(_ASR_URL).mock(return_value=httpx.Response(200, text="<html>not json</html>"))
     try:
         with pytest.raises(ASRServerError):
             await adapter.transcribe(str(tmp_wav))
@@ -238,14 +226,10 @@ async def test_asr_err_non_json_response(
 
 
 @pytest.mark.asyncio
-async def test_asr_err_missing_text_key(
-    respx_mock: respx.MockRouter, tmp_wav: Path
-) -> None:
+async def test_asr_err_missing_text_key(respx_mock: respx.MockRouter, tmp_wav: Path) -> None:
     """200 + JSON without 'text' → ASRServerError."""
     adapter = _make_adapter()
-    respx_mock.post(_ASR_URL).mock(
-        return_value=httpx.Response(200, json={"segments": []})
-    )
+    respx_mock.post(_ASR_URL).mock(return_value=httpx.Response(200, json={"segments": []}))
     try:
         with pytest.raises(ASRServerError):
             await adapter.transcribe(str(tmp_wav))
@@ -276,11 +260,11 @@ async def test_asr_happy_malformed_segments_skipped(
             json={
                 "text": "ok",
                 "segments": [
-                    "not-a-dict",                               # skipped (non-dict)
+                    "not-a-dict",  # skipped (non-dict)
                     {"id": 0, "start": 1.0, "end": 2.0, "text": "good"},  # ok
-                    {"id": 1},                                  # skipped (missing start/end)
+                    {"id": 1},  # skipped (missing start/end)
                     {"id": 2, "start": "bad", "end": 3.0, "text": "x"},  # skipped (bad float)
-                    {"id": 3, "start": 4.0, "end": 5.0, "text": ""},     # skipped (empty text)
+                    {"id": 3, "start": 4.0, "end": 5.0, "text": ""},  # skipped (empty text)
                 ],
                 "language": "zh",
             },
@@ -298,9 +282,7 @@ async def test_asr_happy_malformed_segments_skipped(
 
 
 @pytest.mark.asyncio
-async def test_asr_segments_not_list_skipped(
-    respx_mock: respx.MockRouter, tmp_wav: Path
-) -> None:
+async def test_asr_segments_not_list_skipped(respx_mock: respx.MockRouter, tmp_wav: Path) -> None:
     """``segments`` field present but not a list → silently ignored."""
     adapter = _make_adapter()
     respx_mock.post(_ASR_URL).mock(
@@ -323,17 +305,13 @@ async def test_asr_client_reentrant_after_aclose(
 ) -> None:
     """After aclose(), the next call re-creates the httpx client (re-entrant)."""
     adapter = _make_adapter()
-    respx_mock.post(_ASR_URL).mock(
-        return_value=httpx.Response(200, json={"text": "first"})
-    )
+    respx_mock.post(_ASR_URL).mock(return_value=httpx.Response(200, json={"text": "first"}))
     try:
         result1 = await adapter.transcribe(str(tmp_wav))
         assert result1.text == "first"
         await adapter.aclose()
         # Mock needs to be re-armed since respx is per-test.
-        respx_mock.post(_ASR_URL).mock(
-            return_value=httpx.Response(200, json={"text": "second"})
-        )
+        respx_mock.post(_ASR_URL).mock(return_value=httpx.Response(200, json={"text": "second"}))
         result2 = await adapter.transcribe(str(tmp_wav))
         assert result2.text == "second"
     finally:

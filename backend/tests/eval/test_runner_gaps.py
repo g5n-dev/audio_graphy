@@ -71,7 +71,9 @@ async def test_pipeline_crash_captured_as_error(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_metric_computation_cratch_captured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_metric_computation_cratch_captured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """If _compute_metrics raises, the example is flagged errored."""
 
     class _GoodPipeline:
@@ -137,9 +139,7 @@ def test_load_gold_set_missing_required_key_raises(tmp_path: Path) -> None:
 async def test_explicit_position_debias_false_disables_debias(tmp_path: Path) -> None:
     """EvalRunner(position_debias=False) skips the debias double-judge."""
     gold_path = _write_gold(tmp_path / "gold.yaml", [_gold_item()])
-    runner = EvalRunner(
-        gold_set_path=gold_path, pipeline=MockPipeline(), position_debias=False
-    )
+    runner = EvalRunner(gold_set_path=gold_path, pipeline=MockPipeline(), position_debias=False)
     assert runner._position_debias is False
     assert runner._config_snapshot["position_debias"] == "False"
 

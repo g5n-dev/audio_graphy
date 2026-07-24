@@ -149,7 +149,9 @@ class StreamingFunASRAdapter:
         except Exception as exc:
             logger.warning(
                 "funASR init send failed url=%s session=%s err=%s",
-                _redact(self._ws_url), session_id, exc,
+                _redact(self._ws_url),
+                session_id,
+                exc,
             )
             raise StreamingASRServerError(
                 f"funASR init send failed: {exc}",
@@ -158,7 +160,10 @@ class StreamingFunASRAdapter:
 
         logger.debug(
             "funASR connect ok url=%s session=%s tenant=%s hotwords=%d",
-            _redact(self._ws_url), session_id, self._tenant_id, len(self._hotwords),
+            _redact(self._ws_url),
+            session_id,
+            self._tenant_id,
+            len(self._hotwords),
         )
 
     async def push_pcm(self, pcm: bytes, *, seq: int) -> ASRDeltaResult:
@@ -180,7 +185,9 @@ class StreamingFunASRAdapter:
         except Exception as exc:
             logger.warning(
                 "funASR push send failed url=%s seq=%d err=%s",
-                _redact(self._ws_url), seq, exc,
+                _redact(self._ws_url),
+                seq,
+                exc,
             )
             raise StreamingASRServerError(
                 f"funASR push send failed: {exc}",
@@ -208,7 +215,8 @@ class StreamingFunASRAdapter:
         except Exception as exc:
             logger.warning(
                 "funASR finalize send failed url=%s err=%s",
-                _redact(self._ws_url), exc,
+                _redact(self._ws_url),
+                exc,
             )
             return ()
 
@@ -220,7 +228,8 @@ class StreamingFunASRAdapter:
                 break
             try:
                 raw = await asyncio.wait_for(
-                    self._ws.recv(), timeout=remaining,
+                    self._ws.recv(),
+                    timeout=remaining,
                 )
             except TimeoutError:
                 break

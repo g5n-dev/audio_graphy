@@ -123,7 +123,7 @@ def test_id_card_all_digit_uses_mask_keep_ends() -> None:
     assert len(recs) == 1
     masked = result.text.split("id ")[1].split(" here")[0]
     assert masked.startswith("11")  # first 2 preserved
-    assert masked.endswith("71")    # last 2 preserved
+    assert masked.endswith("71")  # last 2 preserved
 
 
 def test_custom_categories_subset_only_applies_named() -> None:

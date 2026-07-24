@@ -95,9 +95,7 @@ def seeded(test_client, db_session_factory):
 # ============================================================
 
 
-def test_dry_run_with_high_threshold_finds_nothing(
-    test_client, auth_headers, seeded
-):
+def test_dry_run_with_high_threshold_finds_nothing(test_client, auth_headers, seeded):
     """Setting god_node_degree_threshold > 10 finds no candidates."""
     resp = test_client.post(
         "/api/v1/admin/compression/dry-run",
@@ -166,9 +164,7 @@ def test_range_query_returns_zero_when_far_past(test_client, auth_headers, seede
     assert resp.json()["total"] == 0
 
 
-def test_time_travel_edges_include_soft_deleted_flag(
-    test_client, auth_headers, seeded
-):
+def test_time_travel_edges_include_soft_deleted_flag(test_client, auth_headers, seeded):
     """The include_soft_deleted query param is accepted (boolean parse)."""
     resp = test_client.get(
         f"/api/v1/recordings/{seeded}/edges",
@@ -183,9 +179,7 @@ def test_time_travel_edges_include_soft_deleted_flag(
 # ============================================================
 
 
-def test_global_search_empty_query_match_returns_zero(
-    test_client, auth_headers, seeded
-):
+def test_global_search_empty_query_match_returns_zero(test_client, auth_headers, seeded):
     resp = test_client.post(
         "/api/v1/search/global",
         headers=auth_headers["inspector_t1"],
@@ -197,9 +191,7 @@ def test_global_search_empty_query_match_returns_zero(
     assert isinstance(body["hits"], list)
 
 
-def test_global_search_with_community_ids_filter(
-    test_client, auth_headers, seeded
-):
+def test_global_search_with_community_ids_filter(test_client, auth_headers, seeded):
     resp = test_client.post(
         "/api/v1/search/global",
         headers=auth_headers["inspector_t1"],

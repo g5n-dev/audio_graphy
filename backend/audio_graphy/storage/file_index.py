@@ -7,16 +7,19 @@ Manages ``working_dir/{tenant_id}/`` JSON KV files:
     - kv_store_video_path.json      — recording → path
 
 Model: accumulate in memory → ``flush()`` writes all stores to disk (checkpoint).
-This is NOT thread-safe (single-process offline use, per DESIGN.md §7.5).
+Operations are serialised per ``FileIndex`` instance, and each store is
+published atomically with a same-directory temporary file + rename.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from audio_graphy.core.types import StorageError
 
@@ -45,6 +48,7 @@ class FileIndex:
         self._tenant_id = tenant_id
         self._stores: dict[str, dict[str, Any]] = {}
         self._loaded = False
+        self._lock = asyncio.Lock()
 
     @property
     def working_path(self) -> Path:
@@ -65,9 +69,10 @@ class FileIndex:
         Returns:
             The stored value, or None if not found.
         """
-        await self._ensure_loaded()
-        store = self._stores.get(store_name, {})
-        return store.get(key)
+        async with self._lock:
+            await self._ensure_loaded()
+            store = self._stores.get(store_name, {})
+            return store.get(key)
 
     async def set(self, store_name: str, key: str, value: Any) -> None:
         """Set a key-value pair in a named KV store (in-memory only).
@@ -79,10 +84,11 @@ class FileIndex:
             key: Lookup key.
             value: Any JSON-serialisable value.
         """
-        await self._ensure_loaded()
-        if store_name not in self._stores:
-            self._stores[store_name] = {}
-        self._stores[store_name][key] = value
+        async with self._lock:
+            await self._ensure_loaded()
+            if store_name not in self._stores:
+                self._stores[store_name] = {}
+            self._stores[store_name][key] = value
 
     async def get_all(self, store_name: str) -> dict[str, Any]:
         """Return the entire store as a dict (shallow copy).
@@ -93,8 +99,9 @@ class FileIndex:
         Returns:
             A dict of all key-value pairs (empty if store doesn't exist).
         """
-        await self._ensure_loaded()
-        return dict(self._stores.get(store_name, {}))
+        async with self._lock:
+            await self._ensure_loaded()
+            return dict(self._stores.get(store_name, {}))
 
     async def delete(self, store_name: str, key: str) -> bool:
         """Delete a key from a store.
@@ -106,12 +113,13 @@ class FileIndex:
         Returns:
             True if the key existed and was deleted, False otherwise.
         """
-        await self._ensure_loaded()
-        store = self._stores.get(store_name, {})
-        if key in store:
-            del store[key]
-            return True
-        return False
+        async with self._lock:
+            await self._ensure_loaded()
+            store = self._stores.get(store_name, {})
+            if key in store:
+                del store[key]
+                return True
+            return False
 
     # ------------------------------------------------------------------
     # LLM cache specific
@@ -126,12 +134,13 @@ class FileIndex:
         Returns:
             Cached response text, or None if not cached.
         """
-        await self._ensure_loaded()
-        store = self._stores.get(STORE_LLM_RESPONSE_CACHE, {})
-        value = store.get(cache_key)
-        if isinstance(value, str):
-            return value
-        return None
+        async with self._lock:
+            await self._ensure_loaded()
+            store = self._stores.get(STORE_LLM_RESPONSE_CACHE, {})
+            value = store.get(cache_key)
+            if isinstance(value, str):
+                return value
+            return None
 
     async def set_llm_cache(self, cache_key: str, response_text: str) -> None:
         """Store an LLM response in the cache (in-memory; flush to persist).
@@ -140,10 +149,11 @@ class FileIndex:
             cache_key: MD5 hash of (model, messages).
             response_text: The LLM response text to cache.
         """
-        await self._ensure_loaded()
-        if STORE_LLM_RESPONSE_CACHE not in self._stores:
-            self._stores[STORE_LLM_RESPONSE_CACHE] = {}
-        self._stores[STORE_LLM_RESPONSE_CACHE][cache_key] = response_text
+        async with self._lock:
+            await self._ensure_loaded()
+            if STORE_LLM_RESPONSE_CACHE not in self._stores:
+                self._stores[STORE_LLM_RESPONSE_CACHE] = {}
+            self._stores[STORE_LLM_RESPONSE_CACHE][cache_key] = response_text
 
     async def llm_cache_hit(self, cache_key: str) -> bool:
         """Check whether a cache_key exists in the LLM response cache.
@@ -158,6 +168,91 @@ class FileIndex:
         return cached is not None
 
     # ------------------------------------------------------------------
+    # Privacy erasure
+    # ------------------------------------------------------------------
+
+    async def erase_recording(self, recording_id: int) -> dict[str, int]:
+        """Durably erase file-index data derived from one recording.
+
+        Segment and chunk entries are matched by their canonical
+        ``"{recording_id}_..."`` key or by a ``recording_id`` value in their
+        metadata. The video-path entry is deleted by exact key.
+
+        LLM cache keys do not carry recording provenance, so the entire cache
+        for this ``FileIndex`` tenant is cleared. This is intentionally
+        privacy-first: retaining an opaque cache response could retain derived
+        personal data after a DSAR or retention deletion.
+
+        The mutation and checkpoint are performed under the instance lock.
+        Callers do not need to call :meth:`flush` afterwards.
+
+        Args:
+            recording_id: Positive database ID of the recording to erase.
+
+        Returns:
+            Per-store deletion counts plus a ``total`` count.
+
+        Raises:
+            ValueError: If ``recording_id`` is not a positive integer.
+            StorageError: If the durable checkpoint fails.
+        """
+        if not isinstance(recording_id, int) or isinstance(recording_id, bool) or recording_id <= 0:
+            raise ValueError("recording_id must be a positive integer")
+
+        target_id = str(recording_id)
+        target_prefix = f"{target_id}_"
+
+        async with self._lock:
+            await self._ensure_loaded()
+
+            counts = {
+                STORE_VIDEO_SEGMENTS: self._erase_derived_entries(
+                    STORE_VIDEO_SEGMENTS,
+                    target_id=target_id,
+                    target_prefix=target_prefix,
+                ),
+                STORE_TEXT_CHUNKS: self._erase_derived_entries(
+                    STORE_TEXT_CHUNKS,
+                    target_id=target_id,
+                    target_prefix=target_prefix,
+                ),
+                STORE_VIDEO_PATH: 0,
+                STORE_LLM_RESPONSE_CACHE: 0,
+            }
+
+            video_paths = self._stores.get(STORE_VIDEO_PATH, {})
+            if target_id in video_paths:
+                del video_paths[target_id]
+                counts[STORE_VIDEO_PATH] = 1
+
+            llm_cache = self._stores.get(STORE_LLM_RESPONSE_CACHE, {})
+            counts[STORE_LLM_RESPONSE_CACHE] = len(llm_cache)
+            llm_cache.clear()
+
+            counts["total"] = sum(counts.values())
+            await self._flush_unlocked()
+            return counts
+
+    def _erase_derived_entries(
+        self,
+        store_name: str,
+        *,
+        target_id: str,
+        target_prefix: str,
+    ) -> int:
+        """Remove entries belonging to ``target_id`` from a derived store."""
+        store = self._stores.get(store_name, {})
+        matching_keys = [
+            key
+            for key, value in store.items()
+            if key.startswith(target_prefix)
+            or (isinstance(value, dict) and str(value.get("recording_id", "")) == target_id)
+        ]
+        for key in matching_keys:
+            del store[key]
+        return len(matching_keys)
+
+    # ------------------------------------------------------------------
     # Persistence
     # ------------------------------------------------------------------
 
@@ -167,6 +262,11 @@ class FileIndex:
         Raises:
             StorageError: If disk write fails.
         """
+        async with self._lock:
+            await self._flush_unlocked()
+
+    async def _flush_unlocked(self) -> None:
+        """Checkpoint stores; caller must hold ``self._lock``."""
         self.working_path.mkdir(parents=True, exist_ok=True)
         try:
             await asyncio.to_thread(self._sync_flush)
@@ -178,10 +278,16 @@ class FileIndex:
         """Synchronous flush — called via asyncio.to_thread."""
         for store_name, data in self._stores.items():
             path = self.working_path / f"{store_name}.json"
-            path.write_text(
-                json.dumps(data, ensure_ascii=False, indent=2, default=str),
-                encoding="utf-8",
-            )
+            temporary_path = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+            try:
+                temporary_path.write_text(
+                    json.dumps(data, ensure_ascii=False, indent=2, default=str),
+                    encoding="utf-8",
+                )
+                temporary_path.replace(path)
+            finally:
+                with contextlib.suppress(FileNotFoundError):
+                    temporary_path.unlink()
 
     async def load(self) -> None:
         """Load all KV stores from disk into memory.
@@ -189,14 +295,14 @@ class FileIndex:
         Missing or corrupted JSON files are silently replaced with empty dicts
         (per PRD §4.8 error handling: initialise empty, don't block).
         """
-        await asyncio.to_thread(self._sync_load)
-        self._loaded = True
+        async with self._lock:
+            await asyncio.to_thread(self._sync_load)
+            self._loaded = True
 
     def _sync_load(self) -> None:
         """Synchronous load — called via asyncio.to_thread."""
         self._stores.clear()
         if not self.working_path.exists():
-            self._loaded = True
             return
 
         for json_file in self.working_path.glob("*.json"):
@@ -209,6 +315,7 @@ class FileIndex:
                 self._stores[store_name] = {}
 
     async def _ensure_loaded(self) -> None:
-        """Lazy-load from disk on first access."""
+        """Lazy-load from disk; caller must hold ``self._lock``."""
         if not self._loaded:
-            await self.load()
+            await asyncio.to_thread(self._sync_load)
+            self._loaded = True

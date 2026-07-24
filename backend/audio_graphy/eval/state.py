@@ -216,17 +216,19 @@ class EvalRunState:
         async with self._session_factory() as session:
             base = select(EvalRunORM).where(*conditions)
             total = (
-                await session.execute(
-                    select(func.count()).select_from(base.subquery())
-                )
+                await session.execute(select(func.count()).select_from(base.subquery()))
             ).scalar_one()
             rows = (
-                await session.execute(
-                    base.order_by(EvalRunORM.started_at.desc())
-                    .limit(max(1, int(limit)))
-                    .offset(max(0, int(offset)))
+                (
+                    await session.execute(
+                        base.order_by(EvalRunORM.started_at.desc())
+                        .limit(max(1, int(limit)))
+                        .offset(max(0, int(offset)))
+                    )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             return list(rows), int(total)
 
 

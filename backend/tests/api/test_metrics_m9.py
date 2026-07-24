@@ -10,8 +10,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
-
 from audio_graphy.api.metrics import (
     BITEMPORAL_EDGE_EVENTS_TOTAL,
     BITEMPORAL_SUPERSEDE_CHAIN_DEPTH,
@@ -35,7 +33,6 @@ from audio_graphy.core.otel import (
     leiden_run_span,
     speaker_fuzzy_match_span,
 )
-
 
 # ============================================================
 # All 13 M9 metrics exist on the registry
@@ -95,24 +92,16 @@ def test_all_m9_metrics_are_registered() -> None:
 
 
 def test_bitemporal_events_counter_increments() -> None:
-    before = _counter_value(
-        "audiography_bitemporal_edge_events_total", event_type="insert"
-    )
+    before = _counter_value("audiography_bitemporal_edge_events_total", event_type="insert")
     BITEMPORAL_EDGE_EVENTS_TOTAL.labels(event_type="insert").inc()
-    after = _counter_value(
-        "audiography_bitemporal_edge_events_total", event_type="insert"
-    )
+    after = _counter_value("audiography_bitemporal_edge_events_total", event_type="insert")
     assert after == before + 1
 
 
 def test_leiden_runs_counter_with_labels() -> None:
-    before = _counter_value(
-        "audiography_leiden_runs_total", job_type="full", status="succeeded"
-    )
+    before = _counter_value("audiography_leiden_runs_total", job_type="full", status="succeeded")
     LEIDEN_RUNS_TOTAL.labels(job_type="full", status="succeeded").inc()
-    after = _counter_value(
-        "audiography_leiden_runs_total", job_type="full", status="succeeded"
-    )
+    after = _counter_value("audiography_leiden_runs_total", job_type="full", status="succeeded")
     assert after == before + 1
 
 
@@ -120,23 +109,15 @@ def test_compression_counters_with_labels() -> None:
     COMPRESSION_RUNS_TOTAL.labels(outcome="committed").inc()
     COMPRESSION_NODES_SOFT_DELETED.inc(5)
     COMPRESSION_EDGES_SOFT_DELETED.inc(7)
-    assert _counter_value(
-        "audiography_compression_runs_total", outcome="committed"
-    ) >= 1
-    assert _counter_value(
-        "audiography_compression_nodes_soft_deleted_total"
-    ) >= 5
+    assert _counter_value("audiography_compression_runs_total", outcome="committed") >= 1
+    assert _counter_value("audiography_compression_nodes_soft_deleted_total") >= 5
 
 
 def test_speaker_fuzzy_matches_counter() -> None:
     SPEAKER_FUZZY_MATCHES_TOTAL.labels(verdict="CONFIRMED").inc()
     SPEAKER_FUZZY_MATCHES_TOTAL.labels(verdict="AMBIGUOUS").inc(2)
-    assert _counter_value(
-        "audiography_speaker_fuzzy_matches_total", verdict="CONFIRMED"
-    ) >= 1
-    assert _counter_value(
-        "audiography_speaker_fuzzy_matches_total", verdict="AMBIGUOUS"
-    ) >= 2
+    assert _counter_value("audiography_speaker_fuzzy_matches_total", verdict="CONFIRMED") >= 1
+    assert _counter_value("audiography_speaker_fuzzy_matches_total", verdict="AMBIGUOUS") >= 2
 
 
 # ============================================================
@@ -169,9 +150,7 @@ def test_histograms_observe_without_error() -> None:
 def test_community_summaries_counter_with_labels() -> None:
     COMMUNITY_SUMMARIES_TOTAL.labels(level="0", strategy="eager").inc()
     COMMUNITY_SUMMARIES_TOTAL.labels(level="2", strategy="lazy").inc()
-    assert _counter_value(
-        "audiography_community_summaries_total", level="0", strategy="eager"
-    ) >= 1
+    assert _counter_value("audiography_community_summaries_total", level="0", strategy="eager") >= 1
 
 
 # ============================================================
@@ -187,16 +166,12 @@ def test_bitemporal_supersede_span_does_not_raise() -> None:
 
 
 def test_leiden_run_span_does_not_raise() -> None:
-    with leiden_run_span(
-        tenant_id="t1", job_type="incremental", diff_percent=12.5, node_count=100
-    ):
+    with leiden_run_span(tenant_id="t1", job_type="incremental", diff_percent=12.5, node_count=100):
         pass
 
 
 def test_community_summary_span_does_not_raise() -> None:
-    with community_summary_span(
-        tenant_id="t1", level=0, community_id=1, strategy="eager"
-    ):
+    with community_summary_span(tenant_id="t1", level=0, community_id=1, strategy="eager"):
         pass
 
 
@@ -206,9 +181,7 @@ def test_compression_apply_span_does_not_raise() -> None:
 
 
 def test_speaker_fuzzy_match_span_does_not_raise() -> None:
-    with speaker_fuzzy_match_span(
-        tenant_id="t1", query_name="王小姐", candidate_count=3
-    ):
+    with speaker_fuzzy_match_span(tenant_id="t1", query_name="王小姐", candidate_count=3):
         pass
 
 

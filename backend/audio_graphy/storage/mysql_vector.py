@@ -13,7 +13,7 @@ Tables:
 
 from __future__ import annotations
 
-import logging
+import asyncio
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -23,11 +23,19 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from audio_graphy.core.types import VectorSearchHit
 from audio_graphy.models.vector_chunk import VectorChunk
 from audio_graphy.models.vector_entity import VectorEntity
+from audio_graphy.storage.vector_index_cache import (
+    NormalizedVectorIndex,
+    TenantVectorIndexCache,
+    VectorCacheStats,
+    VectorLoadResult,
+    build_normalized_index,
+    search_normalized_index,
+    stream_normalized_index,
+    validate_vector_load_options,
+)
 
 if TYPE_CHECKING:
     pass
-
-logger = logging.getLogger(__name__)
 
 
 class MySQLVectorStore:
@@ -47,14 +55,52 @@ class MySQLVectorStore:
         session_factory: async_sessionmaker[AsyncSession],
         *,
         dim: int = 1024,
+        cache_ttl_seconds: float = 60.0,
+        cache_max_entries: int = 32,
+        cache_max_bytes: int = 512 * 1024 * 1024,
+        load_batch_rows: int = 512,
+        load_max_rows: int = 100_000,
+        load_max_source_bytes: int = 512 * 1024 * 1024,
+        load_max_memory_bytes: int = 512 * 1024 * 1024,
     ) -> None:
+        validate_vector_load_options(
+            batch_rows=load_batch_rows,
+            max_rows=load_max_rows,
+            max_source_bytes=load_max_source_bytes,
+            max_memory_bytes=load_max_memory_bytes,
+        )
         self._session_factory = session_factory
         self._dim = dim
+        self._load_batch_rows = load_batch_rows
+        self._load_max_rows = load_max_rows
+        self._load_max_source_bytes = load_max_source_bytes
+        self._load_max_memory_bytes = load_max_memory_bytes
+        self._index_cache = TenantVectorIndexCache(
+            ttl_seconds=cache_ttl_seconds,
+            max_entries=cache_max_entries,
+            max_bytes=cache_max_bytes,
+        )
 
     @property
     def dim(self) -> int:
         """Vector dimension."""
         return self._dim
+
+    @property
+    def cache_stats(self) -> VectorCacheStats:
+        """Process-local normalized-index cache counters."""
+
+        return self._index_cache.stats
+
+    def invalidate_tenant(self, tenant_id: str) -> None:
+        """Invalidate both vector channels for a tenant.
+
+        Bulk importers that bypass this store should call this method after
+        committing their transaction.
+        """
+
+        self._index_cache.invalidate(("entity", tenant_id))
+        self._index_cache.invalidate(("chunk", tenant_id))
 
     # ------------------------------------------------------------------
     # Serialization helpers
@@ -123,6 +169,7 @@ class MySQLVectorStore:
                     )
                 )
             await session.commit()
+        self._index_cache.invalidate(("entity", tenant_id))
 
     async def search_entities(
         self,
@@ -141,10 +188,26 @@ class MySQLVectorStore:
         Returns:
             List of VectorSearchHit sorted by descending cosine similarity.
         """
-        rows = await self._load_vectors(
-            VectorEntity, VectorEntity.tenant_id, tenant_id, "entity_id"
+
+        async def load() -> VectorLoadResult:
+            return await self._load_vectors(
+                VectorEntity,
+                VectorEntity.tenant_id,
+                tenant_id,
+                "entity_id",
+            )
+
+        index = await self._index_cache.get_or_load(
+            ("entity", tenant_id),
+            load,
+            dim=self._dim,
         )
-        return self._brute_cosine(rows, query_vec, top_k)
+        return await asyncio.to_thread(
+            search_normalized_index,
+            index,
+            query_vec,
+            top_k=top_k,
+        )
 
     # ------------------------------------------------------------------
     # Chunk vectors
@@ -182,6 +245,7 @@ class MySQLVectorStore:
                     )
                 )
             await session.commit()
+        self._index_cache.invalidate(("chunk", tenant_id))
 
     async def search_chunks(
         self,
@@ -200,8 +264,26 @@ class MySQLVectorStore:
         Returns:
             List of VectorSearchHit sorted by descending cosine similarity.
         """
-        rows = await self._load_vectors(VectorChunk, VectorChunk.tenant_id, tenant_id, "chunk_id")
-        return self._brute_cosine(rows, query_vec, top_k)
+
+        async def load() -> VectorLoadResult:
+            return await self._load_vectors(
+                VectorChunk,
+                VectorChunk.tenant_id,
+                tenant_id,
+                "chunk_id",
+            )
+
+        index = await self._index_cache.get_or_load(
+            ("chunk", tenant_id),
+            load,
+            dim=self._dim,
+        )
+        return await asyncio.to_thread(
+            search_normalized_index,
+            index,
+            query_vec,
+            top_k=top_k,
+        )
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -213,8 +295,8 @@ class MySQLVectorStore:
         tenant_col: Any,
         tenant_id: str,
         id_attr: str,
-    ) -> list[tuple[str | int, bytes]]:
-        """Load all vectors for a tenant from the database.
+    ) -> NormalizedVectorIndex:
+        """Stream one tenant index after a count/byte resource preflight.
 
         Args:
             model_cls: ORM model class (VectorEntity or VectorChunk).
@@ -223,21 +305,23 @@ class MySQLVectorStore:
             id_attr: Name of the ID attribute ("entity_id" or "chunk_id").
 
         Returns:
-            List of (id, embedding_blob) tuples.
+            A preallocated, row-normalized index.
         """
-        rows: list[tuple[str | int, bytes]] = []
-        async with self._session_factory() as session:
-            stmt = select(model_cls).where(tenant_col == tenant_id)
-            result = await session.execute(stmt)
-            for row in result.scalars():
-                try:
-                    row_any: Any = row  # Type erased for attr access (VectorEntity | VectorChunk)
-                    row_id: str | int = getattr(row_any, id_attr)
-                    emb: bytes = row_any.embedding
-                    rows.append((row_id, emb))
-                except Exception as exc:
-                    logger.warning("Skipping corrupted vector row: %s", exc)
-        return rows
+        id_column: Any = getattr(model_cls, id_attr)
+        return await stream_normalized_index(
+            self._session_factory,
+            id_column=id_column,
+            blob_column=model_cls.embedding,
+            tenant_column=tenant_col,
+            tenant_id=tenant_id,
+            dim=self._dim,
+            batch_rows=self._load_batch_rows,
+            max_rows=self._load_max_rows,
+            max_source_bytes=self._load_max_source_bytes,
+            max_memory_bytes=self._load_max_memory_bytes,
+            log_label=f"{model_cls.__tablename__}/{tenant_id}",
+            max_id_bytes_per_row=1020 if id_attr == "entity_id" else 0,
+        )
 
     def _brute_cosine(
         self,
@@ -255,56 +339,8 @@ class MySQLVectorStore:
         Returns:
             Sorted list of VectorSearchHit (highest similarity first).
         """
-        if not rows:
-            return []
-
-        # Build matrix (N × dim)
-        ids: list[str | int] = []
-        vectors: list[np.ndarray] = []
-        for row_id, blob in rows:
-            try:
-                vec = np.frombuffer(blob, dtype=np.float32)
-                if vec.shape[0] != self._dim:
-                    logger.warning(
-                        "Vector dim mismatch: expected %d, got %d — skipping",
-                        self._dim,
-                        vec.shape[0],
-                    )
-                    continue
-                ids.append(row_id)
-                vectors.append(vec)
-            except Exception as exc:
-                logger.warning("Failed to deserialize vector for id=%s: %s", row_id, exc)
-
-        if not vectors:
-            return []
-
-        matrix = np.stack(vectors)  # (N, dim)
-        query = np.asarray(query_vec, dtype=np.float32)  # (dim,)
-
-        # Normalise
-        norms = np.linalg.norm(matrix, axis=1, keepdims=True)
-        norms = np.clip(norms, 1e-12, None)
-        normalized = matrix / norms
-
-        query_norm = float(np.linalg.norm(query))
-        if query_norm < 1e-12:
-            query_norm = 1e-12
-        query_normalized = query / query_norm
-
-        # Cosine similarity: (N,)
-        scores = normalized @ query_normalized
-
-        # Top-k via argpartition (O(N) selection, then sort the k results)
-        k = min(top_k, len(scores))
-        if k <= 0:
-            return []
-
-        top_k_idx = np.argpartition(scores, -k)[-k:]
-        # Sort the k indices by descending score
-        top_k_sorted = top_k_idx[np.argsort(scores[top_k_idx])[::-1]]
-
-        return [VectorSearchHit(id=ids[idx], score=float(scores[idx])) for idx in top_k_sorted]
+        index = build_normalized_index(rows, dim=self._dim, log_label="vector")
+        return search_normalized_index(index, query_vec, top_k=top_k)
 
 
 __all__ = ["MySQLVectorStore"]

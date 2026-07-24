@@ -111,7 +111,7 @@ async def explore(
     # Collect edges between visible nodes
     edges = []
     for source, target, key, attrs in g.edges(data=True, keys=True):
-        if source in node_ids or target in node_ids:
+        if source in node_ids and target in node_ids:
             edges.append(_edge_to_response(source, target, key, attrs))
 
     return ExploreResponse(
@@ -247,13 +247,7 @@ async def get_path(
         raise EntityNotFoundError(detail={"entity_name": target})
 
     try:
-        # Convert MultiDiGraph to undirected for path finding
-        undirected = nx.Graph()
-        for u, v, data in g.edges(data=True):
-            if not undirected.has_edge(u, v):
-                undirected.add_edge(u, v, **data)
-
-        path = nx.shortest_path(undirected, source=source, target=target)
+        path = await graph_store.shortest_path(source, target)
     except nx.NetworkXNoPath:
         raise PathNotFoundError(detail={"source": source, "target": target}) from None
     except nx.NodeNotFound:

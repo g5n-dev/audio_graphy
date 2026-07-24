@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 
 import pytest
+from pydantic import ValidationError
 
 
 def _make_settings(**overrides: object) -> object:
@@ -55,24 +56,24 @@ def test_m9_defaults() -> None:
 
 
 def test_leiden_threshold_out_of_range_rejected() -> None:
-    with pytest.raises(Exception):  # ValidationError
+    with pytest.raises(ValidationError):
         _make_settings(leiden_threshold_percent=-1.0)
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         _make_settings(leiden_threshold_percent=150.0)
 
 
 def test_speaker_fuzzy_thresholds_range_rejected() -> None:
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         _make_settings(speaker_fuzzy_ambiguous_threshold=-0.1)
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         _make_settings(speaker_fuzzy_inferred_threshold=1.5)
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         _make_settings(speaker_fuzzy_voiceprint_reconfirm_cosine=-0.1)
 
 
 def test_inverted_speaker_fuzzy_thresholds_rejected() -> None:
     """Inferred > ambiguous is invalid (model_validator)."""
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         _make_settings(
             speaker_fuzzy_inferred_threshold=0.85,
             speaker_fuzzy_ambiguous_threshold=0.6,
@@ -80,9 +81,9 @@ def test_inverted_speaker_fuzzy_thresholds_rejected() -> None:
 
 
 def test_leiden_max_levels_range_rejected() -> None:
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         _make_settings(leiden_max_levels=5)
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         _make_settings(leiden_max_levels=-1)
 
 
@@ -100,8 +101,7 @@ def test_master_flag_off_with_subflags_on_warns(
         enable_compression=True,
     )
     assert any(
-        "ENABLE_ADVANCED_GRAPH=False but sub-flags ON" in rec.message
-        for rec in caplog.records
+        "ENABLE_ADVANCED_GRAPH=False but sub-flags ON" in rec.message for rec in caplog.records
     )
 
 
@@ -118,6 +118,5 @@ def test_master_flag_on_with_subflags_on_no_warning(
         enable_compression=True,
     )
     assert not any(
-        "ENABLE_ADVANCED_GRAPH=False but sub-flags ON" in rec.message
-        for rec in caplog.records
+        "ENABLE_ADVANCED_GRAPH=False but sub-flags ON" in rec.message for rec in caplog.records
     )

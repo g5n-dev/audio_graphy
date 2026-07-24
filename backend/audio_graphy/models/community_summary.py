@@ -57,14 +57,10 @@ class CommunitySummary(TenantScopedBase):
     summary: Mapped[str] = mapped_column(Text, nullable=False)
     member_count: Mapped[int] = mapped_column(Integer, nullable=False)
     member_node_ids: Mapped[str] = mapped_column(Text, nullable=False)
-    generated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     strategy: Mapped[str] = mapped_column(String(16), nullable=False)
 
     __table_args__ = (
-        UniqueConstraint(
-            "leiden_job_id", "level", "community_id", name="ux_cs_job_level_comm"
-        ),
+        UniqueConstraint("leiden_job_id", "level", "community_id", name="ux_cs_job_level_comm"),
         Index("ix_community_summaries_tenant_level", "tenant_id", "level"),
     )

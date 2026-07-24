@@ -24,9 +24,9 @@ def _sample(name: str, labels: dict[str, str] | None = None) -> float | None:
     """Read the current value of one metric sample from the registry."""
     for metric in m.REGISTRY.collect():
         for sample in metric.samples:
-            if sample.name == name and (labels is None or all(
-                sample.labels.get(k) == v for k, v in labels.items()
-            )):
+            if sample.name == name and (
+                labels is None or all(sample.labels.get(k) == v for k, v in labels.items())
+            ):
                 return float(sample.value)
     return None
 
@@ -57,9 +57,7 @@ class TestSessionsActiveGauge:
 
 class TestSessionsTotalCounter:
     def test_tenant_label(self) -> None:
-        before = _sample(
-            "audiography_streaming_sessions_total", {"tenant_id": "metrics-t1"}
-        ) or 0.0
+        before = _sample("audiography_streaming_sessions_total", {"tenant_id": "metrics-t1"}) or 0.0
         m.STREAMING_SESSIONS_TOTAL.labels(tenant_id="metrics-t1").inc()
         assert (
             _sample("audiography_streaming_sessions_total", {"tenant_id": "metrics-t1"})
@@ -70,42 +68,28 @@ class TestSessionsTotalCounter:
         m.STREAMING_SESSIONS_TOTAL.labels(tenant_id="m-iso-a").inc()
         m.STREAMING_SESSIONS_TOTAL.labels(tenant_id="m-iso-a").inc()
         m.STREAMING_SESSIONS_TOTAL.labels(tenant_id="m-iso-b").inc()
-        assert _sample(
-            "audiography_streaming_sessions_total", {"tenant_id": "m-iso-a"}
-        ) == 2.0
-        assert _sample(
-            "audiography_streaming_sessions_total", {"tenant_id": "m-iso-b"}
-        ) == 1.0
+        assert _sample("audiography_streaming_sessions_total", {"tenant_id": "m-iso-a"}) == 2.0
+        assert _sample("audiography_streaming_sessions_total", {"tenant_id": "m-iso-b"}) == 1.0
 
 
 class TestSegmentsTotalCounter:
     def test_confirmed_and_realtime_labels(self) -> None:
-        before_c = _sample(
-            "audiography_streaming_segments_total", {"mode": "confirmed"}
-        ) or 0.0
-        before_r = _sample(
-            "audiography_streaming_segments_total", {"mode": "realtime"}
-        ) or 0.0
+        before_c = _sample("audiography_streaming_segments_total", {"mode": "confirmed"}) or 0.0
+        before_r = _sample("audiography_streaming_segments_total", {"mode": "realtime"}) or 0.0
         m.STREAMING_SEGMENTS_TOTAL.labels(mode="confirmed").inc(3)
         m.STREAMING_SEGMENTS_TOTAL.labels(mode="realtime").inc(2)
         assert (
-            _sample("audiography_streaming_segments_total", {"mode": "confirmed"})
-            == before_c + 3
+            _sample("audiography_streaming_segments_total", {"mode": "confirmed"}) == before_c + 3
         )
-        assert (
-            _sample("audiography_streaming_segments_total", {"mode": "realtime"})
-            == before_r + 2
-        )
+        assert _sample("audiography_streaming_segments_total", {"mode": "realtime"}) == before_r + 2
 
 
 class TestVadResetsCounter:
     def test_reason_labels(self) -> None:
-        before_gap = _sample(
-            "audiography_streaming_vad_resets_total", {"reason": "seq_gap"}
-        ) or 0.0
-        before_client = _sample(
-            "audiography_streaming_vad_resets_total", {"reason": "client_request"}
-        ) or 0.0
+        before_gap = _sample("audiography_streaming_vad_resets_total", {"reason": "seq_gap"}) or 0.0
+        before_client = (
+            _sample("audiography_streaming_vad_resets_total", {"reason": "client_request"}) or 0.0
+        )
         m.STREAMING_VAD_RESETS_TOTAL.labels(reason="seq_gap").inc()
         m.STREAMING_VAD_RESETS_TOTAL.labels(reason="client_request").inc()
         assert (
@@ -113,26 +97,21 @@ class TestVadResetsCounter:
             == before_gap + 1
         )
         assert (
-            _sample(
-                "audiography_streaming_vad_resets_total", {"reason": "client_request"}
-            )
+            _sample("audiography_streaming_vad_resets_total", {"reason": "client_request"})
             == before_client + 1
         )
 
 
 class TestTagRecomputesCounter:
     def test_status_labels(self) -> None:
-        before_ok = _sample(
-            "audiography_streaming_tag_recomputes_total", {"status": "ok"}
-        ) or 0.0
-        before_err = _sample(
-            "audiography_streaming_tag_recomputes_total", {"status": "error"}
-        ) or 0.0
+        before_ok = _sample("audiography_streaming_tag_recomputes_total", {"status": "ok"}) or 0.0
+        before_err = (
+            _sample("audiography_streaming_tag_recomputes_total", {"status": "error"}) or 0.0
+        )
         m.STREAMING_TAG_RECOMPUTES_TOTAL.labels(status="ok").inc()
         m.STREAMING_TAG_RECOMPUTES_TOTAL.labels(status="error").inc()
         assert (
-            _sample("audiography_streaming_tag_recomputes_total", {"status": "ok"})
-            == before_ok + 1
+            _sample("audiography_streaming_tag_recomputes_total", {"status": "ok"}) == before_ok + 1
         )
         assert (
             _sample("audiography_streaming_tag_recomputes_total", {"status": "error"})
@@ -150,21 +129,15 @@ class TestAsrLatencyHistogram:
         before_count = _sample("audiography_streaming_asr_latency_seconds_count") or 0.0
         before_sum = _sample("audiography_streaming_asr_latency_seconds_sum") or 0.0
         m.STREAMING_ASR_LATENCY.observe(0.25)
-        assert (
-            _sample("audiography_streaming_asr_latency_seconds_count")
-            == before_count + 1
-        )
-        assert (
-            _sample("audiography_streaming_asr_latency_seconds_sum")
-            == pytest.approx(before_sum + 0.25)
+        assert _sample("audiography_streaming_asr_latency_seconds_count") == before_count + 1
+        assert _sample("audiography_streaming_asr_latency_seconds_sum") == pytest.approx(
+            before_sum + 0.25
         )
 
     def test_bucket_samples_exist(self) -> None:
         m.STREAMING_ASR_LATENCY.observe(0.05)
         # At least one +Inf bucket sample must exist.
-        value = _sample(
-            "audiography_streaming_asr_latency_seconds_bucket", {"le": "+Inf"}
-        )
+        value = _sample("audiography_streaming_asr_latency_seconds_bucket", {"le": "+Inf"})
         assert value is not None and value >= 1.0
 
 
@@ -210,9 +183,7 @@ class TestOtelHelpers:
 
     def test_streaming_span_noop_without_sdk(self) -> None:
         """streaming_span never raises, regardless of SDK availability."""
-        with otel.streaming_span(
-            "vad", session_id="s1", tenant_id="t1", trace_id="abc", seq=3
-        ):
+        with otel.streaming_span("vad", session_id="s1", tenant_id="t1", trace_id="abc", seq=3):
             pass
 
     def test_init_otel_returns_bool(self) -> None:

@@ -13,7 +13,11 @@ as JSON strings because GraphML does not support native list types.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import os
+import tempfile
+import threading
 from pathlib import Path
 from typing import Any, cast
 
@@ -58,6 +62,15 @@ class NetworkXGraphStore:
         self._tenant_id = tenant_id
         self._graph: nx.MultiDiGraph = nx.MultiDiGraph()
         self._loaded = False
+        self._graph_revision = 0
+        self._path_projection_revision = -1
+        self._path_projection: nx.Graph | None = None
+        self._path_projection_lock = asyncio.Lock()
+        self._path_projection_builds = 0
+        # Retention runs in an APScheduler thread with its own event loop, while
+        # request/pipeline saves run on the application loop. A threading lock
+        # therefore protects the publish step across both execution contexts.
+        self._save_lock = threading.Lock()
 
     @property
     def graphml_path(self) -> Path:
@@ -68,6 +81,18 @@ class NetworkXGraphStore:
     def graph(self) -> nx.MultiDiGraph:
         """Direct access to the underlying NetworkX graph (for advanced queries)."""
         return self._graph
+
+    @property
+    def path_projection_builds(self) -> int:
+        """Number of undirected projections built since store creation."""
+
+        return self._path_projection_builds
+
+    def invalidate_path_projection(self) -> None:
+        """Mark the cached shortest-path projection stale after direct mutation."""
+
+        self._graph_revision += 1
+        self._path_projection = None
 
     # ------------------------------------------------------------------
     # Node CRUD
@@ -110,6 +135,7 @@ class NetworkXGraphStore:
                 recording_ids=_list_to_str(node.recording_ids),
                 degree=node.degree,
             )
+        self.invalidate_path_projection()
 
     async def get_node(self, entity_id: str) -> GraphNode | None:
         """Retrieve a node by entity_id.
@@ -190,6 +216,7 @@ class NetworkXGraphStore:
                 confidence_score=edge.confidence_score,
                 source_ids=_list_to_str(edge.source_ids),
             )
+        self.invalidate_path_projection()
 
     async def get_edges(self, entity_id: str) -> list[GraphEdge]:
         """Get all edges connected to an entity (both as source and target).
@@ -292,12 +319,59 @@ class NetworkXGraphStore:
             return 0
         return int(self._graph.degree(entity_id))
 
+    async def shortest_path(self, source: str, target: str) -> list[str]:
+        """Return an undirected shortest path using a revisioned projection.
+
+        Projection construction is moved off the event loop and reused by hot
+        queries. Store mutation methods invalidate the cached projection.
+        Call :meth:`invalidate_path_projection` after any deliberate direct
+        mutation through :attr:`graph`.
+        """
+
+        await self._ensure_loaded()
+        projection = await self._get_path_projection()
+        path = await asyncio.to_thread(
+            nx.shortest_path,
+            projection,
+            source=source,
+            target=target,
+        )
+        return [str(node_id) for node_id in path]
+
+    async def _get_path_projection(self) -> nx.Graph:
+        if (
+            self._path_projection is not None
+            and self._path_projection_revision == self._graph_revision
+        ):
+            return self._path_projection
+
+        async with self._path_projection_lock:
+            if (
+                self._path_projection is not None
+                and self._path_projection_revision == self._graph_revision
+            ):
+                return self._path_projection
+
+            while True:
+                revision = self._graph_revision
+                snapshot = self._graph.copy(as_view=False)
+                projection = await asyncio.to_thread(nx.Graph, snapshot)
+                if revision == self._graph_revision:
+                    self._path_projection = projection
+                    self._path_projection_revision = revision
+                    self._path_projection_builds += 1
+                    return projection
+
     # ------------------------------------------------------------------
     # Persistence
     # ------------------------------------------------------------------
 
     async def save(self) -> None:
-        """Flush the in-memory graph to GraphML file.
+        """Atomically flush the in-memory graph to GraphML.
+
+        Data is written and fsynced in a same-directory temporary file before
+        ``os.replace`` publishes it.  A failed write or replace therefore
+        leaves the last good GraphML intact.
 
         Raises:
             StorageError: If write fails.
@@ -317,8 +391,49 @@ class NetworkXGraphStore:
         )
 
     def _sync_save(self) -> None:
-        """Synchronous GraphML write — called via asyncio.to_thread."""
-        nx.write_graphml(self._graph, self.graphml_path, encoding="utf-8")
+        """Crash-safe GraphML write — called via ``asyncio.to_thread``."""
+        with self._save_lock:
+            self._sync_save_locked()
+
+    def _sync_save_locked(self) -> None:
+        """Write one temporary GraphML and atomically publish it."""
+        target = self.graphml_path
+        file_descriptor, temp_name = tempfile.mkstemp(
+            dir=target.parent,
+            prefix=f".{target.name}.",
+            suffix=".tmp",
+        )
+        temp_path = Path(temp_name)
+        descriptor_open = True
+        try:
+            with os.fdopen(file_descriptor, "wb") as temp_file:
+                descriptor_open = False
+                nx.write_graphml(self._graph, temp_file, encoding="utf-8")
+                temp_file.flush()
+                os.fsync(temp_file.fileno())
+
+            os.replace(temp_path, target)
+            self._fsync_directory(target.parent)
+        finally:
+            if descriptor_open:
+                with contextlib.suppress(OSError):
+                    os.close(file_descriptor)
+            with contextlib.suppress(OSError):
+                temp_path.unlink()
+
+    @staticmethod
+    def _fsync_directory(directory: Path) -> None:
+        """Best-effort directory fsync so the rename survives a power loss."""
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        try:
+            directory_fd = os.open(directory, flags)
+        except OSError:
+            return
+        try:
+            with contextlib.suppress(OSError):
+                os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
 
     async def load(self) -> None:
         """Load the graph from GraphML file into memory.
@@ -328,6 +443,7 @@ class NetworkXGraphStore:
         """
         await asyncio.to_thread(self._sync_load)
         self._loaded = True
+        self.invalidate_path_projection()
 
     def _sync_load(self) -> None:
         """Synchronous GraphML read — called via asyncio.to_thread."""

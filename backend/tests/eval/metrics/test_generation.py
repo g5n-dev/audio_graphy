@@ -157,6 +157,7 @@ async def test_factual_correctness_both_empty() -> None:
 
 async def test_factual_correctness_no_overlap() -> None:
     """Disjoint sets → F1=0."""
+
     # Use different fact lists for pred vs gold via two judges — but our stub
     # returns the same list regardless of input. Instead simulate by making
     # the gold answer text extractable only with a different stub config:
@@ -187,6 +188,7 @@ async def test_factual_correctness_no_overlap() -> None:
 
 async def test_factual_correctness_partial() -> None:
     """1 of 2 overlap → precision=recall=0.5 → F1=0.5."""
+
     class _Overlapping:
         """Stub returning different fact lists per call index."""
 

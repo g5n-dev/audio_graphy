@@ -165,9 +165,7 @@ async def list_merge_pending(
     over the parameterised one (FastAPI matches in registration order).
     """
     tenant_id = get_tenant_id(request)
-    stmt = select(SpeakerMergePending).where(
-        SpeakerMergePending.tenant_id == tenant_id
-    )
+    stmt = select(SpeakerMergePending).where(SpeakerMergePending.tenant_id == tenant_id)
     count_stmt = (
         select(func.count())
         .select_from(SpeakerMergePending)
@@ -207,9 +205,7 @@ async def get_speaker(
     tenant_id = get_tenant_id(request)
     node = await db.get(SpeakerNode, speaker_id)
     if node is None or str(node.tenant_id) != tenant_id:
-        raise EntityNotFoundError(
-            detail={"speaker_id": speaker_id, "tenant_id": tenant_id}
-        )
+        raise EntityNotFoundError(detail={"speaker_id": speaker_id, "tenant_id": tenant_id})
 
     # Load related speaker_links (joined via canonical_speaker_id).
     link_stmt = (
@@ -223,9 +219,7 @@ async def get_speaker(
         related.append(
             SpeakerRecordingRef(
                 recording_id=int(link.recording_id),
-                voiceprint_id=_voiceprint_short_hash(
-                    str(getattr(node, "voiceprint_id", ""))
-                ),
+                voiceprint_id=_voiceprint_short_hash(str(getattr(node, "voiceprint_id", ""))),
                 duration_sec=0.0,  # not stored on speaker_link in M7
                 strategy=str(link.strategy),
                 ambiguity_tag=link.ambiguity_tag,
@@ -255,9 +249,7 @@ def _merge_pending_to_item(row: SpeakerMergePending) -> SpeakerMergePendingListI
         fuzzy_score=float(row.fuzzy_score),
         status=str(row.status),
         voiceprint_score=(
-            float(row.voiceprint_score)
-            if row.voiceprint_score is not None
-            else None
+            float(row.voiceprint_score) if row.voiceprint_score is not None else None
         ),
         resolved_by=row.resolved_by,
         resolved_at=row.resolved_at,
@@ -326,9 +318,7 @@ async def confirm_merge(
         status=str(pending.status),
         resolved_by=str(pending.resolved_by or "human"),
         voiceprint_score=(
-            float(pending.voiceprint_score)
-            if pending.voiceprint_score is not None
-            else None
+            float(pending.voiceprint_score) if pending.voiceprint_score is not None else None
         ),
     )
 

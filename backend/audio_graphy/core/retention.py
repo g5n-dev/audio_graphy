@@ -11,9 +11,10 @@ Deletion scope per recording (hard delete, M6):
        - segments
        - vectors_chunk rows whose chunk_id belongs to this recording
        - the recordings row itself
-    3. GraphML cleanup: best-effort removal of nodes/edges that reference
-       this recording. Failure here is logged + downgraded (M6 does not
-       require atomicity across file + DB + graph).
+    3. GraphML cleanup: cold-load the tenant graph, remove nodes/edges that
+       reference this recording, and persist before the irreversible DB
+       deletion. A persistence failure is reported and leaves the recording
+       retryable.
 
 M9 R1 T14 addition:
     Before removing a node from the graph, the retention cascade now
@@ -31,8 +32,8 @@ Args (constructor):
         verification of encrypted_path before unlink).
     audit: AuditWriter (fire-and-forget audit append).
     graph_store_factory: callable ``(tenant_id) -> NetworkXGraphStore | None``;
-        receives the tenant and returns the per-tenant graph store if one
-        is cached. Returning ``None`` skips GraphML cleanup for that tenant.
+        synchronous and asynchronous factories are supported. Production uses
+        a lazy-loading factory so cold tenants are not skipped.
     retention_days: Override ``Settings.recording_retention_days`` (testing).
     batch_size: Max recordings processed per sweep (default 500).
     enable_advanced_graph: M9 R1 T14 — when True, fire bi-temporal cascade
@@ -41,8 +42,9 @@ Args (constructor):
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -57,8 +59,13 @@ from audio_graphy.models.chunk import Chunk
 from audio_graphy.models.recording import Recording
 from audio_graphy.models.segment import Segment
 from audio_graphy.models.tag_fact import TagFact
+from audio_graphy.services.reception_erasure import (
+    erase_reception_artifacts,
+    invalidate_receptions_for_recording,
+)
 
 if TYPE_CHECKING:
+    from audio_graphy.storage.file_index import FileIndex
     from audio_graphy.storage.graph_networkx import NetworkXGraphStore
 
 logger = logging.getLogger(__name__)
@@ -87,14 +94,23 @@ class RetentionEnforcer:
     def __init__(
         self,
         session_factory: async_sessionmaker[AsyncSession],
-        crypto: AudioCrypto,
+        crypto: AudioCrypto | None,
         audit: AuditWriter,
-        graph_store_factory: Callable[[str], NetworkXGraphStore | None],
+        graph_store_factory: Callable[
+            [str],
+            NetworkXGraphStore | None | Awaitable[NetworkXGraphStore | None],
+        ],
         *,
         retention_days: int | None = None,
         batch_size: int = 500,
         cascade_voiceprint: bool = True,
         enable_advanced_graph: bool = False,
+        working_dir: Path | None = None,
+        file_index_factory: Callable[
+            [str],
+            FileIndex | None | Awaitable[FileIndex | None],
+        ]
+        | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._crypto = crypto
@@ -103,6 +119,8 @@ class RetentionEnforcer:
         self._retention_days_override = retention_days
         self._batch_size = batch_size
         self._cascade_voiceprint = cascade_voiceprint
+        self._working_dir = working_dir
+        self._file_index_factory = file_index_factory
         # M9 R1 T14 — flag-gated bi-temporal cascade (L9 zero-regression).
         self._enable_advanced_graph: bool = enable_advanced_graph
         # Buffer of EdgeEvent rows pending atomic commit (filled by the
@@ -163,9 +181,7 @@ class RetentionEnforcer:
                     before={
                         "path": str(rec.path),
                         "audio_encrypted_path": rec.audio_encrypted_path,
-                        "recorded_at": rec.recorded_at.isoformat()
-                        if rec.recorded_at
-                        else None,
+                        "recorded_at": rec.recorded_at.isoformat() if rec.recorded_at else None,
                     },
                     after={},
                 )
@@ -208,7 +224,42 @@ class RetentionEnforcer:
                    the speaker_node (FK cascade handles speaker_links).
             3. Hard-deletes the vectors_voiceprint rows.
         """
-        # 0. (M7) voiceprint cascade — must run BEFORE recordings row is
+        # 0. GraphML is a durable PII-bearing store, not a best-effort cache.
+        # Scrub and persist it before irreversible DB deletion so a failure
+        # enters run_sweep's existing failure/retry reporting path.
+        store_result = self._graph_store_factory(str(rec.tenant_id))
+        graph_store = await store_result if isinstance(store_result, Awaitable) else store_result
+        if graph_store is not None:
+            self._remove_graph_refs(
+                graph_store,
+                rec.id,
+                tenant_id=str(rec.tenant_id),
+            )
+            await graph_store.save()
+
+        # File-backed transcript/chunk/LLM-cache copies are part of the
+        # erasure boundary. Persist their removal before irreversible DB work.
+        file_index_result = (
+            self._file_index_factory(str(rec.tenant_id))
+            if self._file_index_factory is not None
+            else None
+        )
+        file_index = (
+            await file_index_result
+            if isinstance(file_index_result, Awaitable)
+            else file_index_result
+        )
+        if file_index is None and self._working_dir is not None:
+            from audio_graphy.storage.file_index import FileIndex
+
+            file_index = FileIndex(
+                self._working_dir,
+                tenant_id=str(rec.tenant_id),
+            )
+        if file_index is not None:
+            await file_index.erase_recording(rec.id)
+
+        # 1. (M7) voiceprint cascade — must run BEFORE recordings row is
         # deleted so we can still query speaker_node aggregations cleanly.
         if self._cascade_voiceprint:
             try:
@@ -220,55 +271,68 @@ class RetentionEnforcer:
                     exc,
                 )
 
-        # 1. Audio file on disk (encrypted_path preferred; fallback to path).
-        cipher_path = (
-            rec.audio_encrypted_path if rec.audio_encrypted_path else str(rec.path)
-        )
-        cipher_path_obj = Path(cipher_path)
-        if cipher_path_obj.exists():
-            try:
-                cipher_path_obj.unlink()
-                logger.info(
-                    "Retention: deleted audio file %s for recording %d",
-                    cipher_path_obj,
-                    rec.id,
-                )
-            except OSError as exc:
-                logger.warning(
-                    "Retention: failed to unlink %s: %s", cipher_path_obj, exc
-                )
+        # 2. During processing encrypted and plaintext paths can coexist.
+        # Retention must remove both distinct artifacts.
+        audio_paths = {Path(path) for path in (str(rec.path), rec.audio_encrypted_path) if path}
+        for audio_path in audio_paths:
+            if audio_path.exists():
+                try:
+                    audio_path.unlink()
+                    logger.info(
+                        "Retention: deleted audio file %s for recording %d",
+                        audio_path,
+                        rec.id,
+                    )
+                except OSError as exc:
+                    raise OSError(f"failed to unlink retained audio {audio_path}") from exc
 
-        # 2. DB rows — explicit deletes for auditability.
+        # 3. DB rows — explicit deletes for auditability.
         async with self._session_factory() as session:
+            reception_artifacts = await invalidate_receptions_for_recording(
+                session,
+                tenant_id=str(rec.tenant_id),
+                recording_id=rec.id,
+                actor="retention",
+            )
             # TagFact
             await session.execute(
-                delete(TagFact).where(TagFact.recording_id == rec.id)
+                delete(TagFact).where(
+                    TagFact.tenant_id == rec.tenant_id,
+                    TagFact.recording_id == rec.id,
+                )
             )
             # TagCurrent — same tenant/recording scope.
             await self._delete_tag_current(session, rec.id, str(rec.tenant_id))
             # Chunks (cascades to vector_chunks via FK ON DELETE CASCADE)
-            await session.execute(delete(Chunk).where(Chunk.recording_id == rec.id))
+            await session.execute(
+                delete(Chunk).where(
+                    Chunk.tenant_id == rec.tenant_id,
+                    Chunk.recording_id == rec.id,
+                )
+            )
             # Segments
             await session.execute(
-                delete(Segment).where(Segment.recording_id == rec.id)
+                delete(Segment).where(
+                    Segment.tenant_id == rec.tenant_id,
+                    Segment.recording_id == rec.id,
+                )
             )
             # Recording itself
-            await session.execute(delete(Recording).where(Recording.id == rec.id))
-            await session.commit()
-
-        # 3. GraphML — best-effort cleanup.
-        try:
-            graph_store = self._graph_store_factory(str(rec.tenant_id))
-            if graph_store is not None:
-                self._remove_graph_refs(
-                    graph_store,
-                    rec.id,
-                    tenant_id=str(rec.tenant_id),
+            await session.execute(
+                delete(Recording).where(
+                    Recording.tenant_id == rec.tenant_id,
+                    Recording.id == rec.id,
                 )
-        except Exception as exc:
-            logger.warning(
-                "GraphML cleanup failed for recording %d: %s", rec.id, exc
             )
+            if reception_artifacts:
+                if self._working_dir is None:
+                    raise RuntimeError("working_dir is required to erase reception artifacts")
+                await asyncio.to_thread(
+                    erase_reception_artifacts,
+                    reception_artifacts,
+                    allowed_root=self._working_dir,
+                )
+            await session.commit()
 
     async def _cascade_voiceprint_for_recording(self, rec: Recording) -> None:
         """M7 PIPL §14.3 cascade: voiceprint_vectors + speaker_nodes cleanup.
@@ -291,7 +355,9 @@ class RetentionEnforcer:
                             VoiceprintVector.tenant_id == str(rec.tenant_id),
                         )
                     )
-                ).scalars().all()
+                )
+                .scalars()
+                .all()
             )
             if not vp_rows:
                 return
@@ -317,14 +383,10 @@ class RetentionEnforcer:
 
             # 3. Hard delete the voiceprint rows.
             await session.execute(
-                delete(VoiceprintVector).where(
-                    VoiceprintVector.recording_id == rec.id
-                )
+                delete(VoiceprintVector).where(VoiceprintVector.recording_id == rec.id)
             )
             # 4. Drop speaker_links rows referencing this recording.
-            await session.execute(
-                delete(SpeakerLink).where(SpeakerLink.recording_id == rec.id)
-            )
+            await session.execute(delete(SpeakerLink).where(SpeakerLink.recording_id == rec.id))
 
             await session.commit()
 
@@ -339,9 +401,7 @@ class RetentionEnforcer:
         )
 
     @staticmethod
-    async def _delete_tag_current(
-        session: AsyncSession, recording_id: int, tenant_id: str
-    ) -> None:
+    async def _delete_tag_current(session: AsyncSession, recording_id: int, tenant_id: str) -> None:
         """Delete TagCurrent rows for this recording (no direct FK to Recording)."""
         # Local import to avoid loading the model at module import time
         # in case the table is missing in tests.
@@ -404,6 +464,7 @@ class RetentionEnforcer:
 
         for node_id in to_remove:
             graph.remove_node(node_id)
+        graph_store.invalidate_path_projection()
 
     def _bitemporal_cascade_for_nodes(
         self,
@@ -520,18 +581,14 @@ async def run_weekly_compression_sweep(
             service = CompressionService(
                 sink=sink,
                 bt_service=bt,
-                god_node_degree_threshold=int(
-                    getattr(settings, "compression_god_node_degree", 50)
-                ),
+                god_node_degree_threshold=int(getattr(settings, "compression_god_node_degree", 50)),
                 stale_days=int(getattr(settings, "compression_stale_days", 180)),
                 tenant_id=tenant_id,
             )
             nodes = _all_graph_nodes(store)
             report = service.run(
                 nodes,
-                max_candidates=int(
-                    getattr(settings, "compression_max_candidates_per_run", 100)
-                ),
+                max_candidates=int(getattr(settings, "compression_max_candidates_per_run", 100)),
             )
             summary[tenant_id] = {
                 "candidates": len(report.candidates),

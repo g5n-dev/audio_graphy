@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
-from datetime import datetime
 from typing import Any
 
 import pytest
@@ -39,7 +38,6 @@ from audio_graphy.models.recording import Recording
 from audio_graphy.models.speaker_merge_pending import SpeakerMergePending
 from audio_graphy.models.speaker_node import SpeakerNode
 from audio_graphy.models.tenant import Tenant
-
 
 # ============================================================
 # Fixtures
@@ -117,10 +115,10 @@ async def test_amiguous_layer2_match_enqueues_pending(
     # Load the existing SpeakerNode.
     async with sr_factory() as session:
         nodes = (
-            await session.execute(
-                select(SpeakerNode).where(SpeakerNode.tenant_id == "t1")
-            )
-        ).scalars().all()
+            (await session.execute(select(SpeakerNode).where(SpeakerNode.tenant_id == "t1")))
+            .scalars()
+            .all()
+        )
     assert len(nodes) == 1
 
     # Build a candidate whose name is similar enough to trigger AMBIGUOUS.
@@ -146,12 +144,14 @@ async def test_amiguous_layer2_match_enqueues_pending(
     # Verify the SpeakerMergePending row was inserted.
     async with sr_factory() as session:
         rows = (
-            await session.execute(
-                select(SpeakerMergePending).where(
-                    SpeakerMergePending.tenant_id == "t1"
+            (
+                await session.execute(
+                    select(SpeakerMergePending).where(SpeakerMergePending.tenant_id == "t1")
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
     assert len(rows) == 1
     row = rows[0]
     assert row.status == "pending"
@@ -174,10 +174,10 @@ async def test_no_match_does_not_enqueue(
     )
     async with sr_factory() as session:
         nodes = (
-            await session.execute(
-                select(SpeakerNode).where(SpeakerNode.tenant_id == "t1")
-            )
-        ).scalars().all()
+            (await session.execute(select(SpeakerNode).where(SpeakerNode.tenant_id == "t1")))
+            .scalars()
+            .all()
+        )
 
     cand = _NewSpeakerCandidate(
         speaker_id="spk_0",
@@ -195,12 +195,14 @@ async def test_no_match_does_not_enqueue(
     if result is None:
         async with sr_factory() as session:
             rows = (
-                await session.execute(
-                    select(SpeakerMergePending).where(
-                        SpeakerMergePending.tenant_id == "t1"
+                (
+                    await session.execute(
+                        select(SpeakerMergePending).where(SpeakerMergePending.tenant_id == "t1")
                     )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
         assert len(rows) == 0
 
 
@@ -239,7 +241,7 @@ async def test_enqueue_failure_swallowed(
     original_factory = linker._session_factory
 
     class _BadSession:
-        def __aenter__(self) -> "_BadSession":
+        def __aenter__(self) -> _BadSession:
             return self
 
         def __aexit__(self, *args: object) -> None:
@@ -270,9 +272,7 @@ async def test_enqueue_failure_swallowed(
 
     # No row should have been committed.
     async with sr_factory() as session:
-        rows = (
-            await session.execute(select(SpeakerMergePending))
-        ).scalars().all()
+        rows = (await session.execute(select(SpeakerMergePending))).scalars().all()
     assert len(rows) == 0
     _ = AsyncMock  # suppress unused import
 

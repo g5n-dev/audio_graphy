@@ -13,7 +13,6 @@ import io
 import json
 import struct
 import zipfile
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -65,12 +64,8 @@ async def _seed_rec_with_voiceprint_two_recordings(
         status="indexed",
         pipeline_state="done",
     )
-    await seed_segment(
-        factory, recording_id=rec_a, tenant_id=tenant, transcript="a"
-    )
-    await seed_segment(
-        factory, recording_id=rec_b, tenant_id=tenant, transcript="b"
-    )
+    await seed_segment(factory, recording_id=rec_a, tenant_id=tenant, transcript="a")
+    await seed_segment(factory, recording_id=rec_b, tenant_id=tenant, transcript="b")
 
     async with factory() as session:
         node = SpeakerNode(
@@ -87,9 +82,7 @@ async def _seed_rec_with_voiceprint_two_recordings(
         for rid in (rec_a, rec_b):
             vec = tuple(float(i) / 200.0 for i in range(192))
             plain = struct.pack(f"<{len(vec)}f", *vec)
-            ct, meta = crypto.encrypt_bytes(
-                plain, context=f"voiceprint:{voiceprint_id}:{rid}"
-            )
+            ct, meta = crypto.encrypt_bytes(plain, context=f"voiceprint:{voiceprint_id}:{rid}")
             # voiceprint_id is unique per (tenant, voiceprint_id); suffix with rid
             # so we can insert two rows (one per recording) sharing the same
             # speaker_node.
@@ -136,9 +129,7 @@ def test_erase_partial_speaker_decrements_recordings_list(
 
     factory = db_session_factory
     rec_a, rec_b, node_id = _run_async(
-        _seed_rec_with_voiceprint_two_recordings(
-            factory, crypto=dev_crypto_fixture
-        )
+        _seed_rec_with_voiceprint_two_recordings(factory, crypto=dev_crypto_fixture)
     )
 
     resp = test_client.post(
@@ -151,9 +142,7 @@ def test_erase_partial_speaker_decrements_recordings_list(
     async def _inspect() -> tuple[bool, list[int]]:
         async with factory() as session:
             node = (
-                await session.execute(
-                    select(SpeakerNode).where(SpeakerNode.id == node_id)
-                )
+                await session.execute(select(SpeakerNode).where(SpeakerNode.id == node_id))
             ).scalar_one_or_none()
             if node is None:
                 return False, []

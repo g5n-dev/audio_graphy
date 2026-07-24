@@ -54,9 +54,7 @@ class SpeakerRecordingRef(BaseModel):
 class SpeakerDetailResponse(SpeakerListItem):
     """GET /speakers/{id} response — full detail."""
 
-    recordings_list: list[int] = Field(
-        ..., description="Recording IDs this speaker appears in"
-    )
+    recordings_list: list[int] = Field(..., description="Recording IDs this speaker appears in")
     related_recordings: list[SpeakerRecordingRef] = Field(
         default_factory=list,
         description="Recording refs with linking metadata (joined via speaker_links)",

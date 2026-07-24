@@ -203,9 +203,7 @@ class CAMPlusPlusAdapter:
             try:
                 resp = await client.post(full_url, files=files, data=data)
             except httpx.TimeoutException as exc:
-                logger.warning(
-                    "CAM++ voiceprint timeout url=%s err=%s", _redact(full_url), exc
-                )
+                logger.warning("CAM++ voiceprint timeout url=%s err=%s", _redact(full_url), exc)
                 raise VoiceprintTimeoutError(
                     f"CAM++ voiceprint timeout: {exc}",
                     url=self._base_url,

@@ -130,12 +130,16 @@ class TestWSEndpointLifecycle:
         mgr: JWTManager = app.state.jwt_manager
         token = mgr.create_access_token(user_id=1, tenant_id="t1", role="agent")
         with client, client.websocket_connect(f"/ws/stream?token={token}") as ws:
-            ws.send_text(json.dumps({
-                "type": "init",
-                "session_id": "test-sid",
-                "recording_id": 1,
-                "consent_token": "yes",
-            }))
+            ws.send_text(
+                json.dumps(
+                    {
+                        "type": "init",
+                        "session_id": "test-sid",
+                        "recording_id": 1,
+                        "consent_token": "yes",
+                    }
+                )
+            )
             # Expect session_opened.
             msg = ws.receive_text()
             payload = json.loads(msg)
@@ -147,12 +151,16 @@ class TestWSEndpointLifecycle:
         mgr: JWTManager = app.state.jwt_manager
         token = mgr.create_access_token(user_id=1, tenant_id="t1", role="agent")
         with client, client.websocket_connect(f"/ws/stream?token={token}") as ws:
-            ws.send_text(json.dumps({
-                "type": "init",
-                "session_id": "test-sid",
-                "recording_id": 1,
-                # no consent_token
-            }))
+            ws.send_text(
+                json.dumps(
+                    {
+                        "type": "init",
+                        "session_id": "test-sid",
+                        "recording_id": 1,
+                        # no consent_token
+                    }
+                )
+            )
             # The server will close with code 4002 (consent missing).
             # The WebSocketDisconnect exception carries the close code.
             from starlette.websockets import WebSocketDisconnect
@@ -166,12 +174,16 @@ class TestWSEndpointLifecycle:
         mgr: JWTManager = app.state.jwt_manager
         token = mgr.create_access_token(user_id=1, tenant_id="t1", role="agent")
         with client, client.websocket_connect(f"/ws/stream?token={token}") as ws:
-            ws.send_text(json.dumps({
-                "type": "init",
-                # no session_id
-                "recording_id": 1,
-                "consent_token": "yes",
-            }))
+            ws.send_text(
+                json.dumps(
+                    {
+                        "type": "init",
+                        # no session_id
+                        "recording_id": 1,
+                        "consent_token": "yes",
+                    }
+                )
+            )
             from starlette.websockets import WebSocketDisconnect
 
             with pytest.raises(WebSocketDisconnect) as exc_info:
@@ -183,12 +195,16 @@ class TestWSEndpointLifecycle:
         mgr: JWTManager = app.state.jwt_manager
         token = mgr.create_access_token(user_id=1, tenant_id="t1", role="agent")
         with client, client.websocket_connect(f"/ws/stream?token={token}") as ws:
-            ws.send_text(json.dumps({
-                "type": "init",
-                "session_id": "x",
-                "recording_id": -1,  # invalid
-                "consent_token": "yes",
-            }))
+            ws.send_text(
+                json.dumps(
+                    {
+                        "type": "init",
+                        "session_id": "x",
+                        "recording_id": -1,  # invalid
+                        "consent_token": "yes",
+                    }
+                )
+            )
             from starlette.websockets import WebSocketDisconnect
 
             with pytest.raises(WebSocketDisconnect) as exc_info:
@@ -201,12 +217,16 @@ class TestWSEndpointLifecycle:
         mgr: JWTManager = app.state.jwt_manager
         token = mgr.create_access_token(user_id=1, tenant_id="t1", role="agent")
         with client, client.websocket_connect(f"/ws/stream?token={token}") as ws:
-            ws.send_text(json.dumps({
-                "type": "init",
-                "session_id": "bin-test",
-                "recording_id": 1,
-                "consent_token": "yes",
-            }))
+            ws.send_text(
+                json.dumps(
+                    {
+                        "type": "init",
+                        "session_id": "bin-test",
+                        "recording_id": 1,
+                        "consent_token": "yes",
+                    }
+                )
+            )
             ws.receive_text()  # session_opened
 
             # Send a 4-byte-seq + 1024 PCM binary frame.
@@ -234,12 +254,16 @@ class TestWSEndpointLifecycle:
         mgr: JWTManager = app.state.jwt_manager
         token = mgr.create_access_token(user_id=1, tenant_id="t1", role="agent")
         with client, client.websocket_connect(f"/ws/stream?token={token}") as ws:
-            ws.send_text(json.dumps({
-                "type": "init",
-                "session_id": "reset-test",
-                "recording_id": 1,
-                "consent_token": "yes",
-            }))
+            ws.send_text(
+                json.dumps(
+                    {
+                        "type": "init",
+                        "session_id": "reset-test",
+                        "recording_id": 1,
+                        "consent_token": "yes",
+                    }
+                )
+            )
             ws.receive_text()  # session_opened
 
             ws.send_text(json.dumps({"type": "reset"}))

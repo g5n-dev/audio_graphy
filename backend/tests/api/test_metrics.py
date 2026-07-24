@@ -7,13 +7,14 @@ Cases:
 
 from __future__ import annotations
 
+import contextlib
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from audio_graphy.api.metrics import (
     HTTP_REQUESTS,
-    MetricsMiddleware,
     REGISTRY,
     register_metrics,
 )
@@ -35,16 +36,15 @@ def _fresh_app() -> FastAPI:
 def metrics_client() -> TestClient:
     """TestClient wired to a minimal metrics-enabled app."""
     # Reset counter state so tests are deterministic.
-    try:
+    with contextlib.suppress(Exception):
         REGISTRY.unregister(HTTP_REQUESTS._collector)  # type: ignore[attr-defined]
-    except Exception:  # noqa: BLE001 — best-effort cleanup.
-        pass
     return TestClient(_fresh_app())
 
 
 # --------------------------------------------------------------------
 # Case 1 — /metrics returns 200 + prometheus text + audiography metric
 # --------------------------------------------------------------------
+
 
 def test_metrics_endpoint_returns_prometheus_format(metrics_client: TestClient) -> None:
     """GET /metrics returns 200, text/plain, with an audiography_* metric."""
@@ -55,14 +55,13 @@ def test_metrics_endpoint_returns_prometheus_format(metrics_client: TestClient) 
     assert "text/plain" in ct, f"unexpected content-type: {ct!r}"
     # Body must include at least one audiography_* metric name.
     body = response.text
-    assert "audiography_" in body, (
-        "expected at least one audiography_* metric in /metrics output"
-    )
+    assert "audiography_" in body, "expected at least one audiography_* metric in /metrics output"
 
 
 # --------------------------------------------------------------------
 # Case 2 — middleware counts requests
 # --------------------------------------------------------------------
+
 
 def test_middleware_increments_request_counter(metrics_client: TestClient) -> None:
     """Hitting /ping then /metrics must show incremented HTTP_REQUESTS counter."""
@@ -85,6 +84,7 @@ def test_middleware_increments_request_counter(metrics_client: TestClient) -> No
 # Bonus — /metrics itself does NOT bump the counter (idempotent scrape)
 # --------------------------------------------------------------------
 
+
 def test_metrics_endpoint_not_counted(metrics_client: TestClient) -> None:
     """Repeated /metrics scrapes do not increment HTTP_REQUESTS for /metrics."""
     # Three scrapes.
@@ -98,6 +98,7 @@ def test_metrics_endpoint_not_counted(metrics_client: TestClient) -> None:
 # --------------------------------------------------------------------
 # Bonus — Counter / Histogram objects exist on REGISTRY
 # --------------------------------------------------------------------
+
 
 def test_metrics_registered_on_default_registry() -> None:
     """All shipped metric names are present on REGISTRY."""

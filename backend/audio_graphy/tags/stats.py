@@ -14,6 +14,8 @@ from typing import Any, Literal
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from audio_graphy.models.recording import Recording
+from audio_graphy.models.tag_current import TagCurrent
 from audio_graphy.models.tag_stat import TagStat
 
 logger = logging.getLogger(__name__)
@@ -68,6 +70,7 @@ class TagStatsService:
         tag_path_prefix: str | None,
         tag_value: str | None,
         group_by: GroupByField,
+        agent_user_id: int | None = None,
     ) -> list[dict[str, Any]]:
         """Query tag statistics with optional filters and grouping.
 
@@ -78,10 +81,23 @@ class TagStatsService:
             tag_path_prefix: Optional tag path prefix (e.g. "quality.*").
             tag_value: Optional tag value filter.
             group_by: Aggregation dimension.
+            agent_user_id: Optional immutable owner scope. When set, statistics
+                are derived from canonical current tags joined to recordings,
+                rather than the legacy display-name aggregate.
 
         Returns:
             List of dicts with dimension keys + tag_count.
         """
+        if agent_user_id is not None:
+            return await self._get_agent_stats(
+                tenant_id=tenant_id,
+                agent_user_id=agent_user_id,
+                store_id=store_id,
+                tag_path_prefix=tag_path_prefix,
+                tag_value=tag_value,
+                group_by=group_by,
+            )
+
         async with self._session_factory() as session:
             stmt = select(TagStat).where(TagStat.tenant_id == tenant_id)
 
@@ -114,6 +130,59 @@ class TagStatsService:
             stats_list.append(entry)
 
         return stats_list
+
+    async def _get_agent_stats(
+        self,
+        *,
+        tenant_id: str,
+        agent_user_id: int,
+        store_id: str | None,
+        tag_path_prefix: str | None,
+        tag_value: str | None,
+        group_by: GroupByField,
+    ) -> list[dict[str, Any]]:
+        """Aggregate current tags behind one immutable recording owner."""
+
+        async with self._session_factory() as session:
+            stmt = (
+                select(
+                    Recording.store_id,
+                    Recording.agent_name,
+                    TagCurrent.tag_path,
+                    TagCurrent.tag_value,
+                )
+                .join(Recording, Recording.id == TagCurrent.recording_id)
+                .where(
+                    Recording.tenant_id == tenant_id,
+                    Recording.agent_user_id == agent_user_id,
+                    TagCurrent.tenant_id == tenant_id,
+                )
+            )
+            if store_id is not None:
+                stmt = stmt.where(Recording.store_id == store_id)
+            if tag_path_prefix is not None:
+                if tag_path_prefix.endswith("*"):
+                    prefix = tag_path_prefix[:-1]
+                    stmt = stmt.where(TagCurrent.tag_path.like(f"{prefix}%"))
+                else:
+                    stmt = stmt.where(TagCurrent.tag_path == tag_path_prefix)
+            if tag_value is not None:
+                stmt = stmt.where(TagCurrent.tag_value == tag_value)
+
+            rows = (await session.execute(stmt)).mappings().all()
+
+        groups: dict[str | None, int] = {}
+        for row in rows:
+            value = row[group_by]
+            groups[value] = groups.get(value, 0) + 1
+
+        return [
+            {group_by: value, "tag_count": count}
+            for value, count in sorted(
+                groups.items(),
+                key=lambda item: (item[0] is None, str(item[0])),
+            )
+        ]
 
     async def _increment(
         self,

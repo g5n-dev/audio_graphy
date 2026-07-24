@@ -13,10 +13,12 @@ Targets uncovered branches:
 from __future__ import annotations
 
 import io
+import logging
 import zipfile
 from pathlib import Path
 from typing import Any
 
+import networkx as nx
 import pytest
 
 from tests.api.conftest import (  # type: ignore[import-not-found]
@@ -201,6 +203,238 @@ def test_erase_audio_file_unlink_silent_on_failure(
     assert body["deleted"] is True
 
 
+def test_erase_removes_recording_references_from_cached_graph(
+    test_client: pytest.fixture,
+    auth_headers: pytest.fixture,
+    db_session_factory: pytest.fixture,
+) -> None:
+    """Erase drops exclusive nodes and strips the id from shared graph nodes."""
+    from audio_graphy.core.types import _list_to_str, _str_to_list
+
+    factory = db_session_factory
+    rec_id = _run_async(_seed_rec_with_audio(factory, tag_suffix="graph-cleanup"))
+    graph = nx.MultiDiGraph()
+    graph.add_node(
+        "exclusive",
+        recording_ids=_list_to_str([str(rec_id)]),
+    )
+    graph.add_node(
+        "shared",
+        recording_ids=_list_to_str([str(rec_id), "99999"]),
+    )
+    graph.add_node(
+        "unrelated",
+        recording_ids=_list_to_str(["99999"]),
+    )
+    graph.add_edge("exclusive", "shared")
+
+    class PersistableGraphStore:
+        def __init__(self) -> None:
+            self.graph = graph
+            self.saved = False
+
+        async def save(self) -> None:
+            self.saved = True
+
+        def invalidate_path_projection(self) -> None:
+            return None
+
+    store = PersistableGraphStore()
+    test_client.app.state.graph_stores["chang_an"] = store
+
+    resp = test_client.post(
+        f"/api/v1/dsar/erase/{rec_id}",
+        headers=auth_headers["admin_t1"],  # type: ignore[index]
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert "exclusive" not in graph
+    assert _str_to_list(graph.nodes["shared"]["recording_ids"]) == ["99999"]
+    assert _str_to_list(graph.nodes["unrelated"]["recording_ids"]) == ["99999"]
+    assert store.saved is True
+
+
+def test_erase_durably_clears_file_index_and_opaque_llm_cache(
+    test_client: pytest.fixture,
+    auth_headers: pytest.fixture,
+    db_session_factory: pytest.fixture,
+) -> None:
+    """DSAR includes JSON transcript/chunk copies and tenant LLM cache."""
+    from audio_graphy.storage.file_index import (
+        STORE_LLM_RESPONSE_CACHE,
+        STORE_TEXT_CHUNKS,
+        STORE_VIDEO_PATH,
+        STORE_VIDEO_SEGMENTS,
+        FileIndex,
+    )
+
+    factory = db_session_factory
+    rec_id = _run_async(_seed_rec_with_audio(factory, tag_suffix="file-index"))
+    index = FileIndex(
+        Path(test_client.app.state.settings.working_dir),
+        tenant_id="chang_an",
+    )
+    _run_async(
+        index.set(
+            STORE_VIDEO_SEGMENTS,
+            f"{rec_id}_0",
+            {"recording_id": rec_id, "transcript": "private"},
+        )
+    )
+    _run_async(
+        index.set(
+            STORE_TEXT_CHUNKS,
+            f"{rec_id}_1",
+            {"recording_id": rec_id, "text": "private"},
+        )
+    )
+    _run_async(index.set(STORE_VIDEO_PATH, str(rec_id), {"recording_id": rec_id}))
+    _run_async(index.set_llm_cache("opaque", "private response"))
+    _run_async(index.flush())
+    test_client.app.state.file_indexes["chang_an"] = index
+
+    response = test_client.post(
+        f"/api/v1/dsar/erase/{rec_id}",
+        headers=auth_headers["admin_t1"],  # type: ignore[index]
+    )
+
+    assert response.status_code == 200, response.text
+    assert _run_async(index.get_all(STORE_VIDEO_SEGMENTS)) == {}
+    assert _run_async(index.get_all(STORE_TEXT_CHUNKS)) == {}
+    assert _run_async(index.get_all(STORE_VIDEO_PATH)) == {}
+    assert _run_async(index.get_all(STORE_LLM_RESPONSE_CACHE)) == {}
+
+
+def test_erase_loads_cold_tenant_graph_and_persists_cleanup(
+    test_client: pytest.fixture,
+    auth_headers: pytest.fixture,
+    db_session_factory: pytest.fixture,
+) -> None:
+    """A tenant absent from the process cache is still erased from GraphML."""
+    from audio_graphy.core.types import _list_to_str, _str_to_list
+    from audio_graphy.storage.graph_networkx import NetworkXGraphStore
+
+    rec_id = _run_async(_seed_rec_with_audio(db_session_factory, tag_suffix="cold-graph-cleanup"))
+    working_dir = Path(test_client.app.state.settings.working_dir)
+
+    async def _seed_graphml() -> None:
+        seed_store = NetworkXGraphStore(working_dir, tenant_id="chang_an")
+        await seed_store.load()
+        seed_store.graph.add_node(
+            "exclusive",
+            recording_ids=_list_to_str([str(rec_id)]),
+        )
+        seed_store.graph.add_node(
+            "shared",
+            recording_ids=_list_to_str([str(rec_id), "99999"]),
+        )
+        seed_store.invalidate_path_projection()
+        await seed_store.save()
+
+    _run_async(_seed_graphml())
+    test_client.app.state.graph_stores.pop("chang_an", None)
+
+    resp = test_client.post(
+        f"/api/v1/dsar/erase/{rec_id}",
+        headers=auth_headers["admin_t1"],  # type: ignore[index]
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert "chang_an" in test_client.app.state.graph_stores
+
+    async def _read_persisted_graph() -> nx.MultiDiGraph:
+        reloaded = NetworkXGraphStore(working_dir, tenant_id="chang_an")
+        await reloaded.load()
+        return reloaded.graph
+
+    persisted = _run_async(_read_persisted_graph())
+    assert "exclusive" not in persisted
+    assert _str_to_list(persisted.nodes["shared"]["recording_ids"]) == ["99999"]
+
+
+def test_erase_logs_voiceprint_cascade_failure(
+    test_client: pytest.fixture,
+    auth_headers: pytest.fixture,
+    db_session_factory: pytest.fixture,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A best-effort voiceprint failure is visible while erase still succeeds."""
+    from audio_graphy.api import dsar
+
+    async def _raise_cascade_error(*_args: Any, **_kwargs: Any) -> None:
+        raise RuntimeError("voiceprint store unavailable")
+
+    monkeypatch.setattr(
+        dsar,
+        "_cascade_voiceprint_after_erase",
+        _raise_cascade_error,
+    )
+    rec_id = _run_async(_seed_rec_with_audio(db_session_factory, tag_suffix="cascade-log"))
+
+    with caplog.at_level(logging.WARNING, logger="audio_graphy.api.dsar"):
+        resp = test_client.post(
+            f"/api/v1/dsar/erase/{rec_id}",
+            headers=auth_headers["admin_t1"],  # type: ignore[index]
+        )
+
+    assert resp.status_code == 200, resp.text
+    assert any(
+        f"Voiceprint cascade failed for recording {rec_id}" in record.message
+        and "voiceprint store unavailable" in record.message
+        for record in caplog.records
+    )
+
+
+def test_erase_graph_save_failure_is_not_reported_as_success(
+    test_client: pytest.fixture,
+    auth_headers: pytest.fixture,
+    db_session_factory: pytest.fixture,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A GraphML persistence failure fails the request before deleting the DB row."""
+
+    class BrokenGraphStore:
+        def __init__(self) -> None:
+            self.graph = nx.MultiDiGraph()
+            self.graph.add_node("pii", recording_ids="[]")
+
+        async def save(self) -> None:
+            raise RuntimeError("graph store unavailable")
+
+        def invalidate_path_projection(self) -> None:
+            return None
+
+    rec_id = _run_async(_seed_rec_with_audio(db_session_factory, tag_suffix="graph-log"))
+    test_client.app.state.graph_stores["chang_an"] = BrokenGraphStore()
+
+    with caplog.at_level(logging.WARNING, logger="audio_graphy.api.dsar"):
+        resp = test_client.post(
+            f"/api/v1/dsar/erase/{rec_id}",
+            headers=auth_headers["admin_t1"],  # type: ignore[index]
+        )
+
+    assert resp.status_code == 500, resp.text
+
+    async def _recording_still_exists() -> bool:
+        from sqlalchemy import select
+
+        from audio_graphy.models.recording import Recording
+
+        async with db_session_factory() as session:
+            row = (
+                await session.execute(
+                    select(Recording).where(
+                        Recording.id == rec_id,
+                        Recording.tenant_id == "chang_an",
+                    )
+                )
+            ).scalar_one_or_none()
+            return row is not None
+
+    assert _run_async(_recording_still_exists()) is True
+
+
 def test_cross_tenant_erase_returns_404(
     test_client: pytest.fixture,
     auth_headers: pytest.fixture,
@@ -260,7 +494,9 @@ def test_export_with_audit_writer_attached(
                         await session.execute(
                             select(AuditLog).where(AuditLog.action == "dsar.export")
                         )
-                    ).scalars().all()
+                    )
+                    .scalars()
+                    .all()
                 )
             return len(rows)
 

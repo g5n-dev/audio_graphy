@@ -86,7 +86,9 @@ class MockStreamingVADAdapter:
         await asyncio.sleep(self._latency_sec)
 
         if self._flaky and self._chunk_count > 0 and self._chunk_count % 100 == 0:
-            raise RuntimeError(f"MockStreamingVAD flaky mode triggered at chunk={self._chunk_count}")
+            raise RuntimeError(
+                f"MockStreamingVAD flaky mode triggered at chunk={self._chunk_count}"
+            )
 
         if len(pcm) != CHUNK_BYTES:
             from audio_graphy.adapters.exceptions import StreamingVADChunkShapeError

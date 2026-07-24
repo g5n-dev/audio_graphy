@@ -148,7 +148,8 @@ class StreamSession:
         if self.status not in (SessionStatus.ACTIVE, SessionStatus.CREATED):
             logger.warning(
                 "StreamSession.on_pcm_chunk called in status=%s (session=%s)",
-                self.status.value, self.session_id.value,
+                self.status.value,
+                self.session_id.value,
             )
             return
 
@@ -163,7 +164,10 @@ class StreamSession:
             reset_triggered = True
             logger.info(
                 "StreamSession seq-gap reset: last=%d seq=%d gap=%d > %d (session=%s)",
-                self.last_seq, seq, seq - self.last_seq, self.seq_gap_threshold,
+                self.last_seq,
+                seq,
+                seq - self.last_seq,
+                self.seq_gap_threshold,
                 self.session_id.value,
             )
             yield {
@@ -199,7 +203,9 @@ class StreamSession:
             self.error_count += 1
             logger.warning(
                 "StreamSession ASR push failed seq=%d session=%s: %s",
-                seq, self.session_id.value, exc,
+                seq,
+                self.session_id.value,
+                exc,
             )
             yield {
                 "type": "error",
@@ -274,7 +280,8 @@ class StreamSession:
             self.error_count += 1
             logger.warning(
                 "StreamSession VAD finalize failed session=%s: %s",
-                self.session_id.value, exc,
+                self.session_id.value,
+                exc,
             )
 
         # Drain trailing ASR deltas.
@@ -297,7 +304,8 @@ class StreamSession:
             self.error_count += 1
             logger.warning(
                 "StreamSession ASR finalize failed session=%s: %s",
-                self.session_id.value, exc,
+                self.session_id.value,
+                exc,
             )
 
         # Close adapters.
@@ -388,7 +396,8 @@ class StreamSession:
             del self.pending_speech_pcm[:overflow]
             logger.info(
                 "StreamSession PCM cap enforced: dropped %d bytes (session=%s)",
-                overflow, self.session_id.value,
+                overflow,
+                self.session_id.value,
             )
 
     def _enforce_confirmed_cap(self) -> None:

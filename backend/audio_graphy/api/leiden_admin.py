@@ -74,12 +74,8 @@ def _job_to_out(job: LeidenJob) -> LeidenJobOut:
         triggered_by=str(job.triggered_by),
         node_count_snapshot=int(job.node_count_snapshot),
         edge_count_snapshot=int(job.edge_count_snapshot),
-        diff_percent=(
-            float(job.diff_percent) if job.diff_percent is not None else None
-        ),
-        modularity=(
-            float(job.modularity) if job.modularity is not None else None
-        ),
+        diff_percent=(float(job.diff_percent) if job.diff_percent is not None else None),
+        modularity=(float(job.modularity) if job.modularity is not None else None),
         levels=int(job.levels),
         snapshot_path=job.snapshot_path,
         error_message=job.error_message,
@@ -110,9 +106,7 @@ def _graph_to_leiden_inputs(graph: Any) -> tuple[list[GraphNode], list[GraphEdge
                 type=str(attrs.get("type", "")),
                 description=str(attrs.get("description", "")),
                 source_ids=_str_to_list(attrs.get("source_ids", "[]")),
-                recording_ids=[
-                    int(x) for x in _str_to_list(attrs.get("recording_ids", "[]"))
-                ],
+                recording_ids=[int(x) for x in _str_to_list(attrs.get("recording_ids", "[]"))],
                 degree=int(attrs.get("degree", 0)),
                 expired_at=None,
             )
@@ -181,9 +175,7 @@ async def recompute_leiden(
     job.started_at = started
     service = IncrementalLeidenService(
         snapshot_dir=_snapshot_dir(settings, tenant_id),
-        threshold_percent=float(
-            getattr(settings, "leiden_threshold_percent", 30.0)
-        ),
+        threshold_percent=float(getattr(settings, "leiden_threshold_percent", 30.0)),
         preferred_lib=str(getattr(settings, "leiden_lib", "networkx")),
         tenant_id=tenant_id,
     )
@@ -205,9 +197,7 @@ async def recompute_leiden(
         job.job_type = result.job_type
         job.status = "succeeded"
         job.diff_percent = (
-            float(result.diff_percent)
-            if body.triggered_by == "incremental"
-            else None
+            float(result.diff_percent) if body.triggered_by == "incremental" else None
         )
         job.modularity = (
             float(result.modularity)
@@ -276,11 +266,7 @@ async def list_leiden_jobs(
     tenant_id = get_tenant_id(request)
 
     stmt = select(LeidenJob).where(LeidenJob.tenant_id == tenant_id)
-    count_stmt = (
-        select(func.count())
-        .select_from(LeidenJob)
-        .where(LeidenJob.tenant_id == tenant_id)
-    )
+    count_stmt = select(func.count()).select_from(LeidenJob).where(LeidenJob.tenant_id == tenant_id)
     if status_filter is not None:
         stmt = stmt.where(LeidenJob.status == status_filter)
         count_stmt = count_stmt.where(LeidenJob.status == status_filter)

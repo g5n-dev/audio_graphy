@@ -10,23 +10,19 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 
 import pytest
 
 from audio_graphy.core.community_summary import (
-    CommunityMembership,
+    Q2_MAX_LEVEL,
     CommunitySummaryRecord,
     CommunitySummaryService,
     InMemorySummarySink,
-    LLMAdapter,
-    Q2_MAX_LEVEL,
     _parse_llm_output,
     load_default_prompt,
 )
 from audio_graphy.core.leiden import LeidenRunResult
 from audio_graphy.core.types import GraphEdge, GraphNode
-
 
 # ============================================================
 # Fakes
@@ -209,9 +205,7 @@ async def test_lazy_generates_on_first_call(
         edges=[],
     )
     # Pick any non-leaf, non-level-0 community.
-    target = next(
-        m for m in memberships if m.level not in (0, Q2_MAX_LEVEL)
-    )
+    target = next(m for m in memberships if m.level not in (0, Q2_MAX_LEVEL))
     rec = await svc.get_or_generate(
         level=target.level,
         community_id=target.community_id,
@@ -219,12 +213,15 @@ async def test_lazy_generates_on_first_call(
     )
     assert rec.level == target.level
     assert rec.community_id == target.community_id
-    assert sink.fetch(
-        leiden_job_id=42,
-        level=target.level,
-        community_id=target.community_id,
-        tenant_id="t1",
-    ) is not None
+    assert (
+        sink.fetch(
+            leiden_job_id=42,
+            level=target.level,
+            community_id=target.community_id,
+            tenant_id="t1",
+        )
+        is not None
+    )
 
 
 @pytest.mark.asyncio
@@ -237,9 +234,7 @@ async def test_lazy_returns_cached_on_second_call(
         nodes=[_node("A"), _node("B"), _node("C")],
         edges=[],
     )
-    target = next(
-        m for m in memberships if m.level not in (0, Q2_MAX_LEVEL)
-    )
+    target = next(m for m in memberships if m.level not in (0, Q2_MAX_LEVEL))
     first = await svc.get_or_generate(
         level=target.level,
         community_id=target.community_id,
@@ -260,9 +255,7 @@ async def test_lazy_raises_on_unknown_membership(
     svc: CommunitySummaryService,
 ) -> None:
     with pytest.raises(KeyError):
-        await svc.get_or_generate(
-            level=1, community_id=999, memberships=[]
-        )
+        await svc.get_or_generate(level=1, community_id=999, memberships=[])
 
 
 @pytest.mark.asyncio
@@ -299,9 +292,7 @@ def test_parse_llm_output_handles_no_markers() -> None:
 
 
 def test_parse_llm_output_handles_multiline_summary() -> None:
-    title, summary = _parse_llm_output(
-        "TITLE: T\nSUMMARY: line1\nline2\nline3"
-    )
+    title, summary = _parse_llm_output("TITLE: T\nSUMMARY: line1\nline2\nline3")
     assert title == "T"
     assert summary == "line1\nline2\nline3"
 
@@ -343,9 +334,5 @@ def test_in_memory_sink_round_trip() -> None:
         strategy="eager",
     )
     sink.write(rec, "t1")
-    assert sink.fetch(
-        leiden_job_id=1, level=0, community_id=0, tenant_id="t1"
-    ) == rec
-    assert sink.fetch(
-        leiden_job_id=2, level=0, community_id=0, tenant_id="t1"
-    ) is None
+    assert sink.fetch(leiden_job_id=1, level=0, community_id=0, tenant_id="t1") == rec
+    assert sink.fetch(leiden_job_id=2, level=0, community_id=0, tenant_id="t1") is None

@@ -15,7 +15,6 @@ import pytest
 
 from audio_graphy.eval.runner import EvalRunner, MockPipeline
 from audio_graphy.eval.types import GoldExample, PredictedResult
-from tests.eval.metrics.conftest import make_stub
 
 
 @pytest.mark.asyncio
@@ -26,7 +25,7 @@ async def test_mock_pipeline_precision_zero_returns_empty_pred(
     yaml_path = tmp_path / "tiny.yaml"
     yaml_path.write_text(
         '- query: "q"\n  gold_answer: "a"\n  gold_context_ids: []\n'
-        '  gold_entities: []\n  gold_edges: []\n  gold_tags: []\n',
+        "  gold_entities: []\n  gold_edges: []\n  gold_tags: []\n",
         encoding="utf-8",
     )
     runner = EvalRunner(
@@ -60,9 +59,9 @@ async def test_runner_metric_failure_captured_in_error(tmp_path: Path) -> None:
     yaml_path = tmp_path / "two.yaml"
     yaml_path.write_text(
         '- query: "q1"\n  gold_answer: "a1"\n  gold_context_ids: ["c1"]\n'
-        '  gold_entities: []\n  gold_edges: []\n  gold_tags: []\n'
+        "  gold_entities: []\n  gold_edges: []\n  gold_tags: []\n"
         '- query: "q2"\n  gold_answer: "a2"\n  gold_context_ids: ["c2"]\n'
-        '  gold_entities: []\n  gold_edges: []\n  gold_tags: []\n',
+        "  gold_entities: []\n  gold_edges: []\n  gold_tags: []\n",
         encoding="utf-8",
     )
 
@@ -112,7 +111,7 @@ async def test_runner_judge_enabled_runs_llm_metrics(tmp_path: Path) -> None:
     yaml_path.write_text(
         '- query: "q"\n  gold_answer: "gold answer"\n'
         '  gold_context_ids: ["c1"]\n'
-        '  gold_entities: []\n  gold_edges: []\n  gold_tags: []\n',
+        "  gold_entities: []\n  gold_edges: []\n  gold_tags: []\n",
         encoding="utf-8",
     )
 

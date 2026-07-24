@@ -16,6 +16,7 @@ import pytest
 from audio_graphy.storage.file_index import (
     STORE_LLM_RESPONSE_CACHE,
     STORE_TEXT_CHUNKS,
+    STORE_VIDEO_PATH,
     STORE_VIDEO_SEGMENTS,
     FileIndex,
 )
@@ -102,6 +103,111 @@ class TestFileIndexLLMCache:
         await file_index.set_llm_cache("key1", "response")
         assert await file_index.llm_cache_hit("key1") is True
         assert await file_index.llm_cache_hit("key2") is False
+
+
+@pytest.mark.unit
+class TestFileIndexRecordingErasure:
+    """Recording-scoped privacy erasure."""
+
+    async def test_erases_recording_data_and_tenant_llm_cache_durably(
+        self, tmp_working_dir: Path
+    ) -> None:
+        """Erase all derived data, preserve other recordings, and persist immediately."""
+        file_index = FileIndex(tmp_working_dir, tenant_id="tenant_a")
+
+        # Canonical key and legacy/non-canonical key matched through metadata.
+        await file_index.set(
+            STORE_VIDEO_SEGMENTS,
+            "7_0",
+            {"recording_id": 7, "transcript": "customer phone number"},
+        )
+        await file_index.set(
+            STORE_VIDEO_SEGMENTS,
+            "legacy_segment_key",
+            {"recording_id": "7", "transcript": "customer address"},
+        )
+        await file_index.set(
+            STORE_VIDEO_SEGMENTS,
+            "70_0",
+            {"recording_id": 70, "transcript": "must remain"},
+        )
+
+        await file_index.set(
+            STORE_TEXT_CHUNKS,
+            "7_101",
+            {"recording_id": 7, "text": "derived target text"},
+        )
+        await file_index.set(
+            STORE_TEXT_CHUNKS,
+            "legacy_chunk_key",
+            {"recording_id": "7", "text": "derived legacy target text"},
+        )
+        await file_index.set(
+            STORE_TEXT_CHUNKS,
+            "70_102",
+            {"recording_id": 70, "text": "must remain"},
+        )
+
+        await file_index.set(STORE_VIDEO_PATH, "7", {"recording_id": 7})
+        await file_index.set(STORE_VIDEO_PATH, "70", {"recording_id": 70})
+        await file_index.set_llm_cache("target-or-untraceable-1", "possibly derived PII")
+        await file_index.set_llm_cache("target-or-untraceable-2", "possibly derived PII")
+        await file_index.set("unrelated_store", "7_0", {"recording_id": 7})
+        await file_index.flush()
+
+        counts = await file_index.erase_recording(7)
+
+        assert counts == {
+            STORE_VIDEO_SEGMENTS: 2,
+            STORE_TEXT_CHUNKS: 2,
+            STORE_VIDEO_PATH: 1,
+            STORE_LLM_RESPONSE_CACHE: 2,
+            "total": 7,
+        }
+
+        # A new instance proves erase_recording persisted the mutation itself.
+        reloaded = FileIndex(tmp_working_dir, tenant_id="tenant_a")
+        assert await reloaded.get_all(STORE_VIDEO_SEGMENTS) == {
+            "70_0": {"recording_id": 70, "transcript": "must remain"}
+        }
+        assert await reloaded.get_all(STORE_TEXT_CHUNKS) == {
+            "70_102": {"recording_id": 70, "text": "must remain"}
+        }
+        assert await reloaded.get_all(STORE_VIDEO_PATH) == {"70": {"recording_id": 70}}
+        assert await reloaded.get_all(STORE_LLM_RESPONSE_CACHE) == {}
+        assert await reloaded.get_all("unrelated_store") == {"7_0": {"recording_id": 7}}
+
+    async def test_missing_recording_still_clears_untraceable_llm_cache(
+        self, tmp_working_dir: Path
+    ) -> None:
+        """An absent recording can still have untraceable LLM-derived PII."""
+        file_index = FileIndex(tmp_working_dir, tenant_id="tenant_a")
+        await file_index.set_llm_cache("opaque-key", "opaque cached response")
+        await file_index.flush()
+
+        counts = await file_index.erase_recording(404)
+
+        assert counts == {
+            STORE_VIDEO_SEGMENTS: 0,
+            STORE_TEXT_CHUNKS: 0,
+            STORE_VIDEO_PATH: 0,
+            STORE_LLM_RESPONSE_CACHE: 1,
+            "total": 1,
+        }
+        reloaded = FileIndex(tmp_working_dir, tenant_id="tenant_a")
+        assert await reloaded.get_all(STORE_LLM_RESPONSE_CACHE) == {}
+
+    @pytest.mark.parametrize("recording_id", [0, -1, True])
+    async def test_rejects_invalid_recording_id(
+        self, file_index: FileIndex, recording_id: int
+    ) -> None:
+        """Invalid IDs must not trigger a tenant-wide cache purge."""
+        await file_index.set_llm_cache("keep", "response")
+
+        with pytest.raises(ValueError, match="positive integer"):
+            await file_index.erase_recording(recording_id)
+
+        assert await file_index.get_llm_cache("keep") == "response"
 
 
 @pytest.mark.unit

@@ -11,8 +11,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-import pytest
-from sqlalchemy import CheckConstraint, ForeignKey, UniqueConstraint
+from sqlalchemy import CheckConstraint, UniqueConstraint
 from sqlalchemy.schema import CreateTable
 
 from audio_graphy.core.types import (
@@ -38,7 +37,6 @@ from audio_graphy.models.edge_event import EdgeEvent
 from audio_graphy.models.leiden_job import LeidenJob
 from audio_graphy.models.speaker_merge_pending import SpeakerMergePending
 
-
 # ============================================================
 # ORM table mapping
 # ============================================================
@@ -48,27 +46,30 @@ def test_edge_event_tablename_and_columns() -> None:
     assert EdgeEvent.__tablename__ == "edge_events"
     cols = {c.name for c in EdgeEvent.__table__.columns}
     assert cols >= {
-        "id", "tenant_id", "event_type", "edge_key", "source", "target",
-        "relation", "valid_at", "invalid_at", "superseded_by", "actor",
-        "payload", "created_at", "updated_at",
+        "id",
+        "tenant_id",
+        "event_type",
+        "edge_key",
+        "source",
+        "target",
+        "relation",
+        "valid_at",
+        "invalid_at",
+        "superseded_by",
+        "actor",
+        "payload",
+        "created_at",
+        "updated_at",
     }
 
 
 def test_edge_event_check_constraint() -> None:
-    ck_names = {
-        c.name for c in EdgeEvent.__table__.constraints
-        if isinstance(c, CheckConstraint)
-    }
+    ck_names = {c.name for c in EdgeEvent.__table__.constraints if isinstance(c, CheckConstraint)}
     assert "ck_edge_events_event_type" in ck_names
 
 
 def test_community_summary_tablename_and_fk() -> None:
     assert CommunitySummary.__tablename__ == "community_summaries"
-    fk_targets = {
-        tuple(f.column.table.name for f in c.elements)
-        for c in CommunitySummary.__table__.constraints
-        if isinstance(c, ForeignKey)
-    }
     # ForeignKeys are stored on the Column, not as table-level ForeignKeyConstraint
     # in modern SQLAlchemy, so check the column FK collection instead.
     cs_fks = list(CommunitySummary.__table__.c.leiden_job_id.foreign_keys)
@@ -78,25 +79,20 @@ def test_community_summary_tablename_and_fk() -> None:
 
 def test_community_summary_unique_constraint() -> None:
     uq_names = {
-        c.name for c in CommunitySummary.__table__.constraints
-        if isinstance(c, UniqueConstraint)
+        c.name for c in CommunitySummary.__table__.constraints if isinstance(c, UniqueConstraint)
     }
     assert "ux_cs_job_level_comm" in uq_names
 
 
 def test_leiden_job_check_constraints() -> None:
-    ck_names = {
-        c.name for c in LeidenJob.__table__.constraints
-        if isinstance(c, CheckConstraint)
-    }
+    ck_names = {c.name for c in LeidenJob.__table__.constraints if isinstance(c, CheckConstraint)}
     assert "ck_leiden_jobs_job_type" in ck_names
     assert "ck_leiden_jobs_status" in ck_names
 
 
 def test_speaker_merge_pending_check_constraints() -> None:
     ck_names = {
-        c.name for c in SpeakerMergePending.__table__.constraints
-        if isinstance(c, CheckConstraint)
+        c.name for c in SpeakerMergePending.__table__.constraints if isinstance(c, CheckConstraint)
     }
     assert "ck_speaker_merge_pending_status" in ck_names
     assert "ck_speaker_merge_pending_resolved_by" in ck_names
@@ -104,9 +100,7 @@ def test_speaker_merge_pending_check_constraints() -> None:
 
 def test_speaker_merge_pending_cascade_fks() -> None:
     rec_fks = list(SpeakerMergePending.__table__.c.recording_id.foreign_keys)
-    spk_fks = list(
-        SpeakerMergePending.__table__.c.matched_speaker_node_id.foreign_keys
-    )
+    spk_fks = list(SpeakerMergePending.__table__.c.matched_speaker_node_id.foreign_keys)
     assert rec_fks and rec_fks[0].column.table.name == "recordings"
     assert rec_fks[0].ondelete == "CASCADE"
     assert spk_fks and spk_fks[0].column.table.name == "speaker_nodes"
@@ -213,9 +207,7 @@ def test_m9_exception_subtree_chain() -> None:
     assert issubclass(BiTemporalInvalidRangeError, BiTemporalError)
     assert issubclass(LeidenLibUnavailableError, LeidenError)
     assert issubclass(CompressionPolicyViolationError, CompressionError)
-    assert issubclass(
-        SpeakerLinkerFuzzyThresholdError, SpeakerLinkerFuzzyError
-    )
+    assert issubclass(SpeakerLinkerFuzzyThresholdError, SpeakerLinkerFuzzyError)
 
 
 def test_amiguity_tag_constant_unchanged() -> None:

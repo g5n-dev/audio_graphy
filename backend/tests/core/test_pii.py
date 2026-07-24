@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from audio_graphy.core.pii import PIIScrubber, RedactionRecord, ScrubResult
+from audio_graphy.core.pii import (
+    PIIScrubber,
+    RedactionRecord,
+    ScrubResult,
+    scrubbed_segment_text,
+)
 
 
 @pytest.fixture
@@ -15,6 +20,7 @@ def scrubber() -> PIIScrubber:
 # --------------------------------------------------------------------
 # Phone
 # --------------------------------------------------------------------
+
 
 @pytest.mark.parametrize(
     "text,expected_substrings",
@@ -56,19 +62,22 @@ def test_phone_with_hyphens_normalized(scrubber: PIIScrubber) -> None:
 # ID card
 # --------------------------------------------------------------------
 
+
 @pytest.mark.parametrize(
     "id_value",
     [
-        "11010119900307391X",   # uppercase X
-        "11010119900307391x",   # lowercase x
-        "440106198201154318",   # all digits
+        "11010119900307391X",  # uppercase X
+        "11010119900307391x",  # lowercase x
+        "440106198201154318",  # all digits
     ],
 )
 def test_id_card_valid(scrubber: PIIScrubber, id_value: str) -> None:
     """18-digit ID card with checksum (X/digit) is redacted."""
     result = scrubber.scrub(f"身份证 {id_value}")
     cats = [r.category for r in result.redactions]
-    assert "id_card" in cats, f"id_card not matched in {result.text!r}; redactions={result.redactions}"
+    assert "id_card" in cats, (
+        f"id_card not matched in {result.text!r}; redactions={result.redactions}"
+    )
     assert id_value not in result.text
 
 
@@ -83,12 +92,13 @@ def test_id_card_seventeen_digit_not_matched(scrubber: PIIScrubber) -> None:
 # Bank card
 # --------------------------------------------------------------------
 
+
 @pytest.mark.parametrize(
     "card",
     [
-        "6225880212345678",                  # 16 continuous
-        "6225880212345678901",              # 19 continuous
-        "622588021234567",                  # 15 digits → NOT bank_card
+        "6225880212345678",  # 16 continuous
+        "6225880212345678901",  # 19 continuous
+        "622588021234567",  # 15 digits → NOT bank_card
     ],
 )
 def test_bank_card_continuous(scrubber: PIIScrubber, card: str) -> None:
@@ -116,6 +126,7 @@ def test_bank_card_priority_below_id_card(scrubber: PIIScrubber) -> None:
 # Email
 # --------------------------------------------------------------------
 
+
 @pytest.mark.parametrize(
     "email",
     [
@@ -138,6 +149,7 @@ def test_email_variants(scrubber: PIIScrubber, email: str) -> None:
 # --------------------------------------------------------------------
 # IPv4
 # --------------------------------------------------------------------
+
 
 def test_ipv4_valid(scrubber: PIIScrubber) -> None:
     """Valid IPv4 with octets ≤ 255 is masked."""
@@ -164,6 +176,7 @@ def test_ipv6_not_matched(scrubber: PIIScrubber) -> None:
 # --------------------------------------------------------------------
 # Mixed + edge cases
 # --------------------------------------------------------------------
+
 
 def test_multiple_categories_one_text(scrubber: PIIScrubber) -> None:
     """Phone + email + ipv4 in one string — all three redacted."""
@@ -216,6 +229,16 @@ def test_scrub_simple_helper() -> None:
     assert "138****5678" in text
 
 
+def test_legacy_segment_text_is_scrubbed_without_overriding_persisted_value() -> None:
+    """Legacy NULL scrubbed text is sanitized, while persisted text stays authoritative."""
+    raw = "联系电话 13812345678"
+
+    assert scrubbed_segment_text(None, raw) == "联系电话 138****5678"
+    assert scrubbed_segment_text("", raw) == ""
+    assert scrubbed_segment_text("已脱敏", raw) == "已脱敏"
+    assert scrubbed_segment_text(None, None) == ""
+
+
 def test_invalid_redaction_char_rejected() -> None:
     """Multi-character redaction_char raises ValueError."""
     with pytest.raises(ValueError, match="single character"):
@@ -236,5 +259,5 @@ def test_records_are_redaction_record_type(scrubber: PIIScrubber) -> None:
 def test_scrub_result_immutable() -> None:
     """ScrubResult is a frozen slots dataclass."""
     r = ScrubResult(text="x")
-    with pytest.raises(Exception):  # noqa: B017, PT011 — slots + frozen
+    with pytest.raises(Exception):  # noqa: B017 — slots + frozen
         r.text = "mutated"  # type: ignore[misc]

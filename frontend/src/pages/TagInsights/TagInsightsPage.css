@@ -1,0 +1,213 @@
+.ag-tag-insights-page {
+  min-height: calc(100vh - 56px);
+  padding-bottom: 24px;
+  background: #fbfcfe;
+}
+
+.ag-tag-insights-header {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.ag-tag-insights-header h1 {
+  margin: 2px 0 0;
+  font-size: 18px;
+}
+
+.ag-tag-insights-header p {
+  display: none;
+}
+
+.ag-tag-insights-header .ag-feature-header__actions span {
+  color: #7a8799;
+  font-size: 9px;
+}
+
+.ag-tag-filter-console {
+  margin: 0;
+  padding: 9px 18px 10px;
+  border: 0;
+  border-bottom: 1px solid #e6ebf2;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.ag-tag-filter-console > .ag-insight-section__heading {
+  display: none;
+}
+
+.ag-tag-filter-console form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 10px;
+}
+
+.ag-tag-filter-console .ag-database-filter-grid {
+  grid-template-columns: repeat(10, minmax(104px, 1fr));
+  gap: 6px;
+  margin: 0;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.ag-tag-filter-console .ag-database-filter-grid label {
+  min-width: 104px;
+  color: #738096;
+  font-size: 8px;
+}
+
+.ag-tag-filter-console .ag-database-filter-grid input,
+.ag-tag-filter-console .ag-database-filter-grid select {
+  min-height: 29px;
+  border-color: #dfe5ee;
+  border-radius: 5px;
+  font-size: 9px;
+}
+
+.ag-tag-filter-console .ag-database-filter-actions {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 5px;
+  margin: 0;
+}
+
+.ag-tag-filter-console .ag-database-filter-actions span {
+  grid-column: 1 / -1;
+  margin: 0;
+  text-align: right;
+}
+
+.ag-tag-insights-page .ag-insight-results {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+}
+
+.ag-tag-insights-page .ag-output-budget-notice {
+  display: none;
+}
+
+.ag-tag-insights-page .ag-database-result-meta {
+  display: none;
+}
+
+.ag-tag-insights-page .ag-insight-view-nav {
+  position: sticky;
+  z-index: 12;
+  top: 0;
+  order: 1;
+  gap: 2px;
+  margin: 0;
+  padding: 6px 18px;
+  background: rgb(255 255 255 / 94%);
+  border: 0;
+  border-bottom: 1px solid #e6ebf2;
+  border-radius: 0;
+  box-shadow: 0 4px 12px rgb(31 52 82 / 4%);
+  backdrop-filter: blur(10px);
+}
+
+.ag-tag-insights-page .ag-insight-view-nav button {
+  min-width: 96px;
+  color: #56637a;
+  background: transparent;
+  border-color: transparent;
+  border-radius: 5px;
+}
+
+.ag-tag-insights-page .ag-insight-view-nav button.is-active {
+  color: #155bd7;
+  background: #edf3ff;
+  border-color: #cbdcff;
+}
+
+.ag-tag-insights-page .ag-tag-graph-slot {
+  order: 2;
+  min-height: calc(100vh - 150px);
+  scroll-margin-top: 94px;
+}
+
+.ag-tag-insights-page .ag-tag-graph-slot > .tig-shell {
+  border-width: 0 0 1px;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.ag-tag-insights-page .ag-tag-graph-slot .tig-header {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.ag-tag-insights-page .ag-tag-graph-slot .tig-filterbar {
+  position: absolute;
+  z-index: 9;
+  top: 8px;
+  right: 330px;
+  min-height: 0;
+  padding: 0;
+  background: transparent;
+  border: 0;
+}
+
+.ag-tag-insights-page .ag-tag-graph-slot .tig-filterbar > label,
+.ag-tag-insights-page .ag-tag-graph-slot .tig-kind-filter {
+  display: none;
+}
+
+.ag-tag-insights-page .ag-kpi-grid {
+  order: 3;
+  margin: 0 18px;
+}
+
+.ag-tag-insights-page .ag-coverage-strip {
+  order: 4;
+  margin: 0 18px;
+}
+
+.ag-tag-insights-page #tag-comparison-matrix {
+  order: 5;
+  margin: 0 18px;
+}
+
+.ag-tag-insights-page #tag-chart-insights {
+  order: 6;
+  margin: 0 18px;
+}
+
+.ag-tag-insights-page .ag-persisted-evidence {
+  order: 7;
+  margin: 0 18px;
+}
+
+.ag-tag-insights-page .ag-insight-pagination,
+.ag-tag-insights-page .ag-advanced-snapshot {
+  margin-right: 18px;
+  margin-left: 18px;
+}
+
+@media (max-width: 1180px) {
+  .ag-tag-filter-console form {
+    grid-template-columns: 1fr;
+  }
+
+  .ag-tag-filter-console .ag-database-filter-actions {
+    display: flex;
+  }
+
+  .ag-tag-insights-page .ag-insight-view-nav span {
+    display: none;
+  }
+}

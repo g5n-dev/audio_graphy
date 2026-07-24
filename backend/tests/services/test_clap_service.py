@@ -83,9 +83,7 @@ class TestHealth:
 
 
 class TestEmbedAudio:
-    def test_503_when_model_not_loaded(
-        self, client: TestClient, clap_app: Any
-    ) -> None:
+    def test_503_when_model_not_loaded(self, client: TestClient, clap_app: Any) -> None:
         clap_app._CLAP_MODEL = None  # ensure not loaded
         resp = client.post(
             "/v1/audio/embed",
@@ -191,9 +189,7 @@ class TestCache:
         clap_app._cache_get("a")
         assert clap_app._CACHE_ORDER[-1] == "a"
 
-    def test_lru_evicts_oldest(
-        self, clap_app: Any, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_lru_evicts_oldest(self, clap_app: Any, monkeypatch: pytest.MonkeyPatch) -> None:
         clap_app._CACHE.clear()
         clap_app._CACHE_ORDER.clear()
         monkeypatch.setattr(clap_app, "_CACHE_SIZE", 2)
@@ -239,8 +235,6 @@ class _StubClapModel:
         self._dim = dim
         self._fill = fill
 
-    def get_audio_embedding_from_filedata(
-        self, *, x: Any, use_tensor: bool = False
-    ) -> np.ndarray:
+    def get_audio_embedding_from_filedata(self, *, x: Any, use_tensor: bool = False) -> np.ndarray:
         # Return shape (1, dim) so .flatten() in caller hits dim.
         return np.full((1, self._dim), self._fill, dtype=np.float32)

@@ -55,6 +55,14 @@ EXPECTED_TABLES = {
     "community_summaries",
     "leiden_jobs",
     "speaker_merge_pending",
+    # Reception/dialogue workspace
+    "receptions",
+    "reception_recordings",
+    "dialogue_units",
+    "dialogue_state_transitions",
+    "dialogue_tag_assignments",
+    "provenance_events",
+    "reception_automation_runs",
 }
 
 
@@ -78,7 +86,7 @@ class TestAlembicRoundtrip:
     def test_alembic_upgrade_creates_all_tables(
         self, mysql_container: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Verify alembic upgrade head creates all 13 tables."""
+        """Verify alembic upgrade head creates every registered table."""
         url: str = mysql_container.get_connection_url()
         parsed = urlparse(url)
 
@@ -121,9 +129,23 @@ class TestAlembicRoundtrip:
         with test_engine.connect() as conn:
             result_set = conn.execute(text("SHOW TABLES"))
             tables = {row[0] for row in result_set}
+            voiceprint_index_rows = (
+                conn.execute(
+                    text(
+                        "SHOW INDEX FROM vectors_voiceprint "
+                        "WHERE Key_name = 'ix_vp_tenant_speaker_created'"
+                    )
+                )
+                .mappings()
+                .all()
+            )
 
         assert EXPECTED_TABLES.issubset(tables), f"Missing tables: {EXPECTED_TABLES - tables}"
         assert "_alembic_sentinel" not in tables
+        assert [
+            row["Column_name"]
+            for row in sorted(voiceprint_index_rows, key=lambda row: row["Seq_in_index"])
+        ] == ["tenant_id", "speaker_entity_id", "created_at"]
 
         # Run alembic downgrade base
         result = _run_alembic("downgrade", "base", env=env)

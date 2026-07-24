@@ -135,11 +135,7 @@ class StreamingChunker:
         (text joined by newline, content_hash = sha256(text)).
         """
         text = "\n".join(s.transcript for s in segments)
-        token_n = sum(
-            max(1, len(self._enc.encode(s.transcript)))
-            for s in segments
-            if s.transcript
-        )
+        token_n = sum(max(1, len(self._enc.encode(s.transcript))) for s in segments if s.transcript)
         return ChunkRecord(
             segment_ids=[s.idx for s in segments],
             text=text,

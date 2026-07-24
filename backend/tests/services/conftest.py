@@ -147,8 +147,8 @@ async def seeded_recording(
 
     Also creates a dummy audio file so the pipeline's VAD stage can find it.
     """
-    from audio_graphy.models import Prompt, Tenant
-    from audio_graphy.models.enums import PipelineState, RecordingStatus
+    from audio_graphy.models import Prompt, Tenant, User
+    from audio_graphy.models.enums import PipelineState, RecordingStatus, UserRole
     from audio_graphy.models.recording import Recording
 
     # Create a dummy audio file for the pipeline to process
@@ -158,6 +158,16 @@ async def seeded_recording(
     async with session_factory() as session:
         tenant = Tenant(id=1, code="chang_an", name="长安汽车", brand="长安", region="西南")
         session.add(tenant)
+
+        agent = User(
+            id=41,
+            tenant_id="chang_an",
+            name="张敏",
+            email="agent-41@changan.example",
+            role=UserRole.AGENT.value,
+            password_hash="mock",
+        )
+        session.add(agent)
 
         prompt = Prompt(
             id=1,
@@ -174,6 +184,7 @@ async def seeded_recording(
             tenant_id="chang_an",
             store_id="S001",
             agent_name="张敏",
+            agent_user_id=41,
             customer_hash="cust_hash_001",
             path=str(audio_path),
             status=RecordingStatus.QUEUED.value,

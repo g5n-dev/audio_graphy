@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import MutableMapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -30,6 +31,7 @@ from audio_graphy.models.recording import Recording
 
 if TYPE_CHECKING:
     from audio_graphy.adapters.bundle import AdapterBundle
+    from audio_graphy.core.pii import PIIScrubber
     from audio_graphy.storage.file_index import FileIndex
     from audio_graphy.storage.graph_networkx import NetworkXGraphStore
     from audio_graphy.storage.mysql_vector import MySQLVectorStore
@@ -55,12 +57,13 @@ class PipelineWorker:
         session_factory: async_sessionmaker[AsyncSession],
         bundle: AdapterBundle,
         vector_store: MySQLVectorStore,
-        graph_stores: dict[str, NetworkXGraphStore],
+        graph_stores: MutableMapping[str, NetworkXGraphStore],
         file_indexes: dict[str, FileIndex],
         *,
         working_dir: str = "/data/working_dir",
         poll_seconds: int = 5,
         concurrency: int = 1,
+        pii_scrubber: PIIScrubber | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._bundle = bundle
@@ -70,6 +73,7 @@ class PipelineWorker:
         self._working_dir = Path(working_dir)
         self._poll_seconds = poll_seconds
         self._concurrency = concurrency
+        self._pii_scrubber = pii_scrubber
         self._lock = asyncio.Lock()
 
     async def poll_once(self) -> int:
@@ -123,6 +127,7 @@ class PipelineWorker:
                     self._vector_store,
                     graph_store,
                     file_index,
+                    pii_scrubber=self._pii_scrubber,
                 )
                 try:
                     await svc.run_pipeline(recording)
@@ -347,9 +352,7 @@ async def run_eval_job(
     except Exception as exc:
         # 7. Persist failure (truncate to fit column width).
         err_msg = repr(exc)[:8000]
-        log.error(
-            "EvalRun %s failed: %s", run_id, exc, exc_info=True
-        )
+        log.error("EvalRun %s failed: %s", run_id, exc, exc_info=True)
         await state.transition_to(
             run_id,
             "failed",

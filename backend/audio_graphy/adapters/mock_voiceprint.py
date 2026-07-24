@@ -70,9 +70,7 @@ class MockVoiceprintAdapter:
         num_speakers: int = _DEFAULT_NUM_SPEAKERS,
     ) -> None:
         if dim <= 0 or dim < _SPEAKER_BIAS_DIMS:
-            raise ValueError(
-                f"dim must be ≥ {_SPEAKER_BIAS_DIMS} to fit speaker bias, got {dim}"
-            )
+            raise ValueError(f"dim must be ≥ {_SPEAKER_BIAS_DIMS} to fit speaker bias, got {dim}")
         if num_speakers < 1:
             raise ValueError(f"num_speakers must be ≥ 1, got {num_speakers}")
         self.dim = dim
@@ -189,7 +187,7 @@ class MockVoiceprintAdapter:
         # Overwrite first N dims with speaker bias if provided.
         if speaker_id:
             spk_seed = hashlib.sha512(speaker_id.encode("utf-8")).digest()
-            spk_uints = struct.unpack(f"<{_SPEAKER_BIAS_DIMS}I", spk_seed[:_SPEAKER_BIAS_DIMS * 4])
+            spk_uints = struct.unpack(f"<{_SPEAKER_BIAS_DIMS}I", spk_seed[: _SPEAKER_BIAS_DIMS * 4])
             # Map each bias dim to [-1.0, +1.0]. Different speaker_ids map to
             # different sign patterns, so same-speaker pairs correlate strongly
             # (cos ≥ 0.6) while diff-speaker pairs cancel out (cos ≤ 0.3).

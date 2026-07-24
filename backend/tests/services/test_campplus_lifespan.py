@@ -126,14 +126,11 @@ def test_lifespan_continues_when_diarize_fails(clean_funasr, caplog) -> None:
             assert svc._SV_MODEL is not None
             assert svc._DIARIZE_MODEL is None
 
-    with caplog.at_level(
-        "WARNING", logger="audio_graphy.services.campplus_service"
-    ):
+    with caplog.at_level("WARNING", logger="audio_graphy.services.campplus_service"):
         asyncio.run(_drive())
 
     assert any(
-        "Diarization model" in r.message and "unavailable" in r.message
-        for r in caplog.records
+        "Diarization model" in r.message and "unavailable" in r.message for r in caplog.records
     )
 
 

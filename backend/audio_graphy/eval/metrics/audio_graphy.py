@@ -161,9 +161,7 @@ def _fuzzy_matched_gold(
 # ============================================================
 
 
-def edge_precision_by_confidence(
-    gold: GoldExample, pred: PredictedResult
-) -> MetricResult:
+def edge_precision_by_confidence(gold: GoldExample, pred: PredictedResult) -> MetricResult:
     """Per-layer precision + macro mean.
 
     Each edge key: ``(norm(src), rel, norm(dst), confidence)``.
@@ -172,6 +170,7 @@ def edge_precision_by_confidence(
         prec_L = tp_L / len(pred_L) if pred_L non-empty else 0.0 (excluded from macro)
     macro = mean(prec_L for L in layers where pred_L non-empty)
     """
+
     def _key(e: tuple[str, str, str, EdgeConfidence]) -> tuple[str, str, str, EdgeConfidence]:
         src, rel, dst, conf = e
         return (_norm(src), rel, _norm(dst), conf)
@@ -201,11 +200,7 @@ def edge_precision_by_confidence(
         included_flags[f"P_{layer}_included"] = True
         included_precisions.append(prec)
 
-    macro = (
-        sum(included_precisions) / len(included_precisions)
-        if included_precisions
-        else 0.0
-    )
+    macro = sum(included_precisions) / len(included_precisions) if included_precisions else 0.0
 
     details: dict[str, float | int | str] = {
         **{k: float(v) for k, v in per_layer.items()},

@@ -80,6 +80,7 @@ async def _seed_alias(
 # Case 1 — exact DB alias match
 # --------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_exact_db_alias_match(em_factory: async_sessionmaker[AsyncSession]) -> None:
     """A manual alias in DB replaces the raw alias_text with canonical."""
@@ -99,6 +100,7 @@ async def test_exact_db_alias_match(em_factory: async_sessionmaker[AsyncSession]
 # Case 2 — fuzzy match above threshold
 # --------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_fuzzy_match_above_threshold(
     em_factory: async_sessionmaker[AsyncSession],
@@ -108,10 +110,12 @@ async def test_fuzzy_match_above_threshold(
     The first entity seeds the canonical; the second near-dup matches it.
     """
     merger = EntityMerger(em_factory, "t1", fuzzy_threshold=0.85, persist_fuzzy_aliases=False)
-    out = await merger.merge([
-        ("CS75 Plus", "车型"),
-        ("CS75PLUS", "车型"),
-    ])
+    out = await merger.merge(
+        [
+            ("CS75 Plus", "车型"),
+            ("CS75PLUS", "车型"),
+        ]
+    )
     # First entity becomes canonical; second merges into it.
     assert out[0][0] == "CS75 Plus"
     assert out[1][0] == "CS75 Plus"
@@ -122,16 +126,19 @@ async def test_fuzzy_match_above_threshold(
 # Case 3 — fuzzy match below threshold (no merge)
 # --------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_fuzzy_match_below_threshold(
     em_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     """``CS75`` vs ``CS35`` are too far apart; left as separate canonicals."""
     merger = EntityMerger(em_factory, "t1", fuzzy_threshold=0.85, persist_fuzzy_aliases=False)
-    out = await merger.merge([
-        ("CS75", "车型"),
-        ("CS35", "车型"),
-    ])
+    out = await merger.merge(
+        [
+            ("CS75", "车型"),
+            ("CS35", "车型"),
+        ]
+    )
     assert out[0][0] == "CS75"
     assert out[1][0] == "CS35"
 
@@ -139,6 +146,7 @@ async def test_fuzzy_match_below_threshold(
 # --------------------------------------------------------------------
 # Case 4 — manual alias precedence over fuzzy
 # --------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_manual_alias_precedence(
@@ -161,10 +169,12 @@ async def test_manual_alias_precedence(
         source="manual",
     )
     merger = EntityMerger(em_factory, "t1", fuzzy_threshold=0.85, persist_fuzzy_aliases=False)
-    out = await merger.merge([
-        ("CS75 Plus", "车型"),
-        ("cs75plus", "车型"),
-    ])
+    out = await merger.merge(
+        [
+            ("CS75 Plus", "车型"),
+            ("cs75plus", "车型"),
+        ]
+    )
     assert out[0][0] == "CS75 Plus"
     # Layer 1 hit: cs75plus -> "Manual Canonical"
     assert out[1][0] == "Manual Canonical"
@@ -173,6 +183,7 @@ async def test_manual_alias_precedence(
 # --------------------------------------------------------------------
 # Case 5 — tenant isolation
 # --------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_tenant_isolation(em_factory: async_sessionmaker[AsyncSession]) -> None:
@@ -194,11 +205,9 @@ async def test_tenant_isolation(em_factory: async_sessionmaker[AsyncSession]) ->
     # Confirm no cross-tenant leak in DB.
     async with em_factory() as session:
         rows = list(
-            (
-                await session.execute(
-                    select(EntityAlias).where(EntityAlias.tenant_id == "tenant_b")
-                )
-            ).scalars().all()
+            (await session.execute(select(EntityAlias).where(EntityAlias.tenant_id == "tenant_b")))
+            .scalars()
+            .all()
         )
         assert rows == []
 
@@ -206,6 +215,7 @@ async def test_tenant_isolation(em_factory: async_sessionmaker[AsyncSession]) ->
 # --------------------------------------------------------------------
 # Case 6 — entity type filter
 # --------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_entity_type_filter(em_factory: async_sessionmaker[AsyncSession]) -> None:
@@ -232,14 +242,17 @@ async def test_entity_type_filter(em_factory: async_sessionmaker[AsyncSession]) 
 # Case 7 — NFKC normalization (全角 → 半角)
 # --------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_nfkc_normalization(em_factory: async_sessionmaker[AsyncSession]) -> None:
     """Fullwidth chars ｃｓ７５ collapse to ASCII cs75 before fuzzy compare."""
     merger = EntityMerger(em_factory, "t1", fuzzy_threshold=0.85, persist_fuzzy_aliases=False)
-    out = await merger.merge([
-        ("CS75 Plus", "车型"),
-        ("ｃｓ７５ ｐｌｕｓ", "车型"),  # fullwidth variant
-    ])
+    out = await merger.merge(
+        [
+            ("CS75 Plus", "车型"),
+            ("ｃｓ７５ ｐｌｕｓ", "车型"),  # fullwidth variant
+        ]
+    )
     # Fullwidth normalises to lowercase cs75 plus; WRatio >= 0.85 vs "cs75 plus".
     assert out[0][0] == "CS75 Plus"
     assert out[1][0] == "CS75 Plus"
@@ -248,6 +261,7 @@ async def test_nfkc_normalization(em_factory: async_sessionmaker[AsyncSession]) 
 # --------------------------------------------------------------------
 # Case 8 — large batch + alias persistence
 # --------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_large_batch_and_persist(
@@ -283,7 +297,9 @@ async def test_large_batch_and_persist(
                         EntityAlias.source == "fuzzy_match",
                     )
                 )
-            ).scalars().all()
+            )
+            .scalars()
+            .all()
         )
     assert len(fuzzy_rows) >= 1
     assert all(r.confidence >= 0.85 for r in fuzzy_rows)
@@ -293,16 +309,19 @@ async def test_large_batch_and_persist(
 # Bonus — fuzzy_threshold=1.0 disables fuzzy (strict mode)
 # --------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_threshold_1_disables_fuzzy(
     em_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     """threshold=1.0 → fuzzy matching effectively disabled; only Layer 1 applies."""
     merger = EntityMerger(em_factory, "t1", fuzzy_threshold=1.0, persist_fuzzy_aliases=False)
-    out = await merger.merge([
-        ("CS75 Plus", "车型"),
-        ("CS75PLUS", "车型"),
-    ])
+    out = await merger.merge(
+        [
+            ("CS75 Plus", "车型"),
+            ("CS75PLUS", "车型"),
+        ]
+    )
     # No fuzzy match → both left as distinct canonicals.
     assert out[0][0] == "CS75 Plus"
     assert out[1][0] == "CS75PLUS"

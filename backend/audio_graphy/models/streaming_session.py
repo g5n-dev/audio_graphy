@@ -58,9 +58,7 @@ class StreamingSession(TenantScopedBase):
         nullable=False,
     )
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    last_chunk_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    last_chunk_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     seg_confirmed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     seg_realtime_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     bytes_in: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)

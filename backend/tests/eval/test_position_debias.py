@@ -18,7 +18,7 @@ from typing import Any
 
 import pytest
 
-from audio_graphy.eval.runner import EvalRunner, MockPipeline
+from audio_graphy.eval.runner import EvalRunner
 from audio_graphy.eval.types import GoldExample, MetricResult, PredictedResult
 
 
@@ -40,9 +40,7 @@ class _CountingJudge:
         # Return one fake fact per call so faithfulness has something to score.
         return ["fact-1"]
 
-    async def judge_faithfulness(
-        self, context: str, facts: list[str]
-    ) -> list[bool]:
+    async def judge_faithfulness(self, context: str, facts: list[str]) -> list[bool]:
         self.faith_calls.append((context, list(facts)))
         # Alternate True / False to make the mean-check meaningful.
         return [len(self.faith_calls) % 2 == 1]
@@ -70,6 +68,7 @@ def gold_yaml(tmp_path: Path) -> Path:
 
 def _make_pred_with_retrieved_text() -> Any:
     """Build a pipeline that returns a PredictedResult with a retrieved_text tag."""
+
     class _Pipeline:
         async def predict(self, gold: GoldExample) -> PredictedResult:
             return PredictedResult(
@@ -78,10 +77,9 @@ def _make_pred_with_retrieved_text() -> Any:
                 retrieved_context_ids=("c1",),
                 entities=(),
                 edges=(),
-                tags=(
-                    {"tag_path": "retrieved_text", "value": "line1\nline2\nline3"},
-                ),
+                tags=({"tag_path": "retrieved_text", "value": "line1\nline2\nline3"},),
             )
+
     return _Pipeline()
 
 

@@ -139,8 +139,7 @@ def voiceprint_eer(
 
         eer_at_thr = (far + frr) / 2.0
         if abs(far - frr) < best_eer - eer_at_thr or (
-            abs(abs(far - frr) - (best_eer - eer_at_thr)) < 1e-12
-            and eer_at_thr < best_eer
+            abs(abs(far - frr) - (best_eer - eer_at_thr)) < 1e-12 and eer_at_thr < best_eer
         ):
             best_eer = eer_at_thr
             best_threshold = thr if math.isfinite(thr) else None

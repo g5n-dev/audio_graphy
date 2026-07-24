@@ -45,9 +45,13 @@ def test_cli_smoke_no_judge(tmp_path: Path) -> None:
     """
     proc = subprocess.run(
         [
-            sys.executable, "-m", "audio_graphy.eval",
-            "--gold-set", str(_EXAMPLES_GOLD),
-            "--report-dir", str(tmp_path),
+            sys.executable,
+            "-m",
+            "audio_graphy.eval",
+            "--gold-set",
+            str(_EXAMPLES_GOLD),
+            "--report-dir",
+            str(tmp_path),
             "--no-judge",
         ],
         capture_output=True,
@@ -71,8 +75,11 @@ def test_cli_missing_gold_set_returns_2(tmp_path: Path) -> None:
     bogus = tmp_path / "nonexistent.yaml"
     proc = subprocess.run(
         [
-            sys.executable, "-m", "audio_graphy.eval",
-            "--gold-set", str(bogus),
+            sys.executable,
+            "-m",
+            "audio_graphy.eval",
+            "--gold-set",
+            str(bogus),
             "--no-judge",
         ],
         capture_output=True,
@@ -88,15 +95,19 @@ def test_cli_pipeline_rag_rejected_in_m5(tmp_path: Path) -> None:
     gold_set = tmp_path / "stub.yaml"
     gold_set.write_text(
         '- query: "q1"\n  gold_answer: "a1"\n  gold_context_ids: []\n'
-        '  gold_entities: []\n  gold_edges: []\n  gold_tags: []\n',
+        "  gold_entities: []\n  gold_edges: []\n  gold_tags: []\n",
         encoding="utf-8",
     )
     proc = subprocess.run(
         [
-            sys.executable, "-m", "audio_graphy.eval",
-            "--gold-set", str(gold_set),
+            sys.executable,
+            "-m",
+            "audio_graphy.eval",
+            "--gold-set",
+            str(gold_set),
             "--no-judge",
-            "--pipeline", "rag",
+            "--pipeline",
+            "rag",
         ],
         capture_output=True,
         text=True,
@@ -113,15 +124,19 @@ def test_cli_smoke_with_local_gold_set(tmp_path: Path) -> None:
     gold = tmp_path / "tiny.yaml"
     gold.write_text(
         '- query: "q"\n  gold_answer: "a"\n  gold_context_ids: ["c"]\n'
-        '  gold_entities: []\n  gold_edges: []\n  gold_tags: []\n',
+        "  gold_entities: []\n  gold_edges: []\n  gold_tags: []\n",
         encoding="utf-8",
     )
     out_dir = tmp_path / "out"
     proc = subprocess.run(
         [
-            sys.executable, "-m", "audio_graphy.eval",
-            "--gold-set", str(gold),
-            "--report-dir", str(out_dir),
+            sys.executable,
+            "-m",
+            "audio_graphy.eval",
+            "--gold-set",
+            str(gold),
+            "--report-dir",
+            str(out_dir),
             "--no-judge",
         ],
         capture_output=True,

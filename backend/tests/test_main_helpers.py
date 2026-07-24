@@ -130,9 +130,7 @@ def test_wrapper_creates_and_closes_event_loop(monkeypatch):
     assert created[0] is closed[0]
 
 
-def test_wrapper_swallows_event_loop_creation_failure(
-    monkeypatch, caplog
-):
+def test_wrapper_swallows_event_loop_creation_failure(monkeypatch, caplog):
     """If new_event_loop raises, the wrapper logs but doesn't propagate."""
 
     def _boom() -> Any:
@@ -144,7 +142,4 @@ def test_wrapper_swallows_event_loop_creation_failure(
 
     with caplog.at_level(logging.ERROR, logger="audio_graphy.main"):
         wrapper()  # must NOT raise
-    assert any(
-        "Retention sweep event loop failed" in r.message
-        for r in caplog.records
-    )
+    assert any("Retention sweep event loop failed" in r.message for r in caplog.records)

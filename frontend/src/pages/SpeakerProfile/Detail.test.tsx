@@ -19,9 +19,18 @@ vi.mock("@/api/speakers", () => ({
   getSpeaker: vi.fn(),
 }));
 
+vi.mock("@/api/advancedGraph", () => ({
+  listSpeakerMergePending: vi.fn(),
+  confirmSpeakerMerge: vi.fn(),
+  rejectSpeakerMerge: vi.fn(),
+}));
+
 import { getSpeaker } from "@/api/speakers";
+import { listSpeakerMergePending } from "@/api/advancedGraph";
 
 const mockedGetSpeaker = getSpeaker as unknown as ReturnType<typeof vi.fn>;
+const mockedListSpeakerMergePending =
+  listSpeakerMergePending as unknown as ReturnType<typeof vi.fn>;
 
 const MOCK_DETAIL: SpeakerDetailResponse = {
   id: 7,
@@ -72,6 +81,13 @@ function renderDetailWithId(id: string): void {
 describe("SpeakerProfileDetailPage", () => {
   beforeEach(() => {
     mockedGetSpeaker.mockReset();
+    mockedListSpeakerMergePending.mockReset();
+    mockedListSpeakerMergePending.mockResolvedValue({
+      items: [],
+      total: 0,
+      page: 1,
+      page_size: 50,
+    });
   });
 
   it("renders display name and detail fields when loaded", async () => {

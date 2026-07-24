@@ -258,7 +258,7 @@ async def get_run_report(
         )
 
     media_type = "text/markdown" if format == "markdown" else "application/json"
-    download_name = f"eval_run_{run_id}.{ 'md' if format == 'markdown' else 'json'}"
+    download_name = f"eval_run_{run_id}.{'md' if format == 'markdown' else 'json'}"
     return FileResponse(
         path=str(path),
         media_type=media_type,

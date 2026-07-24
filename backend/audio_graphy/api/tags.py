@@ -24,7 +24,7 @@ from audio_graphy.api.deps import (
 )
 from audio_graphy.auth.middleware import AuthUser
 from audio_graphy.auth.roles import require_admin, require_write_access
-from audio_graphy.auth.tenants import get_agent_filter, get_tenant_id
+from audio_graphy.auth.tenants import get_tenant_id
 from audio_graphy.errors import RecordingNotFoundError, RecordingNotIndexedError
 from audio_graphy.models.enums import RecordingStatus
 from audio_graphy.models.recording import Recording
@@ -88,22 +88,21 @@ async def get_tags(
     view: str = "current",
     tag_path: str | None = None,
     db: AsyncSession = Depends(get_db),
-    _user: AuthUser = Depends(get_current_user),
+    user: AuthUser = Depends(get_current_user),
 ) -> TagsListResponse:
     """Get tags for a recording (current / history / facts view).
 
     Cross-tenant returns 404.
     """
     tenant_id = get_tenant_id(request)
-    agent_filter = get_agent_filter(request)
 
     # Verify recording exists
     rec_stmt = select(Recording).where(
         Recording.id == recording_id,
         Recording.tenant_id == tenant_id,
     )
-    if agent_filter is not None:
-        rec_stmt = rec_stmt.where(Recording.agent_name == agent_filter)
+    if user.role == "agent":
+        rec_stmt = rec_stmt.where(Recording.agent_user_id == user.id)
     rec_result = await db.execute(rec_stmt)
     if rec_result.scalar_one_or_none() is None:
         raise RecordingNotFoundError(detail={"recording_id": recording_id})
@@ -181,7 +180,6 @@ async def post_tags(
     Role: admin / inspector.
     """
     tenant_id = get_tenant_id(request)
-    agent_filter = get_agent_filter(request)
     factory = get_session_factory(request)
 
     # Verify recording exists and is indexed
@@ -189,8 +187,8 @@ async def post_tags(
         Recording.id == recording_id,
         Recording.tenant_id == tenant_id,
     )
-    if agent_filter is not None:
-        rec_stmt = rec_stmt.where(Recording.agent_name == agent_filter)
+    if current_user.role == "agent":
+        rec_stmt = rec_stmt.where(Recording.agent_user_id == current_user.id)
     rec_result = await db.execute(rec_stmt)
     recording = rec_result.scalar_one_or_none()
     if recording is None:

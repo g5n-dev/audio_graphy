@@ -223,6 +223,7 @@ class TestDeriveRoleHint:
 # ============================================================
 
 
+@pytest.mark.integration
 class TestSpeakerLinkerConstruction:
     def test_threshold_invariant_violated(
         self,
@@ -251,9 +252,7 @@ class TestSpeakerLinkerConstruction:
         async_session_factory: async_sessionmaker[AsyncSession],
         dev_crypto: AudioCrypto,
     ) -> None:
-        linker = SpeakerLinker(
-            async_session_factory, dev_crypto, tenant_id="tenant-xyz"
-        )
+        linker = SpeakerLinker(async_session_factory, dev_crypto, tenant_id="tenant-xyz")
         assert linker._tenant_id == "tenant-xyz"
 
 
@@ -272,6 +271,7 @@ async def linker(
 
 
 @pytest.mark.asyncio
+@pytest.mark.integration
 class TestSpeakerLinkerRunEmpty:
     async def test_empty_candidates_returns_zero_report(
         self,
@@ -288,6 +288,7 @@ class TestSpeakerLinkerRunEmpty:
 
 
 @pytest.mark.asyncio
+@pytest.mark.integration
 class TestSpeakerLinkerNewSpeaker:
     async def test_creates_new_speaker_node(
         self,
@@ -342,6 +343,7 @@ class TestSpeakerLinkerNewSpeaker:
 
 
 @pytest.mark.asyncio
+@pytest.mark.integration
 class TestSpeakerLinkerMergeUnambiguous:
     async def test_high_cosine_merges_without_ambiguity_tag(
         self,
@@ -404,6 +406,7 @@ class TestSpeakerLinkerMergeUnambiguous:
 
 
 @pytest.mark.asyncio
+@pytest.mark.integration
 class TestSpeakerLinkerMergeAmbiguous:
     async def test_medium_cosine_tags_ambiguous(
         self,
@@ -457,6 +460,7 @@ class TestSpeakerLinkerMergeAmbiguous:
 
 
 @pytest.mark.asyncio
+@pytest.mark.integration
 class TestSpeakerLinkerNoMatch:
     async def test_below_threshold_creates_new_speaker(
         self,
@@ -483,6 +487,7 @@ class TestSpeakerLinkerNoMatch:
 
 
 @pytest.mark.asyncio
+@pytest.mark.integration
 class TestSpeakerLinkerMultiCandidate:
     async def test_three_candidates_one_match_two_new(
         self,
@@ -539,6 +544,7 @@ class TestSpeakerLinkerMultiCandidate:
 
 
 @pytest.mark.asyncio
+@pytest.mark.integration
 class TestSpeakerLinkerLinkSpeakersStub:
     async def test_link_speakers_returns_empty(
         self,
@@ -550,6 +556,7 @@ class TestSpeakerLinkerLinkSpeakersStub:
 
 
 @pytest.mark.asyncio
+@pytest.mark.integration
 class TestSpeakerLinkerAudit:
     async def test_audit_writer_invoked(
         self,
@@ -581,7 +588,9 @@ class TestSpeakerLinkerAudit:
                 )
 
         linker = SpeakerLinker(
-            async_session_factory, dev_crypto, audit=_StubAudit()  # type: ignore[arg-type]
+            async_session_factory,
+            dev_crypto,
+            audit=_StubAudit(),  # type: ignore[arg-type]
         )
         rec_id = await _insert_recording(async_session_factory, recording_id=1)
         cand = _make_candidate(seed=1.0, recording_id=rec_id)

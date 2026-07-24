@@ -22,7 +22,6 @@ from audio_graphy.core.speaker_linker import (
     _NewSpeakerCandidate,
 )
 
-
 # ============================================================
 # _derive_query_name
 # ============================================================
@@ -83,6 +82,7 @@ async def test_try_layer2_fuzzy_returns_none_for_empty_existing() -> None:
 @pytest.mark.asyncio
 async def test_try_layer2_fuzzy_uses_injected_matcher() -> None:
     """The linker must use the matcher provided via ctor."""
+
     class _StubMatcher:
         def __init__(self) -> None:
             self.calls = 0
@@ -110,9 +110,7 @@ async def test_try_layer2_fuzzy_uses_injected_matcher() -> None:
     from types import SimpleNamespace
 
     fake_node = SimpleNamespace(id=42, display_name="王小姐")
-    out = await linker._try_layer2_fuzzy(
-        _make_candidate(), [fake_node], recording_id=1
-    )
+    out = await linker._try_layer2_fuzzy(_make_candidate(), [fake_node], recording_id=1)
     assert out is None
     assert stub.calls == 1
 

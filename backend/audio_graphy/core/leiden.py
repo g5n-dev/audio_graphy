@@ -101,9 +101,7 @@ class IncrementalLeidenService:
         tenant_id: str = "default",
     ) -> None:
         if threshold_percent < 0.0 or threshold_percent > 100.0:
-            raise ValueError(
-                f"threshold_percent out of range: {threshold_percent}"
-            )
+            raise ValueError(f"threshold_percent out of range: {threshold_percent}")
         if preferred_lib not in {"leidenalg", "networkx", "fail-fast"}:
             raise ValueError(f"unknown preferred_lib: {preferred_lib}")
         self._snapshot_dir = snapshot_dir
@@ -244,12 +242,8 @@ class IncrementalLeidenService:
         """Dispatch to the configured library backend (cached via LRU)."""
         node_ids = tuple(sorted(n.entity_id for n in current_nodes))
         # Serialize edge tuples for hashing.
-        edge_tuples = tuple(
-            sorted((e.source, e.target, e.weight) for e in current_edges)
-        )
-        return self._cached_full_recompute(
-            node_ids, edge_tuples, diff_percent
-        )
+        edge_tuples = tuple(sorted((e.source, e.target, e.weight) for e in current_edges))
+        return self._cached_full_recompute(node_ids, edge_tuples, diff_percent)
 
     def _cached_full_recompute(
         self,
@@ -313,9 +307,7 @@ class IncrementalLeidenService:
             except LeidenLibUnavailableError:
                 if self._preferred_lib == "fail-fast":
                     raise
-                logger.warning(
-                    "leidenalg unavailable — falling back to networkx"
-                )
+                logger.warning("leidenalg unavailable — falling back to networkx")
                 node_to_community, modularity = self._run_networkx(g)
         else:
             node_to_community, modularity = self._run_networkx(g)
@@ -345,11 +337,7 @@ class IncrementalLeidenService:
         import networkx as nx
 
         communities = nx.algorithms.community.greedy_modularity_communities(g)
-        mapping = {
-            node: i
-            for i, comm in enumerate(communities)
-            for node in comm
-        }
+        mapping = {node: i for i, comm in enumerate(communities) for node in comm}
         try:
             q = nx.algorithms.community.modularity(g, communities)
         except (ZeroDivisionError, ValueError):
@@ -362,9 +350,7 @@ class IncrementalLeidenService:
             import leidenalg
             from igraph import Graph
         except ImportError as exc:
-            raise LeidenLibUnavailableError(
-                f"leidenalg/igraph not installed: {exc}"
-            ) from exc
+            raise LeidenLibUnavailableError(f"leidenalg/igraph not installed: {exc}") from exc
 
         # Convert networkx → igraph (one-way).
         node_list = list(g.nodes())

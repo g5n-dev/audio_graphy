@@ -88,9 +88,7 @@ class _GraphCompressionSink:
             type=str(attrs.get("type", "")),
             description=str(attrs.get("description", "")),
             source_ids=_str_to_list(attrs.get("source_ids", "[]")),
-            recording_ids=[
-                int(x) for x in _str_to_list(attrs.get("recording_ids", "[]"))
-            ],
+            recording_ids=[int(x) for x in _str_to_list(attrs.get("recording_ids", "[]"))],
             degree=int(attrs.get("degree", 0)),
             expired_at=None,  # live nodes only; expired_at tracked in attrs
         )
@@ -154,13 +152,17 @@ class _GraphCompressionSink:
     def commit(self) -> None:
         # No-op: NetworkX mutations are immediate. We rely on the caller
         # to persist via GraphML on the next retention sweep.
+        invalidate_projection = getattr(self._gs, "invalidate_path_projection", None)
+        if callable(invalidate_projection):
+            invalidate_projection()
         return None
 
     def rollback(self) -> None:
         # Best-effort: no snapshot/restore at this layer.
-        logger.warning(
-            "GraphCompressionSink.rollback() called — no-op for NetworkX sink"
-        )
+        invalidate_projection = getattr(self._gs, "invalidate_path_projection", None)
+        if callable(invalidate_projection):
+            invalidate_projection()
+        logger.warning("GraphCompressionSink.rollback() called — no-op for NetworkX sink")
 
 
 def _get_graph_store(request: Request, tenant_id: str) -> Any:
@@ -196,9 +198,7 @@ def _all_graph_nodes(graph_store: Any) -> list[GraphNode]:
                 type=str(attrs.get("type", "")),
                 description=str(attrs.get("description", "")),
                 source_ids=_str_to_list(attrs.get("source_ids", "[]")),
-                recording_ids=[
-                    int(x) for x in _str_to_list(attrs.get("recording_ids", "[]"))
-                ],
+                recording_ids=[int(x) for x in _str_to_list(attrs.get("recording_ids", "[]"))],
                 degree=int(attrs.get("degree", 0)),
                 expired_at=None,
             )
@@ -287,18 +287,14 @@ async def compression_dry_run(
             body.god_node_degree_threshold
             or int(getattr(settings, "compression_god_node_degree", 50))
         ),
-        stale_days=body.stale_days or int(
-            getattr(settings, "compression_stale_days", 180)
-        ),
+        stale_days=body.stale_days or int(getattr(settings, "compression_stale_days", 180)),
         tenant_id=tenant_id,
     )
     candidates = service.select_candidates(nodes)[: body.max_candidates]
     return CompressionDryRunResponse(
         tenant_id=tenant_id,
         candidates=[
-            CompressionCandidateOut(
-                entity_id=c.entity_id, score=c.score, reason=c.reason
-            )
+            CompressionCandidateOut(entity_id=c.entity_id, score=c.score, reason=c.reason)
             for c in candidates
         ],
         total=len(candidates),
@@ -333,9 +329,7 @@ async def compression_run(
     service = CompressionService(
         sink=sink,
         bt_service=bt,
-        god_node_degree_threshold=int(
-            getattr(settings, "compression_god_node_degree", 50)
-        ),
+        god_node_degree_threshold=int(getattr(settings, "compression_god_node_degree", 50)),
         stale_days=int(getattr(settings, "compression_stale_days", 180)),
         tenant_id=tenant_id,
     )
@@ -361,9 +355,7 @@ async def compression_run(
     return CompressionRunResponse(
         tenant_id=tenant_id,
         candidates=[
-            CompressionCandidateOut(
-                entity_id=c.entity_id, score=c.score, reason=c.reason
-            )
+            CompressionCandidateOut(entity_id=c.entity_id, score=c.score, reason=c.reason)
             for c in report.candidates
         ],
         soft_deleted_nodes=report.soft_deleted_nodes,
@@ -416,7 +408,8 @@ async def compression_history(
     items = [
         CompressionHistoryItem(
             action=str(r.action),
-            occurred_at=r.occurred_at or __import__("datetime").datetime.now(__import__("datetime").UTC),
+            occurred_at=r.occurred_at
+            or __import__("datetime").datetime.now(__import__("datetime").UTC),
             before=r.before_value,
             after=r.after_value,
             user_id=r.user_id,

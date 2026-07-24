@@ -20,6 +20,7 @@ dependencies = [
     # Settings / validation
     "pydantic>=2.10.0",
     "pydantic-settings>=2.6.0",
+    "email-validator>=2.2.0",
     # HTTP client (real adapters)
     "httpx>=0.28.0",
     # Auth
@@ -171,6 +172,17 @@ module = [
     "networkx.*",
     "yaml.*",
     "opentelemetry.*",
+    # Optional model runtimes are installed only by the corresponding Docker
+    # profile. The core/type-check image intentionally does not pull their
+    # multi-gigabyte wheels.
+    "torch.*",
+    "laion_clap.*",
+    "librosa.*",
+    "funasr.*",
+    "soundfile.*",
+    "onnxruntime.*",
+    "leidenalg.*",
+    "igraph.*",
 ]
 ignore_missing_imports = true
 

@@ -196,9 +196,7 @@ class LocalSearchRequest(BaseModel):
     """
 
     query: str = Field(..., min_length=1, max_length=2048)
-    seed_entity_ids: list[str] = Field(
-        ..., min_length=1, max_length=64
-    )
+    seed_entity_ids: list[str] = Field(..., min_length=1, max_length=64)
     depth: int = Field(default=1, ge=0, le=3)
     top_k: int = Field(default=5, ge=1, le=50)
 
@@ -341,9 +339,7 @@ class SpeakerMergePendingListResponse(BaseModel):
 class SpeakerConfirmMergeRequest(BaseModel):
     """Body for POST /speakers/{speaker_id}/merge/{target_id}."""
 
-    voiceprint_score: float | None = Field(
-        default=None, ge=-1.0, le=1.0
-    )
+    voiceprint_score: float | None = Field(default=None, ge=-1.0, le=1.0)
     notes: str | None = None
 
 

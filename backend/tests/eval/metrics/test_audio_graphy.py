@@ -114,9 +114,9 @@ def test_edge_precision_partial_layer() -> None:
     )
     pred = _pred(
         edges=(
-            ("a", "r", "b", "EXTRACTED"),       # tp
-            ("x", "r", "y", "EXTRACTED"),        # fp
-            ("c", "r", "d", "INFERRED"),         # tp
+            ("a", "r", "b", "EXTRACTED"),  # tp
+            ("x", "r", "y", "EXTRACTED"),  # fp
+            ("c", "r", "d", "INFERRED"),  # tp
         )
     )
     m = edge_precision_by_confidence(gold, pred)

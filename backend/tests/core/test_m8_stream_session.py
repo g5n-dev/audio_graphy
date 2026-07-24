@@ -170,7 +170,7 @@ class TestStreamSessionOnPCM:
         session = _make_session(pcm_buffer_max_sec=0.001)  # 1ms cap = 32 bytes
         # Force accumulation by pushing many chunks. The cap should drop oldest.
         for i in range(50):
-            async for _ in session.on_pcm_chunk(b"\xFF" * 1024, seq=i):
+            async for _ in session.on_pcm_chunk(b"\xff" * 1024, seq=i):
                 pass
         # pending_speech_pcm should not exceed cap by much.
         max_bytes = int(0.001 * PCM_BYTES_PER_SEC_16K_MONO_INT16)
@@ -183,8 +183,12 @@ class TestStreamSessionOnPCM:
         for i in range(40):
             session.confirmed_segments.append(
                 SegmentRecord(
-                    idx=i, start_sec=0.0, end_sec=1.0,
-                    transcript=f"seg-{i}", speaker=None, vad_conf=1.0,
+                    idx=i,
+                    start_sec=0.0,
+                    end_sec=1.0,
+                    transcript=f"seg-{i}",
+                    speaker=None,
+                    vad_conf=1.0,
                 )
             )
             session._enforce_confirmed_cap()
@@ -206,8 +210,10 @@ class TestStreamSessionOnPCM:
     async def test_realtime_event_emitted(self) -> None:
         # Use a tight-interval mock ASR to guarantee a realtime delta.
         asr = MockStreamingASRAdapter(
-            connect_latency_ms=0, push_latency_ms=0,
-            realtime_interval=1, confirmed_interval=100,
+            connect_latency_ms=0,
+            push_latency_ms=0,
+            realtime_interval=1,
+            confirmed_interval=100,
         )
         await asr.connect(session_id="test-session", tenant_id="default")
         vad = MockStreamingVADAdapter(latency_ms=0)
@@ -223,8 +229,10 @@ class TestStreamSessionOnPCM:
         class FailingASR:
             async def push_pcm(self, pcm: bytes, *, seq: int):
                 raise RuntimeError("synthetic ASR failure")
+
             async def finalize(self):
                 return ()
+
             async def aclose(self) -> None:
                 return
 
@@ -264,8 +272,12 @@ class TestStreamingChunker:
     def test_single_short_segment_no_flush(self) -> None:
         chunker = StreamingChunker(token_budget=1200)
         seg = SegmentRecord(
-            idx=0, start_sec=0.0, end_sec=1.0,
-            transcript="短文本", speaker=None, vad_conf=1.0,
+            idx=0,
+            start_sec=0.0,
+            end_sec=1.0,
+            transcript="短文本",
+            speaker=None,
+            vad_conf=1.0,
         )
         result = chunker.push_segment(seg)
         assert result is None
@@ -274,8 +286,12 @@ class TestStreamingChunker:
     def test_empty_transcript_skipped(self) -> None:
         chunker = StreamingChunker(token_budget=10)
         seg = SegmentRecord(
-            idx=0, start_sec=0.0, end_sec=1.0,
-            transcript="", speaker=None, vad_conf=1.0,
+            idx=0,
+            start_sec=0.0,
+            end_sec=1.0,
+            transcript="",
+            speaker=None,
+            vad_conf=1.0,
         )
         assert chunker.push_segment(seg) is None
         assert chunker.pending_segment_count == 0
@@ -283,8 +299,12 @@ class TestStreamingChunker:
     def test_whitespace_only_transcript_skipped(self) -> None:
         chunker = StreamingChunker(token_budget=10)
         seg = SegmentRecord(
-            idx=0, start_sec=0.0, end_sec=1.0,
-            transcript="   \n  ", speaker=None, vad_conf=1.0,
+            idx=0,
+            start_sec=0.0,
+            end_sec=1.0,
+            transcript="   \n  ",
+            speaker=None,
+            vad_conf=1.0,
         )
         assert chunker.push_segment(seg) is None
 
@@ -292,14 +312,22 @@ class TestStreamingChunker:
         chunker = StreamingChunker(token_budget=5)  # tiny budget
         # First segment fills buffer (tokenized to >= 5 tokens).
         seg1 = SegmentRecord(
-            idx=0, start_sec=0.0, end_sec=1.0,
-            transcript="artificial intelligence streaming systems", speaker=None, vad_conf=1.0,
+            idx=0,
+            start_sec=0.0,
+            end_sec=1.0,
+            transcript="artificial intelligence streaming systems",
+            speaker=None,
+            vad_conf=1.0,
         )
         assert chunker.push_segment(seg1) is None
         # Second segment exceeds budget → flush.
         seg2 = SegmentRecord(
-            idx=1, start_sec=1.0, end_sec=2.0,
-            transcript="world more text here now", speaker=None, vad_conf=1.0,
+            idx=1,
+            start_sec=1.0,
+            end_sec=2.0,
+            transcript="world more text here now",
+            speaker=None,
+            vad_conf=1.0,
         )
         chunk = chunker.push_segment(seg2)
         assert chunk is not None
@@ -309,8 +337,12 @@ class TestStreamingChunker:
     def test_flush_returns_remaining(self) -> None:
         chunker = StreamingChunker(token_budget=1200)
         seg = SegmentRecord(
-            idx=0, start_sec=0.0, end_sec=1.0,
-            transcript="hello", speaker=None, vad_conf=1.0,
+            idx=0,
+            start_sec=0.0,
+            end_sec=1.0,
+            transcript="hello",
+            speaker=None,
+            vad_conf=1.0,
         )
         chunker.push_segment(seg)
         chunk = chunker.flush()
@@ -325,8 +357,12 @@ class TestStreamingChunker:
 
         chunker = StreamingChunker(token_budget=5)
         seg = SegmentRecord(
-            idx=0, start_sec=0.0, end_sec=1.0,
-            transcript="hello world", speaker=None, vad_conf=1.0,
+            idx=0,
+            start_sec=0.0,
+            end_sec=1.0,
+            transcript="hello world",
+            speaker=None,
+            vad_conf=1.0,
         )
         chunker.push_segment(seg)
         chunk = chunker.flush()
@@ -337,8 +373,12 @@ class TestStreamingChunker:
         chunker = StreamingChunker(token_budget=5)
         for i in range(5):
             seg = SegmentRecord(
-                idx=i, start_sec=float(i), end_sec=float(i + 1),
-                transcript=f"seg-{i}-padding", speaker=None, vad_conf=1.0,
+                idx=i,
+                start_sec=float(i),
+                end_sec=float(i + 1),
+                transcript=f"seg-{i}-padding",
+                speaker=None,
+                vad_conf=1.0,
             )
             chunker.push_segment(seg)
         chunker.flush()
@@ -347,8 +387,12 @@ class TestStreamingChunker:
     def test_reset_clears_buffer(self) -> None:
         chunker = StreamingChunker(token_budget=1200)
         seg = SegmentRecord(
-            idx=0, start_sec=0.0, end_sec=1.0,
-            transcript="hello", speaker=None, vad_conf=1.0,
+            idx=0,
+            start_sec=0.0,
+            end_sec=1.0,
+            transcript="hello",
+            speaker=None,
+            vad_conf=1.0,
         )
         chunker.push_segment(seg)
         chunker.reset()
@@ -362,8 +406,12 @@ class TestStreamingChunker:
         chunker = StreamingChunker(token_budget=1200)
         for i in range(3):
             seg = SegmentRecord(
-                idx=i, start_sec=float(i), end_sec=float(i + 1),
-                transcript=f"seg-{i}", speaker=None, vad_conf=1.0,
+                idx=i,
+                start_sec=float(i),
+                end_sec=float(i + 1),
+                transcript=f"seg-{i}",
+                speaker=None,
+                vad_conf=1.0,
             )
             chunker.push_segment(seg)
         chunk = chunker.flush()

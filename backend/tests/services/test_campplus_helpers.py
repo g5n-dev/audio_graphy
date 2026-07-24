@@ -146,30 +146,20 @@ def test_diarize_sv_only_long_audio_returns_single_segment() -> None:
 
 def test_diarize_model_empty_response_returns_empty() -> None:
     svc._DIARIZE_MODEL = types.SimpleNamespace(generate=lambda **kw: [])
-    segs, dur = svc._diarize_with_diarize_model(
-        "/fake", min_segment_sec=0.5, max_speakers=5
-    )
+    segs, dur = svc._diarize_with_diarize_model("/fake", min_segment_sec=0.5, max_speakers=5)
     assert segs == []
     assert dur == 0.0
 
 
 def test_diarize_model_non_list_response_returns_empty() -> None:
-    svc._DIARIZE_MODEL = types.SimpleNamespace(
-        generate=lambda **kw: "not-a-list"
-    )
-    segs, _ = svc._diarize_with_diarize_model(
-        "/fake", min_segment_sec=0.5, max_speakers=5
-    )
+    svc._DIARIZE_MODEL = types.SimpleNamespace(generate=lambda **kw: "not-a-list")
+    segs, _ = svc._diarize_with_diarize_model("/fake", min_segment_sec=0.5, max_speakers=5)
     assert segs == []
 
 
 def test_diarize_model_missing_sentence_info_returns_empty() -> None:
-    svc._DIARIZE_MODEL = types.SimpleNamespace(
-        generate=lambda **kw: [{"no_sentence_info": True}]
-    )
-    segs, _ = svc._diarize_with_diarize_model(
-        "/fake", min_segment_sec=0.5, max_speakers=5
-    )
+    svc._DIARIZE_MODEL = types.SimpleNamespace(generate=lambda **kw: [{"no_sentence_info": True}])
+    segs, _ = svc._diarize_with_diarize_model("/fake", min_segment_sec=0.5, max_speakers=5)
     assert segs == []
 
 
@@ -182,17 +172,15 @@ def test_diarize_model_parses_sentence_info_and_drops_short() -> None:
     _install_librosa_stub(_fake_load)
 
     sentence_info = [
-        {"start": 0.0, "end": 0.8, "spk_label": 0},   # 0.8s ≥ 0.5 → kept
-        {"start": 0.8, "end": 0.9, "spk_label": 1},   # 0.1s < 0.5 → dropped
-        {"start": 0.9, "end": 1.0, "spk_label": 0},   # 0.1s < 0.5 → dropped
+        {"start": 0.0, "end": 0.8, "spk_label": 0},  # 0.8s ≥ 0.5 → kept
+        {"start": 0.8, "end": 0.9, "spk_label": 1},  # 0.1s < 0.5 → dropped
+        {"start": 0.9, "end": 1.0, "spk_label": 0},  # 0.1s < 0.5 → dropped
     ]
     svc._DIARIZE_MODEL = types.SimpleNamespace(
         generate=lambda **kw: [{"sentence_info": sentence_info}]
     )
 
-    segs, dur = svc._diarize_with_diarize_model(
-        "/fake", min_segment_sec=0.5, max_speakers=5
-    )
+    segs, dur = svc._diarize_with_diarize_model("/fake", min_segment_sec=0.5, max_speakers=5)
     assert dur == pytest.approx(1.0, abs=1e-6)
     assert len(segs) == 1
     assert segs[0]["speaker_id"] == "spk_0"
@@ -236,8 +224,8 @@ def test_crop_audio_invokes_librosa_and_soundfile(tmp_path) -> None:
             os.unlink(out_path)
 
 
-def test_crop_audio_handles_unlink_failure(tmp_path) -> None:
-    """If source unlink fails, crop still returns the new path (OSError swallowed)."""
+def test_crop_audio_handles_unlink_failure(tmp_path, caplog) -> None:
+    """If source unlink fails, crop returns the new path and logs the residue."""
 
     def _fake_load(path: str, sr: int, mono: bool, offset: float, duration):
         return [0.0] * 50, 48_000
@@ -250,10 +238,16 @@ def test_crop_audio_handles_unlink_failure(tmp_path) -> None:
 
     _install_soundfile_stub(_fake_sf_write)
 
-    # Source path doesn't exist; unlink will raise OSError but be swallowed.
-    out_path = svc._crop_audio("/nonexistent/src.wav", 0.0, None)
-    try:
-        assert os.path.exists(out_path)
-    finally:
-        if os.path.exists(out_path):
-            os.unlink(out_path)
+    # Source path doesn't exist; unlink raises OSError, which is logged and tolerated.
+    with caplog.at_level("WARNING", logger="audio_graphy.services.campplus_service"):
+        out_path = svc._crop_audio("/nonexistent/src.wav", 0.0, None)
+        try:
+            assert os.path.exists(out_path)
+            assert any(
+                "Temporary audio cleanup failed" in record.message
+                and "/nonexistent/src.wav" in record.message
+                for record in caplog.records
+            )
+        finally:
+            if os.path.exists(out_path):
+                os.unlink(out_path)

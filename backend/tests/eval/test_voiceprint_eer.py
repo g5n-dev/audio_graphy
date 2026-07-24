@@ -380,7 +380,8 @@ class TestEvalRunnerPhase2Integration:
         assert not metrics[0].details.get("skipped")
 
     async def test_voiceprint_eer_enabled_but_no_trials_skipped(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         """With --voiceprint-eer but no trials → skipped metric emitted."""
         from audio_graphy.eval.runner import EvalRunner, MockPipeline
@@ -565,9 +566,7 @@ class TestVoiceprintEERFromTrials:
         """Re-used paths only get extracted once."""
         v1 = tuple([1.0] + [0.0] * 15)
         v2 = tuple([1.0] + [0.0] * 15)
-        adapter = _FakeVoiceprintAdapter(
-            {"a.wav": v1, "b.wav": v2}
-        )
+        adapter = _FakeVoiceprintAdapter({"a.wav": v1, "b.wav": v2})
         trials = [
             VoiceprintTrial("a.wav", "b.wav", True),
             VoiceprintTrial("b.wav", "a.wav", True),  # same paths reversed
@@ -578,6 +577,7 @@ class TestVoiceprintEERFromTrials:
 
     async def test_extraction_failure_skips_trial(self) -> None:
         """When adapter throws, the trial is dropped silently."""
+
         class _FailingAdapter:
             async def extract_voiceprint(self, path: str) -> Any:
                 raise RuntimeError("simulated failure")

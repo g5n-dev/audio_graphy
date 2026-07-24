@@ -137,9 +137,7 @@ async def test_diarize_transport_error_raises_server_error(
 
 
 @pytest.mark.asyncio
-async def test_voiceprint_non_json_response(
-    respx_mock: respx.MockRouter, tmp_wav: Path
-) -> None:
+async def test_voiceprint_non_json_response(respx_mock: respx.MockRouter, tmp_wav: Path) -> None:
     """Non-JSON body raises VoiceprintServerError (lines 349-351)."""
     adapter = _make_adapter()
     respx_mock.post(_VOICEPRINT_URL).mock(
@@ -153,14 +151,10 @@ async def test_voiceprint_non_json_response(
 
 
 @pytest.mark.asyncio
-async def test_voiceprint_empty_list_raises(
-    respx_mock: respx.MockRouter, tmp_wav: Path
-) -> None:
+async def test_voiceprint_empty_list_raises(respx_mock: respx.MockRouter, tmp_wav: Path) -> None:
     """Empty voiceprint list raises VoiceprintServerError (line 366)."""
     adapter = _make_adapter()
-    respx_mock.post(_VOICEPRINT_URL).mock(
-        return_value=httpx.Response(200, json={"voiceprint": []})
-    )
+    respx_mock.post(_VOICEPRINT_URL).mock(return_value=httpx.Response(200, json={"voiceprint": []}))
     try:
         with pytest.raises(VoiceprintServerError):
             await adapter.extract_voiceprint(str(tmp_wav))

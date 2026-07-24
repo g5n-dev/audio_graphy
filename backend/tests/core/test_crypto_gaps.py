@@ -138,9 +138,7 @@ def test_malformed_master_key_raises_value_error(tmp_path: Path) -> None:
         crypto.encrypt_file(tmp_path / "any.bin", tmp_path / "any.enc")
 
 
-def test_non_0600_master_key_logs_warning(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
+def test_non_0600_master_key_logs_warning(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     """A master key with perms other than 0600 logs a WARNING (but still works)."""
     key_path = tmp_path / "perms.key"
     key = Fernet.generate_key()

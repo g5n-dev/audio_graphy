@@ -100,9 +100,7 @@ class DefaultVoiceprintComparator:
         candidate: tuple[float, ...],
     ) -> float:
         if len(query) != len(candidate):
-            raise ValueError(
-                f"dimension mismatch: {len(query)} vs {len(candidate)}"
-            )
+            raise ValueError(f"dimension mismatch: {len(query)} vs {len(candidate)}")
         dot = sum(a * b for a, b in zip(query, candidate, strict=True))
         norm_q = sum(a * a for a in query) ** 0.5
         norm_c = sum(b * b for b in candidate) ** 0.5
@@ -141,9 +139,7 @@ class SpeakerFuzzyMatcher:
             ("reconfirm_cosine", reconfirm_cosine),
         ):
             if not 0.0 <= val <= 1.0:
-                raise SpeakerLinkerFuzzyThresholdError(
-                    f"{name}={val} outside [0, 1]"
-                )
+                raise SpeakerLinkerFuzzyThresholdError(f"{name}={val} outside [0, 1]")
         if inferred_threshold > ambiguous_threshold:
             raise SpeakerLinkerFuzzyThresholdError(
                 f"inferred_threshold ({inferred_threshold}) > "
@@ -246,10 +242,7 @@ class SpeakerFuzzyMatcher:
         query_voiceprint: tuple[float, ...] | None,
     ) -> SpeakerFuzzyResult:
         """Apply L8 Layer 1 reconfirm when voiceprints are available."""
-        if (
-            query_voiceprint is None
-            or best.voiceprint_vector is None
-        ):
+        if query_voiceprint is None or best.voiceprint_vector is None:
             # Stage 4 — reconfirm unavailable; signal caller.
             return SpeakerFuzzyResult(
                 verdict="AMBIGUOUS",

@@ -14,11 +14,10 @@ that the existing suite missed without restating already-covered paths.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
-
 
 # ============================================================
 # Bi-temporal API helpers — _parse_iso / _edge_from_graph_attrs
@@ -139,11 +138,7 @@ def test_tenant_graph_or_404_lazy_creates_store(monkeypatch: pytest.MonkeyPatch,
             self.graph = object()
             created.append(self)
 
-    import audio_graphy.api.bi_temporal as mod
-
-    monkeypatch.setattr(
-        "audio_graphy.storage.graph_networkx.NetworkXGraphStore", _StubStore
-    )
+    monkeypatch.setattr("audio_graphy.storage.graph_networkx.NetworkXGraphStore", _StubStore)
     g = _tenant_graph_or_404(_FakeRequest(), tenant_id="t_new")
     assert len(created) == 1
     assert created[0].tenant_id == "t_new"
@@ -248,8 +243,13 @@ def test_compression_sink_write_edge_creates_and_updates() -> None:
     store = _make_nx_graph_store()
     sink = _GraphCompressionSink(store, tenant_id="t1")
     e1 = GraphEdge(
-        source="A", target="B", relation="r", weight=1.0,
-        confidence="EXTRACTED", confidence_score=0.9, source_ids=["1_1"],
+        source="A",
+        target="B",
+        relation="r",
+        weight=1.0,
+        confidence="EXTRACTED",
+        confidence_score=0.9,
+        source_ids=["1_1"],
     )
     sink.write_edge(e1)
     assert store.graph.has_edge("A", "B", key="r")
@@ -258,8 +258,13 @@ def test_compression_sink_write_edge_creates_and_updates() -> None:
 
     # Write a second time — should update, not create new.
     e2 = GraphEdge(
-        source="A", target="B", relation="r", weight=2.5,
-        confidence="INFERRED", confidence_score=0.7, source_ids=["1_1", "2_1"],
+        source="A",
+        target="B",
+        relation="r",
+        weight=2.5,
+        confidence="INFERRED",
+        confidence_score=0.7,
+        source_ids=["1_1", "2_1"],
         valid_at=datetime.now(UTC),
     )
     sink.write_edge(e2)
@@ -294,14 +299,12 @@ def test_compression_sink_fetch_edges_on_node_skips_unrelated() -> None:
 
     store = _make_nx_graph_store()
     g = store.graph
-    g.add_edge("X", "Y", key="r1", relation="r1", weight=1.0,
-               source_ids=_list_to_str(["1_1"]))
-    g.add_edge("A", "B", key="r2", relation="r2", weight=1.0,
-               source_ids=_list_to_str(["1_1"]))
+    g.add_edge("X", "Y", key="r1", relation="r1", weight=1.0, source_ids=_list_to_str(["1_1"]))
+    g.add_edge("A", "B", key="r2", relation="r2", weight=1.0, source_ids=_list_to_str(["1_1"]))
     sink = _GraphCompressionSink(store, tenant_id="t1")
-    edges_X = sink.fetch_edges_on_node("X")
-    assert len(edges_X) == 1
-    assert edges_X[0].source == "X" and edges_X[0].target == "Y"
+    edges_x = sink.fetch_edges_on_node("X")
+    assert len(edges_x) == 1
+    assert edges_x[0].source == "X" and edges_x[0].target == "Y"
     # Unrelated node returns [].
     assert sink.fetch_edges_on_node("Z") == []
 
@@ -318,13 +321,25 @@ def test_all_graph_nodes_skips_expired() -> None:
 
     store = _make_nx_graph_store()
     g = store.graph
-    g.add_node("alive", name="alive", type="x", description="d",
-               degree=1, source_ids=_list_to_str(["1_1"]),
-               recording_ids=_list_to_str(["1"]))
-    g.add_node("dead", name="dead", type="x", description="d",
-               degree=1, source_ids=_list_to_str(["1_1"]),
-               recording_ids=_list_to_str(["1"]),
-               expired_at=datetime.now(UTC).isoformat())
+    g.add_node(
+        "alive",
+        name="alive",
+        type="x",
+        description="d",
+        degree=1,
+        source_ids=_list_to_str(["1_1"]),
+        recording_ids=_list_to_str(["1"]),
+    )
+    g.add_node(
+        "dead",
+        name="dead",
+        type="x",
+        description="d",
+        degree=1,
+        source_ids=_list_to_str(["1_1"]),
+        recording_ids=_list_to_str(["1"]),
+        expired_at=datetime.now(UTC).isoformat(),
+    )
     nodes = _all_graph_nodes(store)
     ids = {n.entity_id for n in nodes}
     assert "alive" in ids
@@ -418,14 +433,10 @@ def test_community_summary_in_memory_sink_round_trip() -> None:
     )
     sink.write(rec, tenant_id="t1")
     # Fetch by composite key returns the same record.
-    fetched = sink.fetch(
-        leiden_job_id=1, level=0, community_id=42, tenant_id="t1"
-    )
+    fetched = sink.fetch(leiden_job_id=1, level=0, community_id=42, tenant_id="t1")
     assert fetched is rec
     # Unknown composite key returns None.
-    miss = sink.fetch(
-        leiden_job_id=999, level=0, community_id=42, tenant_id="t1"
-    )
+    miss = sink.fetch(leiden_job_id=999, level=0, community_id=42, tenant_id="t1")
     assert miss is None
 
 
@@ -463,18 +474,33 @@ def test_edge_fingerprint_is_deterministic_and_stable() -> None:
     from audio_graphy.core.types import GraphEdge
 
     e1 = GraphEdge(
-        source="A", target="B", relation="r", weight=1.0,
-        confidence="EXTRACTED", confidence_score=0.9, source_ids=["1"],
+        source="A",
+        target="B",
+        relation="r",
+        weight=1.0,
+        confidence="EXTRACTED",
+        confidence_score=0.9,
+        source_ids=["1"],
         valid_at=datetime(2026, 7, 22, tzinfo=UTC),
     )
     e2 = GraphEdge(
-        source="A", target="B", relation="r", weight=1.0,
-        confidence="EXTRACTED", confidence_score=0.9, source_ids=["1"],
+        source="A",
+        target="B",
+        relation="r",
+        weight=1.0,
+        confidence="EXTRACTED",
+        confidence_score=0.9,
+        source_ids=["1"],
         valid_at=datetime(2026, 7, 22, tzinfo=UTC),
     )
     e3 = GraphEdge(
-        source="A", target="B", relation="r", weight=2.0,  # different
-        confidence="EXTRACTED", confidence_score=0.9, source_ids=["1"],
+        source="A",
+        target="B",
+        relation="r",
+        weight=2.0,  # different
+        confidence="EXTRACTED",
+        confidence_score=0.9,
+        source_ids=["1"],
         valid_at=datetime(2026, 7, 22, tzinfo=UTC),
     )
     assert edge_fingerprint(e1) == edge_fingerprint(e2)

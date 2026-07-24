@@ -44,9 +44,7 @@ def _lookup_tag_value(tags: tuple[dict[str, str], ...], key: str) -> str:
     return ""
 
 
-async def faithfulness(
-    gold: GoldExample, pred: PredictedResult, judge: LLMJudge
-) -> MetricResult:
+async def faithfulness(gold: GoldExample, pred: PredictedResult, judge: LLMJudge) -> MetricResult:
     """Faithfulness = supported_facts / total_facts.
 
     The retrieved context text is read from ``pred.tags`` (key

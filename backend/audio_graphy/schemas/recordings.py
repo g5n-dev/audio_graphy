@@ -7,11 +7,13 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class RecordingCreate(BaseModel):
     """POST /recordings request body."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     store_id: str = Field(max_length=64, description="Store ID")
     path: str = Field(max_length=512, description="Audio file path (must exist)")
@@ -41,8 +43,8 @@ class RecordingResponse(BaseModel):
     tenant_id: str
     store_id: str
     agent_name: str | None = None
+    agent_user_id: int | None = None
     customer_hash: str | None = None
-    path: str
     status: str
     pipeline_state: str
     recorded_at: datetime | None = None
@@ -60,6 +62,7 @@ class RecordingListItem(BaseModel):
     id: int
     store_id: str
     agent_name: str | None = None
+    agent_user_id: int | None = None
     status: str
     pipeline_state: str
     recorded_at: datetime | None = None
@@ -80,6 +83,7 @@ class RecordingStatusResponse(BaseModel):
     """GET /recordings/{id}/status lightweight response."""
 
     id: int
+    agent_user_id: int | None = None
     status: str
     pipeline_state: str
     indexed_at: datetime | None = None

@@ -152,13 +152,9 @@ class StreamingRetriever:
         inferred_edge_weight: float = DEFAULT_INFERRED_EDGE_WEIGHT,
     ) -> None:
         if not 0.0 <= ambiguous_edge_weight <= 1.0:
-            raise ValueError(
-                f"ambiguous_edge_weight must be in [0,1], got {ambiguous_edge_weight}"
-            )
+            raise ValueError(f"ambiguous_edge_weight must be in [0,1], got {ambiguous_edge_weight}")
         if not 0.0 <= inferred_edge_weight <= 1.0:
-            raise ValueError(
-                f"inferred_edge_weight must be in [0,1], got {inferred_edge_weight}"
-            )
+            raise ValueError(f"inferred_edge_weight must be in [0,1], got {inferred_edge_weight}")
         self._graph_store_factory = graph_store_factory
         self._rwlock = rwlock
         self._bundle = bundle
@@ -198,7 +194,10 @@ class StreamingRetriever:
         keywords = await self._extract_keywords(query)
         if not keywords:
             return StreamingRetrievalResult(
-                query=query, tenant_id=tenant_id, keywords=[], candidates=[],
+                query=query,
+                tenant_id=tenant_id,
+                keywords=[],
+                candidates=[],
             )
 
         graph_store = self._graph_store_factory(tenant_id)
@@ -234,9 +233,7 @@ class StreamingRetriever:
                     if not self._passes_min_confidence(edge.confidence, min_confidence):
                         filtered += 1
                         continue
-                    neighbor_id = (
-                        edge.target if edge.source == node.entity_id else edge.source
-                    )
+                    neighbor_id = edge.target if edge.source == node.entity_id else edge.source
                     neighbor = await graph_store.get_node(neighbor_id)
                     if neighbor is None:
                         continue

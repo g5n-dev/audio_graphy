@@ -127,16 +127,13 @@ class CLAPServiceAdapter:
         if not audio_paths:
             return ()
 
-        ids: list[int | None]
-        if segment_ids is None:
-            ids = [None] * len(audio_paths)
-        else:
-            ids = list(segment_ids)
+        ids: list[int | None] = (
+            [None] * len(audio_paths) if segment_ids is None else list(segment_ids)
+        )
 
         # Parallel POSTs (httpx pool limits concurrency).
         tasks = [
-            self._embed_one(path, seg_id)
-            for path, seg_id in zip(audio_paths, ids, strict=True)
+            self._embed_one(path, seg_id) for path, seg_id in zip(audio_paths, ids, strict=True)
         ]
         results = await asyncio.gather(*tasks)
         return tuple(results)
@@ -166,9 +163,7 @@ class CLAPServiceAdapter:
                     url=self._base_url,
                 ) from exc
             except httpx.HTTPError as exc:
-                logger.warning(
-                    "CLAP transport error url=%s err=%s", _redact(full_url), exc
-                )
+                logger.warning("CLAP transport error url=%s err=%s", _redact(full_url), exc)
                 raise CLAPServerError(
                     f"CLAP transport error: {exc}",
                     url=self._base_url,

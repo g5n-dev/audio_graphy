@@ -7,11 +7,8 @@ admin tenant.
 
 from __future__ import annotations
 
-import asyncio
 import io
 import zipfile
-from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -105,9 +102,7 @@ def test_export_returns_zip_with_expected_files(
         assert any("transcript/raw.txt" in n for n in names), names
         assert any("audit_history.csv" in n for n in names), names
         # Raw transcript contains the seeded PII.
-        raw = next(
-            zf.read(n) for n in names if n.endswith("transcript/raw.txt")
-        ).decode("utf-8")
+        raw = next(zf.read(n) for n in names if n.endswith("transcript/raw.txt")).decode("utf-8")
         assert "13812345678" in raw
 
 
@@ -135,11 +130,9 @@ def test_export_writes_audit_log(
     async def _check() -> bool:
         async with factory() as session:
             rows = list(
-                (
-                    await session.execute(
-                        select(AuditLog).where(AuditLog.action == "dsar.export")
-                    )
-                ).scalars().all()
+                (await session.execute(select(AuditLog).where(AuditLog.action == "dsar.export")))
+                .scalars()
+                .all()
             )
         return len(rows) >= 1
 
@@ -172,9 +165,7 @@ def test_erase_deletes_recording_and_audits(
     async def _gone() -> bool:
         async with factory() as session:
             row = (
-                await session.execute(
-                    select(Recording).where(Recording.id == rec_id)
-                )
+                await session.execute(select(Recording).where(Recording.id == rec_id))
             ).scalar_one_or_none()
         return row is None
 
@@ -186,11 +177,9 @@ def test_erase_deletes_recording_and_audits(
     async def _audited() -> int:
         async with factory() as session:
             rows = list(
-                (
-                    await session.execute(
-                        select(AuditLog).where(AuditLog.action == "dsar.erase")
-                    )
-                ).scalars().all()
+                (await session.execute(select(AuditLog).where(AuditLog.action == "dsar.erase")))
+                .scalars()
+                .all()
             )
         return len(rows)
 

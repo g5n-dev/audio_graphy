@@ -17,8 +17,10 @@ See: docs/m3-architecture.md §10.1, docs/m6-architecture.md §3.6.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+import stat
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -27,9 +29,11 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from audio_graphy.errors import (
+    APIError,
     DuplicateRecordingError,
     FileNotFoundError400,
     RecordingNotFoundError,
+    ValidationError,
 )
 from audio_graphy.models.chunk import Chunk
 from audio_graphy.models.enums import PipelineState, RecordingStatus
@@ -37,6 +41,7 @@ from audio_graphy.models.recording import Recording
 from audio_graphy.models.segment import Segment
 from audio_graphy.models.tag_current import TagCurrent
 from audio_graphy.schemas.recordings import RecordingCreate
+from audio_graphy.services.agent_identity import resolve_unique_agent_user_id
 
 if TYPE_CHECKING:
     from audio_graphy.core.audit import AuditWriter
@@ -44,6 +49,8 @@ if TYPE_CHECKING:
     from audio_graphy.core.pii import PIIScrubber
 
 logger = logging.getLogger(__name__)
+_AUDIO_EXTENSIONS = frozenset({".aac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav"})
+_DEFAULT_MAX_AUDIO_BYTES = 512 * 1024 * 1024
 
 
 class IngestionService:
@@ -64,11 +71,84 @@ class IngestionService:
         crypto: AudioCrypto | None = None,
         pii_scrubber: PIIScrubber | None = None,
         audit: AuditWriter | None = None,
+        allowed_root: Path | None = None,
+        max_audio_bytes: int = _DEFAULT_MAX_AUDIO_BYTES,
     ) -> None:
+        if max_audio_bytes <= 0:
+            raise ValueError("max_audio_bytes must be positive")
         self._session_factory = session_factory
         self._crypto = crypto
         self._pii_scrubber = pii_scrubber
         self._audit = audit
+        self._allowed_root = Path(allowed_root) if allowed_root is not None else None
+        self._max_audio_bytes = max_audio_bytes
+
+    def _validate_managed_audio_path(self, raw_path: str) -> Path:
+        """Resolve an API-supplied audio path below the managed working root."""
+        candidate = Path(raw_path)
+        if "\x00" in raw_path:
+            raise ValidationError(
+                "Audio path is invalid",
+                code="AUDIO_PATH_INVALID",
+            )
+        if self._allowed_root is None:
+            if candidate.exists():
+                self._validate_audio_size(candidate)
+            return candidate
+        try:
+            root = self._allowed_root.resolve(strict=True)
+            unresolved = candidate if candidate.is_absolute() else root / candidate
+            resolved = unresolved.resolve(strict=True)
+            relative = resolved.relative_to(root)
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise ValidationError(
+                "Audio path must stay below the configured working directory",
+                code="AUDIO_PATH_OUTSIDE_ROOT",
+            ) from exc
+        cursor = root
+        for component in relative.parts:
+            cursor = cursor / component
+            if cursor.is_symlink():
+                raise ValidationError(
+                    "Audio path cannot traverse a symbolic link",
+                    code="AUDIO_PATH_SYMLINK",
+                )
+        file_stat = resolved.stat(follow_symlinks=False)
+        if (
+            not stat.S_ISREG(file_stat.st_mode)
+            or file_stat.st_size <= 0
+            or file_stat.st_nlink != 1
+            or resolved.suffix.casefold() not in _AUDIO_EXTENSIONS
+        ):
+            raise ValidationError(
+                "Audio path must name one non-empty supported regular file",
+                code="AUDIO_FILE_INVALID",
+            )
+        if file_stat.st_size > self._max_audio_bytes:
+            raise ValidationError(
+                "Audio file exceeds the configured size limit",
+                code="AUDIO_FILE_TOO_LARGE",
+                detail={
+                    "size_bytes": file_stat.st_size,
+                    "max_size_bytes": self._max_audio_bytes,
+                },
+            )
+        return resolved
+
+    def _validate_audio_size(self, path: Path) -> None:
+        try:
+            size_bytes = os.stat(path, follow_symlinks=False).st_size
+        except OSError:
+            return
+        if size_bytes > self._max_audio_bytes:
+            raise ValidationError(
+                "Audio file exceeds the configured size limit",
+                code="AUDIO_FILE_TOO_LARGE",
+                detail={
+                    "size_bytes": size_bytes,
+                    "max_size_bytes": self._max_audio_bytes,
+                },
+            )
 
     async def register_recording(
         self,
@@ -95,18 +175,21 @@ class IngestionService:
             FileNotFoundError400: If the audio path doesn't exist.
             DuplicateRecordingError: If (tenant_id, path) already registered.
         """
-        # Check file exists
-        if not os.path.exists(body.path):
+        validated_path = self._validate_managed_audio_path(body.path)
+        # Direct service callers may opt out of root confinement; retain the
+        # established not-found contract for that compatibility path.
+        if not os.path.exists(validated_path):
             raise FileNotFoundError400(
                 message=f"Audio file not found: {body.path}",
                 detail={"path": body.path},
             )
+        self._validate_audio_size(validated_path)
 
         # Determine recorded_at
         recorded_at = body.recorded_at
         if recorded_at is None:
             try:
-                mtime = os.path.getmtime(body.path)
+                mtime = os.path.getmtime(validated_path)
                 recorded_at = datetime.fromtimestamp(mtime, tz=UTC)
             except OSError:
                 recorded_at = None
@@ -116,8 +199,14 @@ class IngestionService:
         encryption_meta: dict[str, Any] | None = None
         if self._crypto is not None:
             try:
-                cipher_path = f"{body.path}.enc"
-                meta = self._crypto.encrypt_file(Path(body.path), Path(cipher_path))
+                cipher_path = f"{validated_path}.enc"
+                meta = await asyncio.to_thread(
+                    self._crypto.encrypt_file,
+                    validated_path,
+                    Path(cipher_path),
+                )
+                if meta.size_bytes > self._max_audio_bytes:
+                    raise ValueError("encrypted plaintext exceeded the ingestion size limit")
                 encrypted_path = cipher_path
                 encryption_meta = {
                     "master_key_id": meta.master_key_id,
@@ -127,31 +216,43 @@ class IngestionService:
                 }
             except Exception as exc:
                 logger.error(
-                    "Audio encryption failed for %s: %s — falling back to plaintext",
-                    body.path,
+                    "Audio encryption failed for %s: %s",
+                    validated_path,
                     exc,
                     exc_info=True,
                 )
+                Path(f"{validated_path}.enc").unlink(missing_ok=True)
+                raise APIError(
+                    "Audio encryption failed",
+                    code="AUDIO_ENCRYPTION_FAILED",
+                    status_code=500,
+                ) from exc
 
         async with self._session_factory() as session:
             # Check duplicate
             existing = await session.execute(
                 select(Recording).where(
                     Recording.tenant_id == tenant_id,
-                    Recording.path == body.path,
+                    Recording.path == str(validated_path),
                 )
             )
             if existing.scalar_one_or_none() is not None:
                 raise DuplicateRecordingError(
-                    detail={"path": body.path, "tenant_id": tenant_id},
+                    detail={"path": str(validated_path), "tenant_id": tenant_id},
                 )
 
+            agent_user_id = await resolve_unique_agent_user_id(
+                session,
+                tenant_id=tenant_id,
+                agent_name=body.agent_name,
+            )
             recording = Recording(
                 tenant_id=tenant_id,
                 store_id=body.store_id,
                 agent_name=body.agent_name,
+                agent_user_id=agent_user_id,
                 customer_hash=body.customer_hash,
-                path=body.path,
+                path=str(validated_path),
                 status=RecordingStatus.QUEUED.value,
                 pipeline_state=PipelineState.PENDING.value,
                 recorded_at=recorded_at,
@@ -210,7 +311,7 @@ class IngestionService:
         self,
         tenant_id: str,
         *,
-        agent_filter: str | None = None,
+        agent_user_id: int | None = None,
         store_id: str | None = None,
         status: str | None = None,
         agent_name: str | None = None,
@@ -224,10 +325,10 @@ class IngestionService:
 
         Args:
             tenant_id: Tenant scope.
-            agent_filter: If set (agent role), force agent_name = this value.
+            agent_user_id: If set, force the immutable recording owner id.
             store_id: Optional store filter.
             status: Optional status filter.
-            agent_name: Optional agent name filter (overridden by agent_filter).
+            agent_name: Optional display-name filter for non-agent users.
             recorded_from: Optional recorded_at lower bound.
             recorded_to: Optional recorded_at upper bound.
             sort: Sort field (-recorded_at / recorded_at / -created_at / created_at).
@@ -240,10 +341,11 @@ class IngestionService:
         async with self._session_factory() as session:
             stmt = select(Recording).where(Recording.tenant_id == tenant_id)
 
-            # Agent filter takes priority
-            effective_agent = agent_filter if agent_filter is not None else agent_name
-            if effective_agent is not None:
-                stmt = stmt.where(Recording.agent_name == effective_agent)
+            # Stable owner scope always overrides mutable display-name filters.
+            if agent_user_id is not None:
+                stmt = stmt.where(Recording.agent_user_id == agent_user_id)
+            elif agent_name is not None:
+                stmt = stmt.where(Recording.agent_name == agent_name)
             if store_id is not None:
                 stmt = stmt.where(Recording.store_id == store_id)
             if status is not None:
@@ -281,14 +383,14 @@ class IngestionService:
         recording_id: int,
         tenant_id: str,
         *,
-        agent_filter: str | None = None,
+        agent_user_id: int | None = None,
     ) -> Recording:
         """Get a single recording by ID (with tenant + agent isolation).
 
         Args:
             recording_id: Recording ID.
             tenant_id: Tenant scope.
-            agent_filter: If set (agent role), force agent_name = this value.
+            agent_user_id: If set, force the immutable recording owner id.
 
         Returns:
             Recording ORM object.
@@ -301,8 +403,8 @@ class IngestionService:
                 Recording.id == recording_id,
                 Recording.tenant_id == tenant_id,
             )
-            if agent_filter is not None:
-                stmt = stmt.where(Recording.agent_name == agent_filter)
+            if agent_user_id is not None:
+                stmt = stmt.where(Recording.agent_user_id == agent_user_id)
 
             result = await session.execute(stmt)
             recording = result.scalar_one_or_none()
@@ -318,19 +420,23 @@ class IngestionService:
         recording_id: int,
         tenant_id: str,
         *,
-        agent_filter: str | None = None,
+        agent_user_id: int | None = None,
     ) -> dict[str, Any]:
         """Get recording detail with segments_count, chunks_count, current_tags.
 
         Args:
             recording_id: Recording ID.
             tenant_id: Tenant scope.
-            agent_filter: Optional agent filter.
+            agent_user_id: Optional stable agent owner filter.
 
         Returns:
             Dict with recording + summary fields.
         """
-        recording = await self.get_recording(recording_id, tenant_id, agent_filter=agent_filter)
+        recording = await self.get_recording(
+            recording_id,
+            tenant_id,
+            agent_user_id=agent_user_id,
+        )
 
         async with self._session_factory() as session:
             # Segments count

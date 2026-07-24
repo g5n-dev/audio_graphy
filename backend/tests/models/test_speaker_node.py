@@ -145,21 +145,15 @@ class TestSpeakerNodeCRUD:
 
 @pytest.mark.integration
 class TestSpeakerNodeUnique:
-    def test_duplicate_voiceprint_id_same_tenant_rejected(
-        self, db_session: pytest.fixture
-    ) -> None:
+    def test_duplicate_voiceprint_id_same_tenant_rejected(self, db_session: pytest.fixture) -> None:
         n1 = _make_speaker_node(voiceprint_id="dup-hash", tenant_id="default")
-        n2 = _make_speaker_node(
-            voiceprint_id="dup-hash", tenant_id="default", display_name="other"
-        )
+        n2 = _make_speaker_node(voiceprint_id="dup-hash", tenant_id="default", display_name="other")
         db_session.add_all([n1, n2])
         with pytest.raises((IntegrityError, OperationalError)):
             db_session.commit()
         db_session.rollback()
 
-    def test_same_voiceprint_id_different_tenants_allowed(
-        self, db_session: pytest.fixture
-    ) -> None:
+    def test_same_voiceprint_id_different_tenants_allowed(self, db_session: pytest.fixture) -> None:
         n1 = _make_speaker_node(voiceprint_id="share-hash", tenant_id="ta")
         n2 = _make_speaker_node(voiceprint_id="share-hash", tenant_id="tb")
         db_session.add_all([n1, n2])
@@ -246,9 +240,7 @@ class TestSpeakerLinkCRUD:
 
 @pytest.mark.integration
 class TestCascadeDelete:
-    def test_speaker_node_deletion_cascades_to_links(
-        self, db_session: pytest.fixture
-    ) -> None:
+    def test_speaker_node_deletion_cascades_to_links(self, db_session: pytest.fixture) -> None:
         rec = _make_recording()
         node = _make_speaker_node()
         db_session.add_all([rec, node])
@@ -318,9 +310,7 @@ class TestVoiceprintVectorCRUD:
         assert row.id is not None
         assert row.created_at is not None
 
-    def test_decrypt_roundtrip(
-        self, db_session: pytest.fixture, dev_crypto: AudioCrypto
-    ) -> None:
+    def test_decrypt_roundtrip(self, db_session: pytest.fixture, dev_crypto: AudioCrypto) -> None:
         rec = _make_recording()
         node = _make_speaker_node()
         db_session.add_all([rec, node])

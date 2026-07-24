@@ -347,9 +347,7 @@ class RecomputeService:
             )
             recording = result.scalar_one_or_none()
         if recording is None:
-            raise TaskNotFoundError(
-                detail={"recording_id": recording_id, "tenant_id": tenant_id}
-            )
+            raise TaskNotFoundError(detail={"recording_id": recording_id, "tenant_id": tenant_id})
 
         # Load segment transcripts (tenant-scoped, ordered by idx).
         from audio_graphy.models.segment import Segment
@@ -367,9 +365,7 @@ class RecomputeService:
             seg_result = await session.execute(stmt)
             segments = list(seg_result.scalars().all())
 
-        transcripts = "\n".join(
-            s.transcript for s in segments if s.transcript
-        )
+        transcripts = "\n".join(s.transcript for s in segments if s.transcript)
 
         tags_written = 0
         skipped_existing = 0

@@ -237,9 +237,7 @@ class BiTemporalEdgeService:
         target_weight = new_weight if new_weight is not None else old.weight
         target_conf = new_confidence or old.confidence
         target_score = (
-            new_confidence_score
-            if new_confidence_score is not None
-            else old.confidence_score
+            new_confidence_score if new_confidence_score is not None else old.confidence_score
         )
         target_src_ids = list(new_source_ids or old.source_ids)
 

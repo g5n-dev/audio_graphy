@@ -62,7 +62,7 @@ export default function RecordingDetailPage() {
             { label: "坐席", value: recording.agent_name },
             { label: "状态", value: <Tag>{recording.status}</Tag> },
             { label: "管线状态", value: recording.pipeline_state },
-            { label: "文件路径", value: recording.path },
+            { label: "录音标识", value: `#${recording.id}` },
             { label: "提示词版本", value: recording.prompt_version ?? "-" },
             { label: "录制时间", value: recording.recorded_at ? new Date(recording.recorded_at).toLocaleString("zh-CN") : "-" },
             { label: "索引时间", value: recording.indexed_at ? new Date(recording.indexed_at).toLocaleString("zh-CN") : "-" },

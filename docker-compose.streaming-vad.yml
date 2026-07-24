@@ -1,0 +1,21 @@
+# Optional local ONNX streaming-VAD overlay.
+#
+# Usage:
+#   SILERO_VAD_MODEL_FILE=/absolute/path/silero_vad.onnx \
+#     docker compose \
+#       -f docker-compose.yml \
+#       -f docker-compose.streaming-vad.yml \
+#       --profile mock up -d
+#
+# This is independent from ADAPTER_VAD_MODE, which is the batch HTTP adapter.
+
+services:
+  backend:
+    environment:
+      ADAPTER_STREAMING_VAD_MODE: real
+      SILERO_VAD_MODEL_PATH: /models/silero_vad.onnx
+    volumes:
+      - type: bind
+        source: ${SILERO_VAD_MODEL_FILE:-./models/silero_vad.onnx}
+        target: /models/silero_vad.onnx
+        read_only: true

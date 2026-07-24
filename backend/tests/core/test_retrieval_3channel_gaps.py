@@ -84,9 +84,7 @@ class _EmptyGraphStore:
 
 
 class _StubVectorStore:
-    async def search_chunks(
-        self, *args: object, **kwargs: object
-    ) -> list[Any]:
+    async def search_chunks(self, *args: object, **kwargs: object) -> list[Any]:
         return []
 
 
@@ -184,7 +182,7 @@ async def test_lookup_chunks_returns_empty_when_no_factory_or_index(
         enable_audio_channel=False,
     )
     # Both _session_factory and _file_index are None.
-    out = await retriever._lookup_chunks([1, 2, 3])
+    out = await retriever._lookup_chunks([1, 2, 3], tenant_id="t1")
     assert out == {}
 
 
@@ -192,25 +190,33 @@ async def test_lookup_chunks_returns_empty_when_no_factory_or_index(
 @pytest.mark.asyncio
 async def test_lookup_chunks_file_index_path(tmp_working_dir: Any) -> None:
     """Cover _lookup_chunks_file_index (lines 593-616) using a real FileIndex."""
-    from audio_graphy.adapters.mock_vad import MockVADAdapter
+    from audio_graphy.adapters.bundle import AdapterBundle
     from audio_graphy.adapters.mock_asr import MockASRAdapter
     from audio_graphy.adapters.mock_embed import MockEmbedAdapter
     from audio_graphy.adapters.mock_llm import MockLLMAdapter
-    from audio_graphy.adapters.bundle import AdapterBundle
+    from audio_graphy.adapters.mock_vad import MockVADAdapter
     from audio_graphy.storage.file_index import FileIndex
 
     # Build a real FileIndex in the working dir.
     file_index = FileIndex(tmp_working_dir)
 
     # Seed kv_store_text_chunks and kv_store_video_path.
-    await file_index.set("kv_store_text_chunks", "rec_1_chunk_42", {
-        "recording_id": 1,
-        "segment_ids": [10],
-        "text": "hello world",
-    })
-    await file_index.set("kv_store_video_path", "1", {
-        "recorded_at": "2026-07-10T12:00:00+00:00",
-    })
+    await file_index.set(
+        "kv_store_text_chunks",
+        "rec_1_chunk_42",
+        {
+            "recording_id": 1,
+            "segment_ids": [10],
+            "text": "hello world",
+        },
+    )
+    await file_index.set(
+        "kv_store_video_path",
+        "1",
+        {
+            "recorded_at": "2026-07-10T12:00:00+00:00",
+        },
+    )
 
     bundle = AdapterBundle(
         vad=MockVADAdapter(),
@@ -226,7 +232,7 @@ async def test_lookup_chunks_file_index_path(tmp_working_dir: Any) -> None:
         enable_audio_channel=False,
         file_index=file_index,
     )
-    out = await retriever._lookup_chunks([42])
+    out = await retriever._lookup_chunks([42], tenant_id="default")
     assert isinstance(out, dict)
 
 
@@ -265,9 +271,18 @@ class _FakeAudioVectorStore:
         *,
         top_k: int = 10,
     ) -> list[Any]:
-        from audio_graphy.core.types import VectorSearchHit
+        from audio_graphy.storage.mysql_audio_vector import AudioVectorSearchHit
 
-        return [VectorSearchHit(id=sid, score=score) for sid, score in self._hits]
+        return [
+            AudioVectorSearchHit(
+                vector_id=sid,
+                recording_id=1,
+                segment_id=sid,
+                chunk_id=sid,
+                score=score,
+            )
+            for sid, score in self._hits
+        ]
 
 
 class _FakeAudioEmbed:
@@ -325,8 +340,6 @@ async def test_audio_channel_full_path_returns_hits(
         enable_audio_channel=True,
         audio_vector_store=_FakeAudioVectorStore(hits=[(999, 0.9)]),
     )
-    result = await retriever.retrieve(
-        "query", tenant_id="t1", audio_query_path=str(audio_file)
-    )
+    result = await retriever.retrieve("query", tenant_id="t1", audio_query_path=str(audio_file))
     # Audio hits recorded (even without chunk text details).
     assert result is not None

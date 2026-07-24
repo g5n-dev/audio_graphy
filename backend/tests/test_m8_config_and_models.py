@@ -146,7 +146,11 @@ class TestStreamingBundleFactory:
         get_settings.cache_clear()
         s = get_settings()
         pair = await acquire_streaming_adapters_for_session(
-            s, tenant_id="t1", session_id="s1", hotwords=(), pool=None,
+            s,
+            tenant_id="t1",
+            session_id="s1",
+            hotwords=(),
+            pool=None,
         )
         assert pair.vad is not None
         assert pair.asr is not None
@@ -154,7 +158,8 @@ class TestStreamingBundleFactory:
 
     @pytest.mark.asyncio
     async def test_acquire_real_without_pool_raises(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         from audio_graphy.adapters.bundle import (
             acquire_streaming_adapters_for_session,
@@ -168,7 +173,11 @@ class TestStreamingBundleFactory:
         s = get_settings()
         with pytest.raises(RuntimeError, match="FunASRConnectionPool"):
             await acquire_streaming_adapters_for_session(
-                s, tenant_id="t1", session_id="s1", hotwords=(), pool=None,
+                s,
+                tenant_id="t1",
+                session_id="s1",
+                hotwords=(),
+                pool=None,
             )
         get_settings.cache_clear()
 
@@ -191,11 +200,23 @@ class TestStreamingSessionORM:
 
         cols = {c.name for c in StreamingSession.__table__.columns}
         expected = {
-            "id", "tenant_id", "session_id", "recording_id",
-            "user_id", "started_at", "ended_at", "last_chunk_at",
-            "seg_confirmed_count", "seg_realtime_count", "bytes_in",
-            "error_count", "end_reason", "consent_token_hash",
-            "stats", "created_at", "updated_at",
+            "id",
+            "tenant_id",
+            "session_id",
+            "recording_id",
+            "user_id",
+            "started_at",
+            "ended_at",
+            "last_chunk_at",
+            "seg_confirmed_count",
+            "seg_realtime_count",
+            "bytes_in",
+            "error_count",
+            "end_reason",
+            "consent_token_hash",
+            "stats",
+            "created_at",
+            "updated_at",
         }
         assert expected.issubset(cols)
 
@@ -203,7 +224,8 @@ class TestStreamingSessionORM:
         from audio_graphy.models.streaming_session import StreamingSession
 
         constraint_names = [
-            c.name for c in StreamingSession.__table__.constraints
+            c.name
+            for c in StreamingSession.__table__.constraints
             if hasattr(c, "name") and c.name and "ux" in c.name
         ]
         assert any("session_id" in n for n in constraint_names)
@@ -242,7 +264,9 @@ class TestAlembicMigration:
 
         migration_path = (
             Path(__file__).resolve().parents[1]
-            / "alembic" / "versions" / "0009_m8_streaming_init.py"
+            / "alembic"
+            / "versions"
+            / "0009_m8_streaming_init.py"
         )
         source = migration_path.read_text(encoding="utf-8")
 
@@ -250,11 +274,14 @@ class TestAlembicMigration:
         import re
 
         rev_match = re.search(
-            r"^revision\s*(?::\s*str)?\s*=\s*['\"]([^'\"]+)['\"]", source, re.MULTILINE,
+            r"^revision\s*(?::\s*str)?\s*=\s*['\"]([^'\"]+)['\"]",
+            source,
+            re.MULTILINE,
         )
         down_match = re.search(
             r"^down_revision\s*(?::\s*str\s*\|\s*None)?\s*=\s*['\"]([^'\"]+)['\"]",
-            source, re.MULTILINE,
+            source,
+            re.MULTILINE,
         )
         assert rev_match is not None, "revision = '...' not found"
         assert down_match is not None, "down_revision = '...' not found"
@@ -277,7 +304,9 @@ class TestAlembicMigration:
 
         migration_path = (
             Path(__file__).resolve().parents[1]
-            / "alembic" / "versions" / "0009_m8_streaming_init.py"
+            / "alembic"
+            / "versions"
+            / "0009_m8_streaming_init.py"
         )
 
         # Inject stub alembic module with op.
@@ -293,7 +322,8 @@ class TestAlembicMigration:
             sys.modules["alembic.op"] = fake_op
 
         spec = importlib.util.spec_from_file_location(
-            "m8_streaming_init_check", migration_path,
+            "m8_streaming_init_check",
+            migration_path,
         )
         assert spec is not None and spec.loader is not None
         mod = importlib.util.module_from_spec(spec)
