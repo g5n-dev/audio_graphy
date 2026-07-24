@@ -98,7 +98,7 @@ class RetentionEnforcer:
         audit: AuditWriter,
         graph_store_factory: Callable[
             [str],
-            NetworkXGraphStore | None | Awaitable[NetworkXGraphStore | None],
+            NetworkXGraphStore | Awaitable[NetworkXGraphStore | None] | None,
         ],
         *,
         retention_days: int | None = None,
@@ -108,7 +108,7 @@ class RetentionEnforcer:
         working_dir: Path | None = None,
         file_index_factory: Callable[
             [str],
-            FileIndex | None | Awaitable[FileIndex | None],
+            FileIndex | Awaitable[FileIndex | None] | None,
         ]
         | None = None,
     ) -> None:
