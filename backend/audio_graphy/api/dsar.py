@@ -24,10 +24,13 @@ See: docs/m6-architecture.md §3.5, docs/m6-prd.md §4.4.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import csv
+import inspect
 import io
 import json
+import logging
 import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -35,7 +38,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from audio_graphy.api.deps import get_current_user, get_db, get_session_factory
@@ -55,7 +58,12 @@ from audio_graphy.schemas.dsar import (
     DSARExportRequest,
     DSARExportResponse,
 )
+from audio_graphy.services.reception_erasure import (
+    erase_reception_artifacts,
+    invalidate_receptions_for_recording,
+)
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/dsar", tags=["DSAR (PIPL §14.3)"])
 
 
@@ -76,6 +84,53 @@ def _get_audio_crypto(request: Request) -> AudioCrypto | None:
 def _get_audit_writer(request: Request) -> AuditWriter | None:
     """Fetch the AuditWriter from app.state (None if not configured)."""
     return getattr(request.app.state, "audit_writer", None)
+
+
+def _remove_graph_refs_after_erase(
+    request: Request,
+    graph_store: Any,
+    recording_id: int,
+    tenant_id: str,
+) -> None:
+    """Remove a recording's graph references with an advanced-graph fallback.
+
+    Lifespan-managed deployments expose the configured ``RetentionEnforcer``;
+    reusing it preserves the bi-temporal cascade when that feature is enabled.
+    Tests and deployments without encryption may not create an enforcer, so the
+    baseline GraphML cleanup is kept here as a dependency-free fallback.
+    """
+    retention_enforcer = getattr(request.app.state, "retention_enforcer", None)
+    if retention_enforcer is not None:
+        retention_enforcer._remove_graph_refs(
+            graph_store,
+            recording_id,
+            tenant_id=tenant_id,
+        )
+        return
+
+    from audio_graphy.core.types import _list_to_str, _str_to_list
+
+    graph = graph_store.graph
+    recording_id_text = str(recording_id)
+    nodes_to_remove: list[str] = []
+    for node_id, attrs in list(graph.nodes(data=True)):
+        recording_ids_raw = attrs.get("recording_ids")
+        if recording_ids_raw is None:
+            continue
+        recording_ids = _str_to_list(str(recording_ids_raw))
+        if recording_id_text not in recording_ids:
+            continue
+        if len(recording_ids) <= 1:
+            nodes_to_remove.append(node_id)
+        else:
+            graph.nodes[node_id]["recording_ids"] = _list_to_str(
+                [item for item in recording_ids if item != recording_id_text]
+            )
+
+    graph.remove_nodes_from(nodes_to_remove)
+    invalidate_projection = getattr(graph_store, "invalidate_path_projection", None)
+    if callable(invalidate_projection):
+        invalidate_projection()
 
 
 async def _write_audit(
@@ -126,9 +181,73 @@ async def _write_audit(
         await session.commit()
 
 
-async def _fetch_recording(
-    session: AsyncSession, recording_id: int, tenant_id: str
-) -> Recording:
+async def _get_or_load_graph_store(request: Request, tenant_id: str) -> Any:
+    """Resolve a cached graph store or cold-load the tenant's GraphML."""
+    configured_factory = getattr(
+        request.app.state,
+        "graph_store_factory",
+        None,
+    )
+    if callable(configured_factory):
+        result = configured_factory(tenant_id)
+        store = await result if inspect.isawaitable(result) else result
+        if store is not None:
+            return store
+
+    graph_stores: dict[str, Any] | None = getattr(
+        request.app.state,
+        "graph_stores",
+        None,
+    )
+    if graph_stores is None:
+        graph_stores = {}
+        request.app.state.graph_stores = graph_stores
+
+    store = graph_stores.get(tenant_id)
+    if store is not None:
+        if not bool(getattr(store, "_loaded", True)):
+            await store.load()
+        return store
+
+    from audio_graphy.storage.graph_networkx import NetworkXGraphStore
+
+    store = NetworkXGraphStore(
+        Path(request.app.state.settings.working_dir),
+        tenant_id=tenant_id,
+    )
+    graph_stores[tenant_id] = store
+    try:
+        await store.load()
+    except Exception:
+        if graph_stores.get(tenant_id) is store:
+            graph_stores.pop(tenant_id, None)
+        raise
+    return store
+
+
+def _get_or_create_file_index(request: Request, tenant_id: str) -> Any:
+    """Resolve the tenant FileIndex so DSAR also erases JSON/cache copies."""
+    file_indexes: dict[str, Any] | None = getattr(
+        request.app.state,
+        "file_indexes",
+        None,
+    )
+    if file_indexes is None:
+        file_indexes = {}
+        request.app.state.file_indexes = file_indexes
+    index = file_indexes.get(tenant_id)
+    if index is None:
+        from audio_graphy.storage.file_index import FileIndex
+
+        index = FileIndex(
+            Path(request.app.state.settings.working_dir),
+            tenant_id=tenant_id,
+        )
+        file_indexes[tenant_id] = index
+    return index
+
+
+async def _fetch_recording(session: AsyncSession, recording_id: int, tenant_id: str) -> Recording:
     """Async-safe fetch + 404 on miss."""
     result = await session.execute(
         select(Recording).where(
@@ -254,25 +373,75 @@ async def erase_recording(
         after={},
     )
 
-    # Audio file (encrypted if present, else raw path).
-    audio_target = (
-        rec.audio_encrypted_path if rec.audio_encrypted_path else str(rec.path)
+    # GraphML is a durable PII-bearing store, not a best-effort cache. Scrub
+    # and flush it before deleting the DB row so persistence failures remain
+    # visible and retryable through the API.
+    graph_store = await _get_or_load_graph_store(request, user.tenant_id)
+    _remove_graph_refs_after_erase(
+        request,
+        graph_store,
+        recording_id,
+        user.tenant_id,
     )
-    if audio_target:
-        audio_path = Path(audio_target)
+    await graph_store.save()
+
+    # FileIndex contains transcript/chunk copies and an opaque LLM cache.
+    # Clear it before DB deletion so checkpoint failures leave a retryable
+    # source row instead of falsely reporting a complete erasure.
+    file_index = _get_or_create_file_index(request, user.tenant_id)
+    await file_index.erase_recording(recording_id)
+
+    # Both paths may coexist while the indexing pipeline still needs
+    # plaintext. DSAR must erase both, not choose one and strand the other.
+    audio_targets = {Path(path) for path in (str(rec.path), rec.audio_encrypted_path) if path}
+    for audio_path in audio_targets:
         if audio_path.exists():
             # Audit already records intent; surface nothing to client.
-            with contextlib.suppress(OSError):
+            try:
                 audio_path.unlink()
+            except OSError as exc:
+                raise OSError(f"DSAR could not unlink audio for recording {recording_id}") from exc
 
-    # DB rows — explicit deletes (mirror RetentionEnforcer strategy).
-    from sqlalchemy import delete
-
+    # DB rows — explicit deletes (mirror RetentionEnforcer strategy). Any
+    # reception derived from this source is invalidated in the same commit so
+    # stale transcript labels and timeline coordinates cannot survive DSAR.
     async with factory() as s:
-        await s.execute(delete(TagFact).where(TagFact.recording_id == recording_id))
-        await s.execute(delete(Chunk).where(Chunk.recording_id == recording_id))
-        await s.execute(delete(Segment).where(Segment.recording_id == recording_id))
-        await s.execute(delete(Recording).where(Recording.id == recording_id))
+        reception_artifacts = await invalidate_receptions_for_recording(
+            s,
+            tenant_id=user.tenant_id,
+            recording_id=recording_id,
+            actor=f"dsar:user:{user.id}",
+        )
+        await s.execute(
+            delete(TagFact).where(
+                TagFact.tenant_id == user.tenant_id,
+                TagFact.recording_id == recording_id,
+            )
+        )
+        await s.execute(
+            delete(Chunk).where(
+                Chunk.tenant_id == user.tenant_id,
+                Chunk.recording_id == recording_id,
+            )
+        )
+        await s.execute(
+            delete(Segment).where(
+                Segment.tenant_id == user.tenant_id,
+                Segment.recording_id == recording_id,
+            )
+        )
+        await s.execute(
+            delete(Recording).where(
+                Recording.tenant_id == user.tenant_id,
+                Recording.id == recording_id,
+            )
+        )
+        if reception_artifacts:
+            await asyncio.to_thread(
+                erase_reception_artifacts,
+                reception_artifacts,
+                allowed_root=Path(request.app.state.settings.working_dir),
+            )
         await s.commit()
 
     # M7 — voiceprint cascade (must run AFTER recordings delete so FK CASCADE
@@ -280,21 +449,14 @@ async def erase_recording(
     # speaker_node aggregation decrement).
     try:
         await _cascade_voiceprint_after_erase(factory, recording_id, user.tenant_id)
-    except Exception:
+    except Exception as exc:
         # Voiceprint cascade is best-effort — the main erase has succeeded.
-        pass
-
-    # GraphML — best-effort.
-    graph_stores: dict[str, Any] | None = getattr(request.app.state, "graph_stores", None)
-    if graph_stores is not None:
-        gs = graph_stores.get(user.tenant_id)
-        if gs is not None:
-            try:
-                from audio_graphy.core.retention import RetentionEnforcer
-
-                RetentionEnforcer._remove_graph_refs(gs, recording_id)
-            except Exception:
-                pass
+        logger.warning(
+            "Voiceprint cascade failed for recording %d tenant=%s: %s",
+            recording_id,
+            user.tenant_id,
+            exc,
+        )
 
     return DSAREraseResponse(recording_id=recording_id, deleted=True)
 
@@ -324,9 +486,7 @@ async def list_audit_logs(
 
     stmt = select(AuditLog).where(AuditLog.tenant_id == user.tenant_id)
     count_stmt = (
-        select(func.count())
-        .select_from(AuditLog)
-        .where(AuditLog.tenant_id == user.tenant_id)
+        select(func.count()).select_from(AuditLog).where(AuditLog.tenant_id == user.tenant_id)
     )
     if recording_id is not None:
         like = f"recording:{recording_id}"
@@ -370,17 +530,11 @@ async def _build_export_bundle(
 ) -> dict[str, Any]:
     """Collect all rows + audio bytes for one recording."""
     async with factory() as s:
-        seg_result = await s.execute(
-            select(Segment).where(Segment.recording_id == rec.id)
-        )
+        seg_result = await s.execute(select(Segment).where(Segment.recording_id == rec.id))
         segments = list(seg_result.scalars().all())
-        chunk_result = await s.execute(
-            select(Chunk).where(Chunk.recording_id == rec.id)
-        )
+        chunk_result = await s.execute(select(Chunk).where(Chunk.recording_id == rec.id))
         chunks = list(chunk_result.scalars().all())
-        tag_result = await s.execute(
-            select(TagFact).where(TagFact.recording_id == rec.id)
-        )
+        tag_result = await s.execute(select(TagFact).where(TagFact.recording_id == rec.id))
         tags = list(tag_result.scalars().all())
         audit_result = await s.execute(
             select(AuditLog)
@@ -406,9 +560,7 @@ async def _build_export_bundle(
                         "voiceprint_id": vp.voiceprint_id,
                         "speaker_entity_id": vp.speaker_entity_id,
                         "duration_sec": vp.duration_sec,
-                        "created_at": vp.created_at.isoformat()
-                        if vp.created_at
-                        else None,
+                        "created_at": vp.created_at.isoformat() if vp.created_at else None,
                     }
                 )
         except Exception:
@@ -477,9 +629,7 @@ def _render_export_zip(
         if audio_bytes is not None:
             zf.writestr(f"{prefix}/audio/recording.wav", audio_bytes)
 
-        zf.writestr(
-            f"{prefix}/transcript/raw.txt", bundle.get("raw_transcript", "") or ""
-        )
+        zf.writestr(f"{prefix}/transcript/raw.txt", bundle.get("raw_transcript", "") or "")
         zf.writestr(
             f"{prefix}/transcript/scrubbed.txt",
             bundle.get("scrubbed_transcript", "") or "",
@@ -546,9 +696,7 @@ def _render_export_zip(
         # Audit history CSV.
         csv_buf = io.StringIO()
         writer = csv.writer(csv_buf)
-        writer.writerow(
-            ["id", "user_id", "action", "target", "occurred_at", "before", "after"]
-        )
+        writer.writerow(["id", "user_id", "action", "target", "occurred_at", "before", "after"])
         for row in bundle["audit_rows"]:
             writer.writerow(
                 [

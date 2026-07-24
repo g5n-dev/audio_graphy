@@ -66,12 +66,8 @@ class EvalRunORM(TenantScopedBase):
         String(36), primary_key=True, comment="UUID4 hex"
     )
     gold_set_path: Mapped[str] = mapped_column(String(512), nullable=False)
-    pipeline: Mapped[str] = mapped_column(
-        String(32), nullable=False, comment="mock|rag"
-    )
-    judge_enabled: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=True
-    )
+    pipeline: Mapped[str] = mapped_column(String(32), nullable=False, comment="mock|rag")
+    judge_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     k_value: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
     status: Mapped[str] = mapped_column(
         String(16),
@@ -85,17 +81,11 @@ class EvalRunORM(TenantScopedBase):
     report_json_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    finished_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
-        CheckConstraint(
-            f"pipeline IN {_VALID_PIPELINE}", name="ck_eval_runs_pipeline"
-        ),
-        CheckConstraint(
-            f"status IN {_VALID_STATUS}", name="ck_eval_runs_status"
-        ),
+        CheckConstraint(f"pipeline IN {_VALID_PIPELINE}", name="ck_eval_runs_pipeline"),
+        CheckConstraint(f"status IN {_VALID_STATUS}", name="ck_eval_runs_status"),
         Index("ix_eval_runs_tenant_status", "tenant_id", "status"),
         Index("ix_eval_runs_started_at", "started_at"),
     )

@@ -83,9 +83,7 @@ class LLMJudge:
         resp_text = await self._call_llm(prompt, cache_key=cache_key)
         return self._parse_fact_list(resp_text)
 
-    async def judge_faithfulness(
-        self, context: str, facts: list[str]
-    ) -> list[bool]:
+    async def judge_faithfulness(self, context: str, facts: list[str]) -> list[bool]:
         """Judge each fact against ``context``.
 
         Returns a list of bools aligned to ``facts`` (pad/truncate to len).
@@ -204,13 +202,15 @@ class LLMJudge:
         if len(out) < expected_count:
             logger.warning(
                 "judge_faithfulness returned %d verdicts, expected %d — padding False",
-                len(out), expected_count,
+                len(out),
+                expected_count,
             )
             out.extend([False] * (expected_count - len(out)))
         elif len(out) > expected_count:
             logger.warning(
                 "judge_faithfulness returned %d verdicts, expected %d — truncating",
-                len(out), expected_count,
+                len(out),
+                expected_count,
             )
             out = out[:expected_count]
         return out
@@ -238,7 +238,8 @@ class LLMJudge:
         if nearest != value:
             logger.warning(
                 "judge_relevance %g not in {0, 0.5, 1} — snapping to %g",
-                value, nearest,
+                value,
+                nearest,
             )
         return nearest
 

@@ -177,12 +177,8 @@ def diarization_der(
     ref_active_frames = 0
 
     for frame_idx in range(n_frames):
-        ref_speakers = {
-            spk for spk, frames in ref_per_frame.items() if frame_idx in frames
-        }
-        hyp_speakers_raw = {
-            spk for spk, frames in hyp_per_frame.items() if frame_idx in frames
-        }
+        ref_speakers = {spk for spk, frames in ref_per_frame.items() if frame_idx in frames}
+        hyp_speakers_raw = {spk for spk, frames in hyp_per_frame.items() if frame_idx in frames}
         # Map hyp speakers through the inverse mapping (hyp → ref).
         hyp_speakers_mapped = set()
         for h_spk in hyp_speakers_raw:
@@ -212,7 +208,9 @@ def diarization_der(
     false_alarm_sec = false_alarm_frames * _FRAME_SEC
     confused_sec = confused_frames * _FRAME_SEC
 
-    der = (missed_sec + false_alarm_sec + confused_sec) / total_ref_sec if total_ref_sec > 0 else 0.0
+    der = (
+        (missed_sec + false_alarm_sec + confused_sec) / total_ref_sec if total_ref_sec > 0 else 0.0
+    )
 
     return DERResult(
         der=der,
@@ -300,10 +298,7 @@ def _coerce_segments(
     segments: Sequence[DiarizationSegment],
 ) -> list[DiarizationSegment]:
     """Filter out zero-or-negative-length segments."""
-    return [
-        s for s in segments
-        if s.end_sec > s.start_sec and s.speaker_id
-    ]
+    return [s for s in segments if s.end_sec > s.start_sec and s.speaker_id]
 
 
 def _frames_per_speaker(

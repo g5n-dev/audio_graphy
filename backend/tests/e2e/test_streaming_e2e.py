@@ -65,8 +65,7 @@ class _FakeRecomputeService:
         segment_ids: list[int],
     ) -> _FakeBatchResult:
         self.calls.append(
-            {"tenant_id": tenant_id, "recording_id": recording_id,
-             "segment_ids": list(segment_ids)}
+            {"tenant_id": tenant_id, "recording_id": recording_id, "segment_ids": list(segment_ids)}
         )
         return _FakeBatchResult(tags_written=len(segment_ids))
 
@@ -137,6 +136,7 @@ def _make_app(
 
     fake_svc = _FakeRecomputeService()
     if with_tag_scheduler:
+
         def _factory(tid: str, rid: int) -> StreamingTagScheduler:
             return StreamingTagScheduler(
                 fake_svc,  # type: ignore[arg-type]
@@ -184,12 +184,16 @@ class _InitOnEnter:
 
     def __enter__(self) -> Any:
         ws = self._ws_cm.__enter__()
-        ws.send_text(json.dumps({
-            "type": "init",
-            "session_id": self._session_id,
-            "recording_id": 1,
-            "consent_token": "yes",
-        }))
+        ws.send_text(
+            json.dumps(
+                {
+                    "type": "init",
+                    "session_id": self._session_id,
+                    "recording_id": 1,
+                    "consent_token": "yes",
+                }
+            )
+        )
         first = json.loads(ws.receive_text())
         assert first["type"] == "session_opened"
         return ws
@@ -278,17 +282,27 @@ class TestFullChainEventFlow:
         async def _seed() -> None:
             await store.upsert_node(
                 GraphNode(
-                    entity_id="客户A", name="客户A", type="客户", description="",
-                    source_ids=["1_1"], recording_ids=[1],
+                    entity_id="客户A",
+                    name="客户A",
+                    type="客户",
+                    description="",
+                    source_ids=["1_1"],
+                    recording_ids=[1],
                 )
             )
 
         asyncio.run(_seed())
 
         with client, _open_session(client, app, "e2e-4") as ws:
-            ws.send_text(json.dumps({
-                "type": "query", "query": "客户A 怎么样", "top_k": 5,
-            }))
+            ws.send_text(
+                json.dumps(
+                    {
+                        "type": "query",
+                        "query": "客户A 怎么样",
+                        "top_k": 5,
+                    }
+                )
+            )
             events = _drain_until(ws, {"retrieval_result"}, max_msgs=5)
         results = [e for e in events if e.get("type") == "retrieval_result"]
         assert results, f"no retrieval_result in {[e.get('type') for e in events]}"
@@ -301,30 +315,49 @@ class TestFullChainEventFlow:
         async def _seed() -> None:
             await store.upsert_node(
                 GraphNode(
-                    entity_id="客户A", name="客户A", type="客户", description="",
-                    source_ids=["1_1"], recording_ids=[1],
+                    entity_id="客户A",
+                    name="客户A",
+                    type="客户",
+                    description="",
+                    source_ids=["1_1"],
+                    recording_ids=[1],
                 )
             )
             await store.upsert_node(
                 GraphNode(
-                    entity_id="UNI-V", name="UNI-V", type="车型", description="",
-                    source_ids=["1_3"], recording_ids=[1],
+                    entity_id="UNI-V",
+                    name="UNI-V",
+                    type="车型",
+                    description="",
+                    source_ids=["1_3"],
+                    recording_ids=[1],
                 )
             )
             await store.upsert_edge(
                 GraphEdge(
-                    source="客户A", target="UNI-V", relation="听说", weight=1.0,
-                    confidence="AMBIGUOUS", confidence_score=None, source_ids=["1_3"],
+                    source="客户A",
+                    target="UNI-V",
+                    relation="听说",
+                    weight=1.0,
+                    confidence="AMBIGUOUS",
+                    confidence_score=None,
+                    source_ids=["1_3"],
                 )
             )
 
         asyncio.run(_seed())
 
         with client, _open_session(client, app, "e2e-5") as ws:
-            ws.send_text(json.dumps({
-                "type": "query", "query": "客户A", "top_k": 10,
-                "min_confidence": "EXTRACTED",
-            }))
+            ws.send_text(
+                json.dumps(
+                    {
+                        "type": "query",
+                        "query": "客户A",
+                        "top_k": 10,
+                        "min_confidence": "EXTRACTED",
+                    }
+                )
+            )
             events = _drain_until(ws, {"retrieval_result"}, max_msgs=5)
         result = next(e for e in events if e.get("type") == "retrieval_result")
         edge_cands = [c for c in result["result"]["candidates"] if c["depth"] == 1]
@@ -377,9 +410,7 @@ class TestFullChainEventFlow:
 def _sample(name: str, labels: dict[str, str]) -> float:
     for metric in m.REGISTRY.collect():
         for sample in metric.samples:
-            if sample.name == name and all(
-                sample.labels.get(k) == v for k, v in labels.items()
-            ):
+            if sample.name == name and all(sample.labels.get(k) == v for k, v in labels.items()):
                 return float(sample.value)
     return 0.0
 
@@ -514,19 +545,21 @@ class TestConcurrentSessionIsolation:
             for tenant, sid in (("t1", "ten-1"), ("t2", "ten-2")):
                 token = mgr.create_access_token(user_id=1, tenant_id=tenant, role="agent")
                 with client.websocket_connect(f"/ws/stream?token={token}") as ws:
-                    ws.send_text(json.dumps({
-                        "type": "init", "session_id": sid,
-                        "recording_id": 1, "consent_token": "yes",
-                    }))
+                    ws.send_text(
+                        json.dumps(
+                            {
+                                "type": "init",
+                                "session_id": sid,
+                                "recording_id": 1,
+                                "consent_token": "yes",
+                            }
+                        )
+                    )
                     json.loads(ws.receive_text())
                     ws.send_text(json.dumps({"type": "finalize"}))
                     _drain_until(ws, {"session_closed"})
-        assert _sample(
-            "audiography_streaming_sessions_total", {"tenant_id": "t1"}
-        ) == before_a + 1
-        assert _sample(
-            "audiography_streaming_sessions_total", {"tenant_id": "t2"}
-        ) == before_b + 1
+        assert _sample("audiography_streaming_sessions_total", {"tenant_id": "t1"}) == before_a + 1
+        assert _sample("audiography_streaming_sessions_total", {"tenant_id": "t2"}) == before_b + 1
 
 
 # ============================================================
@@ -547,7 +580,11 @@ class TestStreamingDisabled:
         if settings.enable_streaming:
             app.include_router(ws_router)
         client = TestClient(app, raise_server_exceptions=False)
-        with client, pytest.raises(WebSocketDisconnect), client.websocket_connect("/ws/stream?token=x"):
+        with (
+            client,
+            pytest.raises(WebSocketDisconnect),
+            client.websocket_connect("/ws/stream?token=x"),
+        ):
             pass
 
     def test_main_app_has_no_ws_route_by_default(self) -> None:
@@ -575,13 +612,19 @@ class TestPipelineChain:
 
         # Feed confirmed segments through the chunker.
         emitted: list[ChunkRecord] = []
-        for i, text in enumerate([
-            "客户A 询问了 长安CS75 的价格。" * 5,
-            "坐席推荐了金融方案。" * 5,
-        ]):
+        for i, text in enumerate(
+            [
+                "客户A 询问了 长安CS75 的价格。" * 5,
+                "坐席推荐了金融方案。" * 5,
+            ]
+        ):
             seg = SegmentRecord(
-                idx=i, start_sec=float(i), end_sec=float(i + 1),
-                transcript=text, speaker=None, vad_conf=1.0,
+                idx=i,
+                start_sec=float(i),
+                end_sec=float(i + 1),
+                transcript=text,
+                speaker=None,
+                vad_conf=1.0,
             )
             chunk = chunker.push_segment(seg)
             if chunk is not None:
@@ -595,26 +638,40 @@ class TestPipelineChain:
         async with rwlock.write_lock():
             await store.upsert_node(
                 GraphNode(
-                    entity_id="客户A", name="客户A", type="客户", description="",
-                    source_ids=[f"1_{emitted[0].segment_ids[0]}"], recording_ids=[1],
+                    entity_id="客户A",
+                    name="客户A",
+                    type="客户",
+                    description="",
+                    source_ids=[f"1_{emitted[0].segment_ids[0]}"],
+                    recording_ids=[1],
                 )
             )
             await store.upsert_node(
                 GraphNode(
-                    entity_id="长安CS75", name="长安CS75", type="车型", description="",
-                    source_ids=["1_0"], recording_ids=[1],
+                    entity_id="长安CS75",
+                    name="长安CS75",
+                    type="车型",
+                    description="",
+                    source_ids=["1_0"],
+                    recording_ids=[1],
                 )
             )
             await store.upsert_edge(
                 GraphEdge(
-                    source="客户A", target="长安CS75", relation="询问", weight=2.0,
-                    confidence="EXTRACTED", confidence_score=1.0, source_ids=["1_0"],
+                    source="客户A",
+                    target="长安CS75",
+                    relation="询问",
+                    weight=2.0,
+                    confidence="EXTRACTED",
+                    confidence_score=1.0,
+                    source_ids=["1_0"],
                 )
             )
 
         # Retrieval over the just-updated subgraph.
         retriever = StreamingRetriever(
-            lambda _t: store, rwlock,
+            lambda _t: store,
+            rwlock,
             _FakeBundle(weak_llm=_KeywordLLM("客户A")),  # type: ignore[arg-type]
         )
         result = await retriever.retrieve("客户A 问了什么", tenant_id="t1", top_k=5)
@@ -656,16 +713,17 @@ class TestPipelineChain:
         # Materialise SegmentRecords from the confirmed ASR text and feed the chunker.
         segments = [
             SegmentRecord(
-                idx=i, start_sec=float(i), end_sec=float(i + 1),
-                transcript=e["text"], speaker=None, vad_conf=1.0,
+                idx=i,
+                start_sec=float(i),
+                end_sec=float(i + 1),
+                transcript=e["text"],
+                speaker=None,
+                vad_conf=1.0,
             )
             for i, e in enumerate(confirmed)
         ]
         chunker = StreamingChunker(token_budget=10)
-        chunks = [
-            c for seg in segments
-            if (c := chunker.push_segment(seg)) is not None
-        ]
+        chunks = [c for seg in segments if (c := chunker.push_segment(seg)) is not None]
         tail = chunker.flush()
         if tail is not None:
             chunks.append(tail)

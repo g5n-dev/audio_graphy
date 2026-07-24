@@ -312,7 +312,7 @@ class StreamingSileroVADAdapter:
                 url=_redact(self._model_path),
             )
         try:
-            import onnxruntime as ort  # type: ignore[import-not-found]  # lazy import
+            import onnxruntime as ort  # lazy import
         except ImportError as exc:
             raise StreamingVADModelLoadError(
                 f"onnxruntime not installed: {exc}",

@@ -172,18 +172,18 @@ class TestIngestionService:
         with pytest.raises(RecordingNotFoundError):
             await svc.get_recording(seeded_recording.id, "byd")
 
-    async def test_get_recording_agent_filter(
+    async def test_get_recording_agent_user_id(
         self, session_factory: async_sessionmaker[AsyncSession], seeded_recording: Recording
     ) -> None:
-        """get_recording with agent_filter enforces agent isolation."""
+        """get_recording with stable agent user ID enforces agent isolation."""
 
         svc = IngestionService(session_factory)
         # Correct agent → found
-        rec = await svc.get_recording(seeded_recording.id, TENANT, agent_filter="张敏")
+        rec = await svc.get_recording(seeded_recording.id, TENANT, agent_user_id=41)
         assert rec is not None
         # Wrong agent → not found
         with pytest.raises(RecordingNotFoundError):
-            await svc.get_recording(seeded_recording.id, TENANT, agent_filter="wrong")
+            await svc.get_recording(seeded_recording.id, TENANT, agent_user_id=42)
 
     async def test_get_recording_detail(
         self, session_factory: async_sessionmaker[AsyncSession], seeded_recording: Recording

@@ -36,7 +36,6 @@ from audio_graphy.core.streaming_rwlock import StreamingRWLock
 from audio_graphy.core.types import GraphEdge, GraphNode
 from audio_graphy.storage.graph_networkx import NetworkXGraphStore
 
-
 # ============================================================
 # Helpers
 # ============================================================
@@ -151,7 +150,8 @@ class TestL6LowDegreeMerge:
         assert pairs == []
 
     def test_l6_select_candidates_strategy_l6_merge_emits_source_only(
-        self, svc: CompressionService,
+        self,
+        svc: CompressionService,
     ) -> None:
         """The flat ``select_candidates(strategy="l6_merge")`` adapter emits
         the SOURCE side only (canonicals are not soft-delete targets)."""
@@ -178,8 +178,11 @@ class TestL6LowDegreeMerge:
         ]
         sink.seed(nodes=nodes, edges=[_edge("Alpha", "Beta")])
         svc_local = CompressionService(
-            sink=sink, bt_service=bt, tenant_id="t1",
-            degree_threshold=1, fuzzy_token_ratio=85,
+            sink=sink,
+            bt_service=bt,
+            tenant_id="t1",
+            degree_threshold=1,
+            fuzzy_token_ratio=85,
         )
         cands = svc_local.select_candidates(nodes, strategy="l6_merge")
         assert len(cands) == 1
@@ -211,8 +214,11 @@ class TestL6LowDegreeMerge:
             _node("B", name="长安CS75", degree=2),
         ]
         svc_local = CompressionService(
-            sink=sink, bt_service=bt, tenant_id="t1",
-            degree_threshold=3, fuzzy_token_ratio=85,
+            sink=sink,
+            bt_service=bt,
+            tenant_id="t1",
+            degree_threshold=3,
+            fuzzy_token_ratio=85,
         )
         pairs = svc_local.select_low_degree_merge_candidates(nodes)
         assert len(pairs) == 1
@@ -235,7 +241,9 @@ class TestL7AmbiguousDeprecation:
         old_created = datetime.now(UTC) - timedelta(days=45)
         edge = _edge("A", "B", confidence="AMBIGUOUS", score=None, created_at=old_created)
         svc_local = CompressionService(
-            sink=sink, bt_service=bt, tenant_id="t1",
+            sink=sink,
+            bt_service=bt,
+            tenant_id="t1",
             ambiguous_deprecate_days=30,
         )
         deprecated_keys, _ = svc_local.deprecate_ambiguous_edges(edges=[edge])
@@ -259,11 +267,14 @@ class TestL7AmbiguousDeprecation:
         old_created = datetime.now(UTC) - timedelta(days=45)
         edge = _edge("A", "B", confidence="AMBIGUOUS", score=None, created_at=old_created)
         svc_local = CompressionService(
-            sink=sink, bt_service=bt, tenant_id="t1",
+            sink=sink,
+            bt_service=bt,
+            tenant_id="t1",
             ambiguous_deprecate_days=30,
         )
         deprecated_keys, _ = svc_local.deprecate_ambiguous_edges(
-            edges=[edge], re_encounter_provider=has_recent_event,
+            edges=[edge],
+            re_encounter_provider=has_recent_event,
         )
         assert deprecated_keys == []
         # Sink is unchanged.
@@ -278,7 +289,9 @@ class TestL7AmbiguousDeprecation:
         recent_created = datetime.now(UTC) - timedelta(days=10)
         edge = _edge("A", "B", confidence="AMBIGUOUS", score=None, created_at=recent_created)
         svc_local = CompressionService(
-            sink=sink, bt_service=bt, tenant_id="t1",
+            sink=sink,
+            bt_service=bt,
+            tenant_id="t1",
             ambiguous_deprecate_days=30,
         )
         deprecated_keys, _ = svc_local.deprecate_ambiguous_edges(edges=[edge])
@@ -297,7 +310,9 @@ class TestL7AmbiguousDeprecation:
             _edge("E", "F", confidence="AMBIGUOUS", score=None, created_at=old),
         ]
         svc_local = CompressionService(
-            sink=sink, bt_service=bt, tenant_id="t1",
+            sink=sink,
+            bt_service=bt,
+            tenant_id="t1",
             ambiguous_deprecate_days=30,
         )
         deprecated_keys, _ = svc_local.deprecate_ambiguous_edges(edges=edges)
@@ -316,11 +331,17 @@ class TestL7AmbiguousDeprecation:
         """Already-soft-deleted AMBIGUOUS edges are idempotently skipped."""
         old = datetime.now(UTC) - timedelta(days=45)
         edge = _edge(
-            "A", "B", confidence="AMBIGUOUS", score=None,
-            created_at=old, expired_at=old,
+            "A",
+            "B",
+            confidence="AMBIGUOUS",
+            score=None,
+            created_at=old,
+            expired_at=old,
         )
         svc_local = CompressionService(
-            sink=sink, bt_service=bt, tenant_id="t1",
+            sink=sink,
+            bt_service=bt,
+            tenant_id="t1",
             ambiguous_deprecate_days=30,
         )
         deprecated_keys, _ = svc_local.deprecate_ambiguous_edges(edges=[edge])
@@ -340,7 +361,9 @@ class _KeywordLLM:
     def __init__(self, keywords: str = "客户A") -> None:
         self._keywords = keywords
 
-    async def complete(self, messages, *, temperature: float = 0.0, max_tokens=None, cache_key=None) -> LLMResponse:
+    async def complete(
+        self, messages, *, temperature: float = 0.0, max_tokens=None, cache_key=None
+    ) -> LLMResponse:
         return LLMResponse(text=self._keywords, model=self.model, prompt_hash="x")
 
 
@@ -358,33 +381,65 @@ class TestDeprecatedExcludedFromRetrieval:
         rwlock = StreamingRWLock()
         bundle = _FakeBundle()
         retriever = StreamingRetriever(
-            lambda _t: store, rwlock, bundle,  # type: ignore[arg-type]
+            lambda _t: store,
+            rwlock,
+            bundle,  # type: ignore[arg-type]
         )
 
-        await store.upsert_node(GraphNode(
-            entity_id="客户A", name="客户A", type="客户",
-            description="", source_ids=["1_1"], recording_ids=[1],
-        ))
-        await store.upsert_node(GraphNode(
-            entity_id="GhostCar", name="GhostCar", type="车型",
-            description="", source_ids=["1_2"], recording_ids=[1],
-        ))
-        await store.upsert_node(GraphNode(
-            entity_id="LiveCar", name="LiveCar", type="车型",
-            description="", source_ids=["1_3"], recording_ids=[1],
-        ))
+        await store.upsert_node(
+            GraphNode(
+                entity_id="客户A",
+                name="客户A",
+                type="客户",
+                description="",
+                source_ids=["1_1"],
+                recording_ids=[1],
+            )
+        )
+        await store.upsert_node(
+            GraphNode(
+                entity_id="GhostCar",
+                name="GhostCar",
+                type="车型",
+                description="",
+                source_ids=["1_2"],
+                recording_ids=[1],
+            )
+        )
+        await store.upsert_node(
+            GraphNode(
+                entity_id="LiveCar",
+                name="LiveCar",
+                type="车型",
+                description="",
+                source_ids=["1_3"],
+                recording_ids=[1],
+            )
+        )
         # DEPRECATED edge — should be filtered out.
-        await store.upsert_edge(GraphEdge(
-            source="客户A", target="GhostCar", relation="听说",
-            weight=2.0, confidence="DEPRECATED", confidence_score=None,
-            source_ids=["1_2"],
-        ))
+        await store.upsert_edge(
+            GraphEdge(
+                source="客户A",
+                target="GhostCar",
+                relation="听说",
+                weight=2.0,
+                confidence="DEPRECATED",
+                confidence_score=None,
+                source_ids=["1_2"],
+            )
+        )
         # AMBIGUOUS edge — included (× 0.5 weight).
-        await store.upsert_edge(GraphEdge(
-            source="客户A", target="LiveCar", relation="听说",
-            weight=2.0, confidence="AMBIGUOUS", confidence_score=None,
-            source_ids=["1_3"],
-        ))
+        await store.upsert_edge(
+            GraphEdge(
+                source="客户A",
+                target="LiveCar",
+                relation="听说",
+                weight=2.0,
+                confidence="AMBIGUOUS",
+                confidence_score=None,
+                source_ids=["1_3"],
+            )
+        )
 
         result = await retriever.retrieve("客户A", tenant_id="t1")
         neighbor_ids = {c.entity_id for c in result.candidates if c.depth == 1}

@@ -54,9 +54,7 @@ class TestEncryptBytesRoundtrip:
         for orig, got in zip(vec, restored, strict=True):
             assert got == pytest.approx(orig, abs=1e-7)
 
-    def test_distinct_plaintexts_distinct_ciphertexts(
-        self, dev_crypto: AudioCrypto
-    ) -> None:
+    def test_distinct_plaintexts_distinct_ciphertexts(self, dev_crypto: AudioCrypto) -> None:
         ct1, _ = dev_crypto.encrypt_bytes(b"payload-A")
         ct2, _ = dev_crypto.encrypt_bytes(b"payload-B")
         assert ct1 != ct2
@@ -127,9 +125,7 @@ class TestDecryptBytesValidation:
         with pytest.raises(ValueError, match="sha256 mismatch"):
             dev_crypto.decrypt_bytes(body_only, bad_meta)
 
-    def test_wrong_master_key_raises(
-        self, dev_crypto: AudioCrypto, tmp_path: Path
-    ) -> None:
+    def test_wrong_master_key_raises(self, dev_crypto: AudioCrypto, tmp_path: Path) -> None:
         ct, meta = dev_crypto.encrypt_bytes(b"payload")
         # New crypto instance with a different key.
         other = AudioCrypto(tmp_path / "other.key", dev_mode=True)
@@ -162,9 +158,7 @@ class TestCrossFormatCompat:
         # Body is non-empty.
         assert len(ct) > nl + 1
 
-    def test_decrypt_accepts_inline_header_only(
-        self, dev_crypto: AudioCrypto
-    ) -> None:
+    def test_decrypt_accepts_inline_header_only(self, dev_crypto: AudioCrypto) -> None:
         """If only the inline-header ciphertext is supplied, meta is ignored."""
         plain = b"payload-inline"
         ct, _ = dev_crypto.encrypt_bytes(plain)

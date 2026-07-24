@@ -5,10 +5,10 @@
  * - Full graph explore with node type / min degree filters
  * - Click node to see entity detail panel
  * - Subgraph extraction (N-hop from selected entity)
- * - Force-directed layout
+ * - Bounded force layout with grid fallback for dense result sets
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   Card,
@@ -26,6 +26,10 @@ import {
 import { Graph } from "@antv/g6";
 import { exploreGraph, getEntity } from "@/api/services";
 import type { GraphNodeResponse, GraphEdgeResponse } from "@/types/api";
+import {
+  createBoundedGraphLayout,
+  useDebouncedValue,
+} from "./graphExplorerPerformance";
 
 const { Title, Text } = Typography;
 
@@ -49,15 +53,26 @@ export default function GraphExplorerPage() {
   const [minDegree, setMinDegree] = useState(0);
   const [limit, setLimit] = useState(200);
   const [selectedEntity, setSelectedEntity] = useState<string>("");
+  const pendingFilters = useMemo(
+    () => ({ nodeType, minDegree, limit }),
+    [limit, minDegree, nodeType],
+  );
+  const filters = useDebouncedValue(pendingFilters);
 
   // Fetch graph data
   const { data: graphData, isLoading } = useQuery({
-    queryKey: ["graph", "explore", nodeType, minDegree, limit],
+    queryKey: [
+      "graph",
+      "explore",
+      filters.nodeType,
+      filters.minDegree,
+      filters.limit,
+    ],
     queryFn: () =>
       exploreGraph({
-        node_type: nodeType || undefined,
-        min_degree: minDegree,
-        limit,
+        node_type: filters.nodeType || undefined,
+        min_degree: filters.minDegree,
+        limit: filters.limit,
       }),
   });
 
@@ -72,21 +87,16 @@ export default function GraphExplorerPage() {
   useEffect(() => {
     if (!containerRef.current) return;
 
-    const width = containerRef.current.clientWidth;
-    const height = 600;
+    const container = containerRef.current;
+    const width = Math.max(1, container.clientWidth);
+    const height = Math.max(1, container.clientHeight || 600);
 
     const graph = new Graph({
-      container: containerRef.current,
+      container,
       width,
       height,
-      layout: {
-        type: "force",
-        linkDistance: 80,
-        nodeStrength: -50,
-        edgeStrength: 0.1,
-        preventOverlap: true,
-        nodeSize: 30,
-      },
+      autoResize: false,
+      layout: createBoundedGraphLayout(0),
       node: {
         style: {
           size: (d: { data?: { degree?: number } }) => {
@@ -120,18 +130,55 @@ export default function GraphExplorerPage() {
     });
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    graph.on("node:click", (evt: any) => {
+    const handleNodeClick = (evt: any) => {
       const nodeId = evt?.target?.id;
       if (nodeId) {
         setSelectedEntity(String(nodeId));
       }
-    });
+    };
+    graph.on("node:click", handleNodeClick);
 
     graphRef.current = graph;
+    let active = true;
+    let lastWidth = width;
+    let lastHeight = height;
+    const resizeObserver = new ResizeObserver((entries) => {
+      const entry = entries.find((candidate) => candidate.target === container);
+      if (!active || !entry) return;
+
+      const nextWidth = Math.round(
+        entry.contentRect.width || container.clientWidth,
+      );
+      const nextHeight = Math.round(
+        entry.contentRect.height || container.clientHeight || 600,
+      );
+      if (
+        nextWidth <= 0 ||
+        nextHeight <= 0 ||
+        (nextWidth === lastWidth && nextHeight === lastHeight)
+      ) {
+        return;
+      }
+
+      lastWidth = nextWidth;
+      lastHeight = nextHeight;
+      // setSize also persists the dimensions in G6's options. ResizeObserver
+      // can fire before the first data response initializes the canvas, when
+      // resize() alone is a no-op and the identical follow-up entry is
+      // intentionally deduplicated.
+      graph.setSize(nextWidth, nextHeight);
+    });
+    resizeObserver.observe(container);
 
     return () => {
+      active = false;
+      resizeObserver.disconnect();
+      graph.stopLayout();
+      graph.off("node:click", handleNodeClick);
       graph.destroy();
-      graphRef.current = null;
+      if (graphRef.current === graph) {
+        graphRef.current = null;
+      }
     };
   }, []);
 
@@ -159,8 +206,10 @@ export default function GraphExplorerPage() {
       },
     }));
 
+    graphRef.current.stopLayout();
+    graphRef.current.setLayout(createBoundedGraphLayout(nodes.length));
     graphRef.current.setData({ nodes, edges });
-    graphRef.current.render();
+    void graphRef.current.render().catch(() => undefined);
   }, [graphData]);
 
   return (
@@ -215,6 +264,7 @@ export default function GraphExplorerPage() {
         <Card style={{ flex: 1, minWidth: 0 }} bodyStyle={{ padding: 0 }}>
           <div
             ref={containerRef}
+            data-testid="graph-explorer-canvas"
             style={{
               width: "100%",
               height: 600,

@@ -10,9 +10,7 @@ class TestEmpty:
         assert build_speaker_entities_from_segments([]) == []
 
     def test_all_none_speakers_returns_empty(self) -> None:
-        out = build_speaker_entities_from_segments(
-            [(0, None, 1), (1, None, 1), (2, None, 1)]
-        )
+        out = build_speaker_entities_from_segments([(0, None, 1), (1, None, 1), (2, None, 1)])
         assert out == []
 
 

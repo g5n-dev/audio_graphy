@@ -78,9 +78,7 @@ class CommunitySummaryRecord:
 class SummarySink(Protocol):
     """Persistence protocol for CommunitySummaryRecord writes."""
 
-    def write(
-        self, record: CommunitySummaryRecord, tenant_id: str
-    ) -> None: ...
+    def write(self, record: CommunitySummaryRecord, tenant_id: str) -> None: ...
 
     def fetch(
         self,
@@ -109,9 +107,7 @@ class InMemorySummarySink:
     def __init__(self) -> None:
         self.records: list[CommunitySummaryRecord] = []
 
-    def write(
-        self, record: CommunitySummaryRecord, tenant_id: str
-    ) -> None:
+    def write(self, record: CommunitySummaryRecord, tenant_id: str) -> None:
         self.records.append(record)
 
     def fetch(
@@ -254,9 +250,7 @@ class CommunitySummaryService:
         it on demand and persists for future lookups.
         """
         if level < 0 or level > Q2_MAX_LEVEL:
-            raise ValueError(
-                f"level {level} out of range (Q2 cap={Q2_MAX_LEVEL})"
-            )
+            raise ValueError(f"level {level} out of range (Q2 cap={Q2_MAX_LEVEL})")
 
         cached = self._sink.fetch(
             leiden_job_id=self._leiden_job_id,
@@ -273,9 +267,7 @@ class CommunitySummaryService:
                 rec = await self._generate_one(m)
                 self._sink.write(rec, self._tenant_id)
                 return rec
-        raise KeyError(
-            f"no membership for level={level} community_id={community_id}"
-        )
+        raise KeyError(f"no membership for level={level} community_id={community_id}")
 
     # ------------------------------------------------------------
     # Internals
@@ -285,16 +277,10 @@ class CommunitySummaryService:
         """A leaf community is at the deepest computed level (Q2_MAX_LEVEL)."""
         return m.level == Q2_MAX_LEVEL
 
-    async def _generate_one(
-        self, m: CommunityMembership
-    ) -> CommunitySummaryRecord:
+    async def _generate_one(self, m: CommunityMembership) -> CommunitySummaryRecord:
         """Render prompt → call LLM → parse → return record."""
-        nodes_str = "\n".join(
-            f"- {n.entity_id} ({n.type}): {n.description}" for n in m.nodes
-        )
-        edges_str = "\n".join(
-            f"- {e.source} --{e.relation}--> {e.target}" for e in m.edges
-        )
+        nodes_str = "\n".join(f"- {n.entity_id} ({n.type}): {n.description}" for n in m.nodes)
+        edges_str = "\n".join(f"- {e.source} --{e.relation}--> {e.target}" for e in m.edges)
         prompt = self._prompt_template.format(
             level=m.level,
             nodes=nodes_str,
@@ -347,16 +333,12 @@ def _parse_llm_output(raw: str) -> tuple[str, str]:
         None,
     )
     if title_line_idx is not None:
-        title = lines[title_line_idx][len("TITLE:"):].strip()[:80]
+        title = lines[title_line_idx][len("TITLE:") :].strip()[:80]
     if summary_line_idx is not None:
         # First line's content after "SUMMARY:" + any continuation lines.
-        first_part = lines[summary_line_idx][len("SUMMARY:"):].strip()
-        rest = "\n".join(lines[summary_line_idx + 1:]).strip()
-        summary = (
-            (f"{first_part}\n{rest}" if first_part else rest)
-            if rest
-            else first_part
-        )
+        first_part = lines[summary_line_idx][len("SUMMARY:") :].strip()
+        rest = "\n".join(lines[summary_line_idx + 1 :]).strip()
+        summary = (f"{first_part}\n{rest}" if first_part else rest) if rest else first_part
     if not title:
         title = "Untitled community"
     if not summary:

@@ -94,11 +94,7 @@ async def _seed_tenant_and_recording(
         # Idempotent tenant insert.
         existing = await session.get(Tenant, 1)
         if existing is None:
-            session.add(
-                Tenant(
-                    id=1, code=tenant, name="长安", brand="长安", region="西南"
-                )
-            )
+            session.add(Tenant(id=1, code=tenant, name="长安", brand="长安", region="西南"))
             await session.flush()
         rec = Recording(
             id=rec_id,

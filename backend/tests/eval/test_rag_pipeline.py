@@ -14,7 +14,7 @@ Cases:
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -92,11 +92,7 @@ def _make_gold() -> GoldExample:
 # ends with COMPLETION_DELIMITER ("<|COMPLETE|>"). Fields inside a record
 # are split by TUPLE_DELIMITER ("<|>").
 _EXTRACT_RESPONSE = (
-    '("实体"<|>CS75 Plus<|>车型<|>紧凑型 SUV)'
-    "##"
-    '("实体"<|>客户A<|>客户<|>购车意向)'
-    "##"
-    "<|COMPLETE|>"
+    '("实体"<|>CS75 Plus<|>车型<|>紧凑型 SUV)##("实体"<|>客户A<|>客户<|>购车意向)##<|COMPLETE|>'
 )
 
 
@@ -108,15 +104,12 @@ _EXTRACT_RESPONSE = (
 @pytest.mark.asyncio
 async def test_predict_returns_full_predicted_result(tmp_path: Any) -> None:
     """predict() builds a PredictedResult with entities extracted from answer."""
-    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
     from sqlalchemy.pool import StaticPool
-    from sqlalchemy.ext.asyncio import AsyncSession
 
     from audio_graphy.config import get_settings
 
-    engine = create_async_engine(
-        "sqlite+aiosqlite:///:memory:", poolclass=StaticPool
-    )
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:", poolclass=StaticPool)
     sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     settings = get_settings()
 
@@ -151,15 +144,12 @@ async def test_predict_returns_full_predicted_result(tmp_path: Any) -> None:
 @pytest.mark.asyncio
 async def test_predict_empty_retrieval_yields_empty_ids(tmp_path: Any) -> None:
     """No citations → empty retrieved_context_ids."""
-    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
     from sqlalchemy.pool import StaticPool
-    from sqlalchemy.ext.asyncio import AsyncSession
 
     from audio_graphy.config import get_settings
 
-    engine = create_async_engine(
-        "sqlite+aiosqlite:///:memory:", poolclass=StaticPool
-    )
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:", poolclass=StaticPool)
     sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     settings = get_settings()
 
@@ -180,15 +170,12 @@ async def test_predict_empty_retrieval_yields_empty_ids(tmp_path: Any) -> None:
 @pytest.mark.asyncio
 async def test_predict_llm_failure_returns_empty_entities(tmp_path: Any) -> None:
     """LLM failure during extraction → caught, entities=[] but pipeline runs."""
-    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
     from sqlalchemy.pool import StaticPool
-    from sqlalchemy.ext.asyncio import AsyncSession
 
     from audio_graphy.config import get_settings
 
-    engine = create_async_engine(
-        "sqlite+aiosqlite:///:memory:", poolclass=StaticPool
-    )
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:", poolclass=StaticPool)
     sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     settings = get_settings()
 
@@ -211,15 +198,12 @@ async def test_predict_llm_failure_returns_empty_entities(tmp_path: Any) -> None
 @pytest.mark.asyncio
 async def test_predict_invokes_entity_extraction(tmp_path: Any) -> None:
     """The EntityExtractor is invoked on the answer text."""
-    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
     from sqlalchemy.pool import StaticPool
-    from sqlalchemy.ext.asyncio import AsyncSession
 
     from audio_graphy.config import get_settings
 
-    engine = create_async_engine(
-        "sqlite+aiosqlite:///:memory:", poolclass=StaticPool
-    )
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:", poolclass=StaticPool)
     sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     settings = get_settings()
 

@@ -231,17 +231,11 @@ class CompressionService:
                 continue
             score, reason = self._score_node_heuristic(n)
             if score > 0.0:
-                out.append(
-                    CompressionCandidate(
-                        entity_id=n.entity_id, score=score, reason=reason
-                    )
-                )
+                out.append(CompressionCandidate(entity_id=n.entity_id, score=score, reason=reason))
         out.sort(key=lambda c: c.score, reverse=True)
         return out
 
-    def _score_node_heuristic(
-        self, n: GraphNode
-    ) -> tuple[float, str]:
+    def _score_node_heuristic(self, n: GraphNode) -> tuple[float, str]:
         """Return (score, reason). First match wins."""
         if n.degree >= self._god_threshold:
             return (0.9, "god_node")
@@ -290,9 +284,7 @@ class CompressionService:
         """
         # Step 1 — filter to live, low-degree nodes.
         low_degree_live: list[GraphNode] = [
-            n
-            for n in nodes
-            if n.expired_at is None and n.degree <= self._degree_threshold
+            n for n in nodes if n.expired_at is None and n.degree <= self._degree_threshold
         ]
         if len(low_degree_live) < 2:
             return []
@@ -311,9 +303,7 @@ class CompressionService:
             group_sorted = sorted(group, key=lambda x: x.name)
             for i, n1 in enumerate(group_sorted):
                 for n2 in group_sorted[i + 1 :]:
-                    score = int(
-                        fuzz.token_ratio(n1.name, n2.name)
-                    )
+                    score = int(fuzz.token_ratio(n1.name, n2.name))
                     if score < self._fuzzy_token_ratio:
                         continue
                     # Deterministic canonical/source assignment.
@@ -322,9 +312,10 @@ class CompressionService:
                     else:
                         canonical, source = n2, n1
                     prev = chosen.get(source.entity_id)
-                    if prev is None or score > prev.score or (
-                        score == prev.score
-                        and canonical.entity_id < prev.canonical_entity_id
+                    if (
+                        prev is None
+                        or score > prev.score
+                        or (score == prev.score and canonical.entity_id < prev.canonical_entity_id)
                     ):
                         chosen[source.entity_id] = LowDegreeMergeCandidate(
                             source_entity_id=source.entity_id,
@@ -336,9 +327,7 @@ class CompressionService:
         out.sort(key=lambda c: (-c.score, c.source_entity_id))
         return out
 
-    def _select_l6_candidates(
-        self, nodes: Iterable[GraphNode]
-    ) -> list[CompressionCandidate]:
+    def _select_l6_candidates(self, nodes: Iterable[GraphNode]) -> list[CompressionCandidate]:
         """Adapter: expose L6 pairs as a flat CompressionCandidate list.
 
         Only the SOURCE side of each pair is emitted (canonicals are not
@@ -413,8 +402,7 @@ class CompressionService:
                 mutations.append((cand.entity_id, expired_node, [e for e, _ in cascaded]))
                 soft_deleted_nodes.append(cand.entity_id)
                 soft_deleted_edges.extend(
-                    f"{e.source}|{e.relation}|{e.target}"
-                    for e, _ in cascaded
+                    f"{e.source}|{e.relation}|{e.target}" for e, _ in cascaded
                 )
             self._sink.commit()
             # Promote counters.
@@ -432,7 +420,8 @@ class CompressionService:
         except Exception as exc:
             logger.error(
                 "Compression phase 2 failed (%s); rolling back %d mutations",
-                exc, len(mutations),
+                exc,
+                len(mutations),
             )
             try:
                 self._sink.rollback()
@@ -444,9 +433,7 @@ class CompressionService:
             try:
                 self._rollback_mutations(mutations, commit=False)
             except Exception as rb_exc:
-                raise CompressionRollbackError(
-                    f"rollback failed after {exc}"
-                ) from rb_exc
+                raise CompressionRollbackError(f"rollback failed after {exc}") from rb_exc
             COMPRESSION_RUNS_TOTAL.labels(outcome="rolled_back").inc()
             return CompressionReport(
                 candidates=list(candidates),
@@ -646,7 +633,12 @@ class CompressionService:
                 # Both endpoints gone — rare but possible in tests; still
                 # invalidate so the edge stops appearing in retrieval.
                 pass
-            elif src is not None and src.expired_at is None and tgt is not None and tgt.expired_at is None:
+            elif (
+                src is not None
+                and src.expired_at is None
+                and tgt is not None
+                and tgt.expired_at is None
+            ):
                 continue
             new_edge = GraphEdge(
                 source=edge.source,
@@ -762,19 +754,13 @@ class InMemoryCompressionSink:
 
     def fetch_edges_on_node(self, entity_id: str) -> list[GraphEdge]:
         """Return every edge that has ``entity_id`` as source or target."""
-        return [
-            e
-            for e in self.edges.values()
-            if entity_id in (e.source, e.target)
-        ]
+        return [e for e in self.edges.values() if entity_id in (e.source, e.target)]
 
     def write_node(self, node: GraphNode) -> None:
         self._staged_nodes[node.entity_id] = node
 
     def write_edge(self, edge: GraphEdge) -> None:
-        self._staged_edges[
-            f"{edge.source}|{edge.relation}|{edge.target}"
-        ] = edge
+        self._staged_edges[f"{edge.source}|{edge.relation}|{edge.target}"] = edge
 
     def commit(self) -> None:
         self.nodes.update(self._staged_nodes)

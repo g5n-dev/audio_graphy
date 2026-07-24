@@ -206,6 +206,24 @@ class TestGraphQueries:
         degree = await graph_store.get_node_degree("nonexistent")
         assert degree == 0
 
+    async def test_shortest_path_projection_is_reused_and_invalidated(
+        self,
+        graph_store: NetworkXGraphStore,
+    ) -> None:
+        """Hot path queries reuse one projection; a mutation rebuilds it."""
+        for node_id in ("A", "B", "C"):
+            await graph_store.upsert_node(_make_node(node_id))
+        await graph_store.upsert_edge(_make_edge("A", "B", "推荐"))
+
+        assert await graph_store.shortest_path("A", "B") == ["A", "B"]
+        assert await graph_store.shortest_path("B", "A") == ["B", "A"]
+        assert graph_store.path_projection_builds == 1
+
+        await graph_store.upsert_edge(_make_edge("B", "C", "推荐"))
+
+        assert await graph_store.shortest_path("A", "C") == ["A", "B", "C"]
+        assert graph_store.path_projection_builds == 2
+
 
 @pytest.mark.unit
 class TestGraphMLPersistence:
@@ -244,6 +262,68 @@ class TestGraphMLPersistence:
         assert len(edges) == 1
         assert edges[0].relation == "推荐"
         assert edges[0].weight == 2.0
+
+    async def test_write_failure_preserves_existing_graphml(
+        self,
+        tmp_working_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A failed temporary write cannot truncate the last good GraphML."""
+        from audio_graphy.core.types import StorageError
+        from audio_graphy.storage import graph_networkx
+
+        store = NetworkXGraphStore(tmp_working_dir, tenant_id="default")
+        await store.upsert_node(_make_node("old"))
+        await store.save()
+        original = store.graphml_path.read_bytes()
+
+        await store.upsert_node(_make_node("new"))
+
+        def _fail_write(_graph: object, target: object, **_kwargs: object) -> None:
+            if hasattr(target, "write"):
+                target.write(b"partial")  # type: ignore[union-attr]
+            else:
+                Path(target).write_bytes(b"partial")  # type: ignore[arg-type]
+            raise OSError("disk full")
+
+        monkeypatch.setattr(graph_networkx.nx, "write_graphml", _fail_write)
+
+        with pytest.raises(StorageError, match="disk full"):
+            await store.save()
+
+        assert store.graphml_path.read_bytes() == original
+        assert list(store.graphml_path.parent.glob(f".{store.graphml_path.name}.*.tmp")) == []
+
+    async def test_replace_failure_preserves_existing_graphml(
+        self,
+        tmp_working_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A failed atomic replace leaves the prior GraphML fully readable."""
+        from audio_graphy.core.types import StorageError
+        from audio_graphy.storage import graph_networkx
+
+        store = NetworkXGraphStore(tmp_working_dir, tenant_id="default")
+        await store.upsert_node(_make_node("old"))
+        await store.save()
+        original = store.graphml_path.read_bytes()
+
+        await store.upsert_node(_make_node("new"))
+
+        def _fail_replace(*_args: object, **_kwargs: object) -> None:
+            raise OSError("replace denied")
+
+        monkeypatch.setattr(graph_networkx.os, "replace", _fail_replace)
+
+        with pytest.raises(StorageError, match="replace denied"):
+            await store.save()
+
+        assert store.graphml_path.read_bytes() == original
+        reloaded = NetworkXGraphStore(tmp_working_dir, tenant_id="default")
+        await reloaded.load()
+        assert await reloaded.get_node("old") is not None
+        assert await reloaded.get_node("new") is None
+        assert list(store.graphml_path.parent.glob(f".{store.graphml_path.name}.*.tmp")) == []
 
     async def test_load_missing_file(self, tmp_working_dir: Path) -> None:
         """load() on missing file initialises empty graph."""

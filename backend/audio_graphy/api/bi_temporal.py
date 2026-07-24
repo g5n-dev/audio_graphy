@@ -128,9 +128,7 @@ def _edge_from_graph_attrs(
         weight=float(attrs.get("weight", 1.0)),
         confidence=confidence,
         confidence_score=(
-            float(attrs["confidence_score"])
-            if attrs.get("confidence_score") is not None
-            else None
+            float(attrs["confidence_score"]) if attrs.get("confidence_score") is not None else None
         ),
         source_ids=_str_to_list(attrs.get("source_ids", "[]")),
         valid_at=_dt("valid_at"),
@@ -141,9 +139,7 @@ def _edge_from_graph_attrs(
     )
 
 
-def _edges_for_recording(
-    graph: Any, recording_id: int
-) -> list[GraphEdge]:
+def _edges_for_recording(graph: Any, recording_id: int) -> list[GraphEdge]:
     """Extract edges that mention ``recording_id`` in source_ids.
 
     Each edge attribute dict has ``source_ids`` as a JSON list of
@@ -193,9 +189,7 @@ async def time_travel_edges(
 ) -> TimeTravelResponse:
     """Return all live edges for the recording as-of ``at``."""
     tenant_id = get_tenant_id(request)
-    rec = await _fetch_recording_or_404(
-        db, recording_id=recording_id, tenant_id=tenant_id
-    )
+    rec = await _fetch_recording_or_404(db, recording_id=recording_id, tenant_id=tenant_id)
     del rec  # 404-or-pass
 
     as_of = _parse_iso(at, param_name="at") or datetime.now(_utc())
@@ -203,9 +197,7 @@ async def time_travel_edges(
     graph = _tenant_graph_or_404(request, tenant_id)
     bt = BiTemporalEdgeService(tenant_id=tenant_id)
     all_edges = _edges_for_recording(graph, recording_id)
-    live = bt.time_travel_query(
-        all_edges, as_of=as_of, include_soft_deleted=include_soft_deleted
-    )
+    live = bt.time_travel_query(all_edges, as_of=as_of, include_soft_deleted=include_soft_deleted)
     payload = [EdgeOut(**_edge_to_dict(e)) for e in live]
     return TimeTravelResponse(
         recording_id=recording_id, as_of=as_of, edges=payload, total=len(payload)
@@ -220,20 +212,14 @@ async def time_travel_edges(
 async def edges_in_range(
     recording_id: int,
     request: Request,
-    from_time: str = Query(
-        ..., alias="from", description="ISO 8601 start (inclusive)."
-    ),
-    to_time: str = Query(
-        ..., alias="to", description="ISO 8601 end (exclusive)."
-    ),
+    from_time: str = Query(..., alias="from", description="ISO 8601 start (inclusive)."),
+    to_time: str = Query(..., alias="to", description="ISO 8601 end (exclusive)."),
     db: AsyncSession = Depends(get_db),
     _user: AuthUser = Depends(require_inspector_or_above()),
 ) -> EdgeRangeQueryResponse:
     """Return every edge whose bi-temporal interval intersects [from, to)."""
     tenant_id = get_tenant_id(request)
-    await _fetch_recording_or_404(
-        db, recording_id=recording_id, tenant_id=tenant_id
-    )
+    await _fetch_recording_or_404(db, recording_id=recording_id, tenant_id=tenant_id)
 
     t_from = _parse_iso(from_time, param_name="from")
     t_to = _parse_iso(to_time, param_name="to")
@@ -294,9 +280,7 @@ async def edge_history(
     We return the most recent events first.
     """
     tenant_id = get_tenant_id(request)
-    await _fetch_recording_or_404(
-        db, recording_id=recording_id, tenant_id=tenant_id
-    )
+    await _fetch_recording_or_404(db, recording_id=recording_id, tenant_id=tenant_id)
 
     stmt = (
         select(EdgeEvent)
@@ -366,9 +350,7 @@ def _edge_to_dict(edge: GraphEdge) -> dict[str, Any]:
 
 def _tenant_graph_or_404(request: Request, tenant_id: str) -> Any:
     """Return the per-tenant NetworkX graph; 404 if no store is configured."""
-    graph_stores: dict[str, Any] | None = getattr(
-        request.app.state, "graph_stores", None
-    )
+    graph_stores: dict[str, Any] | None = getattr(request.app.state, "graph_stores", None)
     if graph_stores is None:
         raise EntityNotFoundError(
             message="Graph store not initialised for this deployment",
@@ -379,9 +361,7 @@ def _tenant_graph_or_404(request: Request, tenant_id: str) -> Any:
         from audio_graphy.storage.graph_networkx import NetworkXGraphStore
 
         settings = request.app.state.settings
-        store = NetworkXGraphStore(
-            settings.working_dir, tenant_id=tenant_id
-        )
+        store = NetworkXGraphStore(settings.working_dir, tenant_id=tenant_id)
         graph_stores[tenant_id] = store
     return store.graph
 

@@ -7,6 +7,7 @@
  */
 
 import axios, { type AxiosInstance, type InternalAxiosRequestConfig } from "axios";
+import { useAuthStore } from "@/stores/auth";
 
 const BASE_URL = "/api/v1";
 
@@ -17,6 +18,15 @@ const httpClient: AxiosInstance = axios.create({
     "Content-Type": "application/json",
   },
 });
+
+export function clearAuthAndRedirectToLogin(): void {
+  useAuthStore.getState().clearAuth();
+  if (window.location.hash !== "#/login") {
+    // The application is hosted with HashRouter. A pathname redirect would ask
+    // the static host for /login and can produce a deployment-level 404.
+    window.location.hash = "/login";
+  }
+}
 
 // Request interceptor: attach JWT
 httpClient.interceptors.request.use(
@@ -39,13 +49,7 @@ httpClient.interceptors.response.use(
     if (axios.isAxiosError(error)) {
       const status = error.response?.status;
       if (status === 401) {
-        // Token expired or invalid — clear and redirect
-        localStorage.removeItem("ag_access_token");
-        localStorage.removeItem("ag_refresh_token");
-        localStorage.removeItem("ag_user_info");
-        if (window.location.pathname !== "/login") {
-          window.location.href = "/login";
-        }
+        clearAuthAndRedirectToLogin();
       }
     }
     return Promise.reject(error);

@@ -9,8 +9,7 @@ Verifies:
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
-from typing import Any
+from datetime import UTC, datetime
 
 import pytest
 
@@ -27,7 +26,6 @@ from audio_graphy.core.types import (
     GraphEdge,
     GraphNode,
 )
-
 
 # ============================================================
 # Fixtures
@@ -95,7 +93,7 @@ def test_god_node_scored_highest(svc: CompressionService) -> None:
     nodes = [
         _node("Normal", degree=2),
         _node("God", degree=100),  # god_node
-        _node("Leaf", degree=0),   # low_degree
+        _node("Leaf", degree=0),  # low_degree
     ]
     cands = svc.select_candidates(nodes)
     assert cands[0].entity_id == "God"
@@ -191,12 +189,15 @@ def test_apply_q3_policy_check_rejects_hard_delete_method(
     bt: BiTemporalEdgeService,
 ) -> None:
     """A sink exposing ``delete_node`` triggers policy violation."""
+
     class BadSink:
         def delete_node(self, eid: str) -> None: ...
         def fetch_node(self, entity_id: str) -> GraphNode | None:
             return None
+
         def fetch_edges_on_node(self, entity_id: str) -> list[GraphEdge]:
             return []
+
         def write_node(self, node: GraphNode) -> None: ...
         def write_edge(self, edge: GraphEdge) -> None: ...
         def commit(self) -> None: ...
@@ -216,6 +217,7 @@ def test_apply_rolls_back_on_failure(
     bt: BiTemporalEdgeService,
 ) -> None:
     """If sink.commit raises, partial mutations are undone and error returned."""
+
     class FailingSink(InMemoryCompressionSink):
         def commit(self) -> None:
             raise RuntimeError("simulated DB outage")
@@ -239,9 +241,11 @@ def test_apply_raises_rollback_error_when_rollback_also_fails(
 ) -> None:
     class DoubleFailingSink(InMemoryCompressionSink):
         commit_calls: int = 0
+
         def commit(self) -> None:
             self.commit_calls += 1
             raise RuntimeError("commit always fails")
+
         def rollback(self) -> None:
             raise RuntimeError("rollback also fails")
 

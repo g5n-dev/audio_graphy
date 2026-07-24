@@ -100,8 +100,9 @@ class EntityMerger:
 
     Usage::
 
-        merger = EntityMerger(session, tenant_id="chang_an",
-                              fuzzy_threshold=settings.entity_fuzzy_threshold)
+        merger = EntityMerger(
+            session, tenant_id="chang_an", fuzzy_threshold=settings.entity_fuzzy_threshold
+        )
         entities = await merger.merge(extracted_entities)
 
     Args:
@@ -126,9 +127,7 @@ class EntityMerger:
         persist_fuzzy_aliases: bool = True,
     ) -> None:
         if not 0.0 <= fuzzy_threshold <= 1.0:
-            raise ValueError(
-                f"fuzzy_threshold must be in [0.0, 1.0], got {fuzzy_threshold}"
-            )
+            raise ValueError(f"fuzzy_threshold must be in [0.0, 1.0], got {fuzzy_threshold}")
         self._session_factory = session_factory
         self._tenant_id = tenant_id
         self._threshold = fuzzy_threshold
@@ -288,9 +287,7 @@ class EntityMerger:
         canonical_index: dict[str, list[_CanonicalEntry]] = {}
         try:
             async with self._session_factory() as session:
-                stmt = select(EntityAlias).where(
-                    EntityAlias.tenant_id == self._tenant_id
-                )
+                stmt = select(EntityAlias).where(EntityAlias.tenant_id == self._tenant_id)
                 result = await session.execute(stmt)
                 for row in result.scalars().all():
                     norm_alias = _norm(row.alias_text)

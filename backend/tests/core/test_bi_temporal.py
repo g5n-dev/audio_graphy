@@ -13,8 +13,8 @@ import pytest
 
 from audio_graphy.core.bi_temporal import (
     BiTemporalEdgeService,
-    edge_fingerprint,
     _edge_key,
+    edge_fingerprint,
 )
 from audio_graphy.core.types import (
     BiTemporalInvalidRangeError,
@@ -199,9 +199,7 @@ def test_supersede_preserves_source_ids_when_omitted(
         expired_at=old.expired_at,
         superseded_by=None,
     )
-    _, replacement, _, _ = svc.supersede_edge(
-        old=old, new_relation="推荐", new_target="C"
-    )
+    _, replacement, _, _ = svc.supersede_edge(old=old, new_relation="推荐", new_target="C")
     assert replacement.source_ids == ["seed_id"]
 
 
@@ -217,13 +215,12 @@ def test_time_travel_filters_by_valid_interval(svc: BiTemporalEdgeService) -> No
 
     open_edge = _make_edge(valid_at=long_ago)  # alive
     closed_edge = _make_edge(
-        valid_at=long_ago, invalid_at=recent  # closed 1h ago
+        valid_at=long_ago,
+        invalid_at=recent,  # closed 1h ago
     )
     future_edge = _make_edge(valid_at=now + timedelta(hours=1))  # not yet valid
 
-    visible = svc.time_travel_query(
-        [open_edge, closed_edge, future_edge], as_of=now
-    )
+    visible = svc.time_travel_query([open_edge, closed_edge, future_edge], as_of=now)
     assert visible == [open_edge]
 
 
@@ -235,9 +232,7 @@ def test_time_travel_includes_soft_deleted_when_flag_set(
     soft_deleted = _make_edge(valid_at=long_ago, expired_at=now)
     open_edge = _make_edge(valid_at=long_ago)
 
-    visible_default = svc.time_travel_query(
-        [soft_deleted, open_edge], as_of=now
-    )
+    visible_default = svc.time_travel_query([soft_deleted, open_edge], as_of=now)
     assert visible_default == [open_edge]
 
     visible_admin = svc.time_travel_query(
@@ -268,12 +263,8 @@ def test_retention_cascade_soft_deletes_open_edges(
     past = datetime.now(UTC) - timedelta(days=5)
     open_a = _make_edge(valid_at=past, weight=1.0)
     open_b = _make_edge(valid_at=past, weight=2.0)
-    already_closed = _make_edge(
-        valid_at=past, invalid_at=datetime.now(UTC), weight=3.0
-    )
-    out = svc.retention_cascade(
-        edges_on_node=[open_a, open_b, already_closed]
-    )
+    already_closed = _make_edge(valid_at=past, invalid_at=datetime.now(UTC), weight=3.0)
+    out = svc.retention_cascade(edges_on_node=[open_a, open_b, already_closed])
     # Already-closed edge is skipped (idempotent).
     assert len(out) == 2
     for invalidated, event in out:

@@ -48,9 +48,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--judge-llm",
         type=str,
         default="",
-        help=(
-            "Override judge LLM model name (default: settings.judge_llm_model_resolved)."
-        ),
+        help=("Override judge LLM model name (default: settings.judge_llm_model_resolved)."),
     )
     parser.add_argument(
         "--no-judge",
@@ -100,9 +98,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
     if not args.gold_set.is_file():
-        print(
-            "error: gold set not found: " + str(args.gold_set), file=sys.stderr
-        )
+        print("error: gold set not found: " + str(args.gold_set), file=sys.stderr)
         return 2
 
     if args.pipeline == "rag":
@@ -178,8 +174,12 @@ def main(argv: list[str] | None = None) -> int:
 
     errors = sum(1 for ex in run.per_example if ex.error is not None)
     print(
-        "Eval complete: " + str(len(run.per_example) - errors) + "/" +
-        str(len(run.per_example)) + " ok → " + str(md_path),
+        "Eval complete: "
+        + str(len(run.per_example) - errors)
+        + "/"
+        + str(len(run.per_example))
+        + " ok → "
+        + str(md_path),
         file=sys.stderr,
     )
     return 0

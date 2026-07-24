@@ -78,6 +78,12 @@ class VoiceprintVector(TenantScopedBase):
     __table_args__ = (
         Index("ix_vp_tenant_recording", "tenant_id", "recording_id"),
         Index("ix_vp_speaker", "speaker_entity_id"),
+        Index(
+            "ix_vp_tenant_speaker_created",
+            "tenant_id",
+            "speaker_entity_id",
+            "created_at",
+        ),
         Index("ux_vp_voiceprint_id", "tenant_id", "voiceprint_id", unique=True),
     )
 
@@ -92,9 +98,7 @@ class VoiceprintVector(TenantScopedBase):
         """
         import numpy as np
 
-        plaintext = crypto.decrypt_bytes(
-            self.vector_encrypted, self.encryption_meta
-        )
+        plaintext = crypto.decrypt_bytes(self.vector_encrypted, self.encryption_meta)
         return np.frombuffer(plaintext, dtype=np.float32)
 
     def __repr__(self) -> str:

@@ -69,9 +69,7 @@ def _row_to_record(row: CommunitySummary) -> CommunitySummaryRecord:
     )
 
 
-def _hit_from_record(
-    rec: CommunitySummaryRecord, score: float
-) -> CommunityHit:
+def _hit_from_record(rec: CommunitySummaryRecord, score: float) -> CommunityHit:
     return CommunityHit(
         community_id=rec.community_id,
         level=rec.level,
@@ -121,9 +119,7 @@ async def global_search(
     are returned sorted by score descending.
     """
     tenant_id = get_tenant_id(request)
-    summaries = await _preload_summaries(
-        db, tenant_id=tenant_id, level=body.level
-    )
+    summaries = await _preload_summaries(db, tenant_id=tenant_id, level=body.level)
     if body.community_ids is not None:
         allow = set(body.community_ids)
         summaries = [s for s in summaries if s.community_id in allow]
@@ -224,11 +220,7 @@ async def local_search(
         type_ = str(attrs.get("type", ""))
         desc = str(attrs.get("description", ""))
         text_tokens = _tokenize(name + " " + type_ + " " + desc)
-        overlap = (
-            len(q_tokens & text_tokens) / max(1, len(q_tokens))
-            if q_tokens
-            else 0.0
-        )
+        overlap = len(q_tokens & text_tokens) / max(1, len(q_tokens)) if q_tokens else 0.0
         distance_score = 1.0 / (1.0 + dist)
         score = 0.5 * distance_score + 0.5 * overlap
         hits.append(
@@ -305,7 +297,9 @@ async def drill_down(
                     CommunitySummary.level == child_level,
                 )
             )
-        ).scalars().all()
+        )
+        .scalars()
+        .all()
     )
     children: list[CommunityHit] = []
     for r in child_rows:

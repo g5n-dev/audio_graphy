@@ -23,6 +23,7 @@ from audio_graphy.core.types import COMPLETION_DELIMITER, RECORD_DELIMITER, TUPL
 from audio_graphy.models.recording import Recording
 
 
+@pytest.mark.integration
 @pytest.mark.e2e
 class TestE2EIndexing:
     """End-to-end indexing pipeline."""

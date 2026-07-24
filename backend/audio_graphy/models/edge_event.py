@@ -43,17 +43,14 @@ class EdgeEvent(TenantScopedBase):
     target: Mapped[str] = mapped_column(String(128), nullable=False)
     relation: Mapped[str] = mapped_column(String(128), nullable=False)
     valid_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    invalid_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    invalid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     superseded_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
     actor: Mapped[str] = mapped_column(String(64), nullable=False, default="system")
     payload: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (
         CheckConstraint(
-            "event_type IN "
-            "('insert', 'merge', 'supersede', 'soft_delete', 'restore')",
+            "event_type IN ('insert', 'merge', 'supersede', 'soft_delete', 'restore')",
             name="ck_edge_events_event_type",
         ),
         Index("ix_edge_events_tenant_valid", "tenant_id", "valid_at"),

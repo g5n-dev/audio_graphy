@@ -184,7 +184,9 @@ async def get_prompt(
 
 
 @router.post(
-    "/{prompt_id}/activate", response_model=ActivateResponse, summary="Activate prompt version",
+    "/{prompt_id}/activate",
+    response_model=ActivateResponse,
+    summary="Activate prompt version",
     dependencies=[Depends(require_admin())],
 )
 async def activate_prompt(

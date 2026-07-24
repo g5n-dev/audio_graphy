@@ -17,9 +17,7 @@ from __future__ import annotations
 from audio_graphy.eval.types import GoldExample, MetricResult, PredictedResult
 
 
-def context_precision_at_k(
-    gold: GoldExample, pred: PredictedResult, *, k: int = 5
-) -> MetricResult:
+def context_precision_at_k(gold: GoldExample, pred: PredictedResult, *, k: int = 5) -> MetricResult:
     """Top-k precision of retrieved chunks against gold chunks.
 
     Args:

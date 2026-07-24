@@ -46,9 +46,7 @@ class VectorAudio(TenantScopedBase):
     chunk_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     vector: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     dim: Mapped[int] = mapped_column(Integer, nullable=False, default=512)
-    model: Mapped[str] = mapped_column(
-        String(64), nullable=False, default="clap-htsat-base-2022"
-    )
+    model: Mapped[str] = mapped_column(String(64), nullable=False, default="clap-htsat-base-2022")
     duration_sec: Mapped[float] = mapped_column(Float, default=0.0)
 
     recording: Mapped[Recording] = relationship()

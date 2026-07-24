@@ -45,17 +45,13 @@ L4_MAX_CONCURRENCY: int = 5
 class CommunitySummaryProvider(Protocol):
     """Callable that returns community summaries for a tenant + level."""
 
-    def __call__(
-        self, *, tenant_id: str, level: int
-    ) -> list[CommunitySummaryRecord]: ...
+    def __call__(self, *, tenant_id: str, level: int) -> list[CommunitySummaryRecord]: ...
 
 
 class LLMScorer(Protocol):
     """Async callable returning a 0..1 relevance score for one summary."""
 
-    async def __call__(
-        self, *, query: str, summary: CommunitySummaryRecord
-    ) -> float: ...
+    async def __call__(self, *, query: str, summary: CommunitySummaryRecord) -> float: ...
 
 
 # ============================================================
@@ -96,9 +92,7 @@ def _tokenize(s: str) -> set[str]:
     return out
 
 
-async def default_keyword_scorer(
-    *, query: str, summary: CommunitySummaryRecord
-) -> float:
+async def default_keyword_scorer(*, query: str, summary: CommunitySummaryRecord) -> float:
     """Default CommunityHit scorer — keyword overlap (Jaccard).
 
     Returns ``|q ∩ s| / |q ∪ s|`` over character bigrams + word tokens.
@@ -175,8 +169,7 @@ class GlobalSearcher:
             raise ValueError(f"top_k out of range: {top_k}")
         if max_concurrency <= 0 or max_concurrency > L4_MAX_CONCURRENCY:
             raise ValueError(
-                f"max_concurrency must be in [1, {L4_MAX_CONCURRENCY}], "
-                f"got {max_concurrency}"
+                f"max_concurrency must be in [1, {L4_MAX_CONCURRENCY}], got {max_concurrency}"
             )
         self._provider = provider
         self._scorer: LLMScorer = scorer or _DefaultLLMScorer()
@@ -248,9 +241,7 @@ class _DefaultLLMScorer:
     weight_title: float = 1.0
     weight_summary: float = 1.0
 
-    async def __call__(
-        self, *, query: str, summary: CommunitySummaryRecord
-    ) -> float:
+    async def __call__(self, *, query: str, summary: CommunitySummaryRecord) -> float:
         return await default_keyword_scorer(query=query, summary=summary)
 
 

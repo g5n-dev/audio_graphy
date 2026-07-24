@@ -14,13 +14,16 @@ import { useAuthStore } from "@/stores/auth";
 
 const { Title } = Typography;
 const FormItem = Form.Item;
+const IS_SITES_DEMO = import.meta.env.VITE_SITES_DEMO === "true";
 
 export default function LoginPage() {
   const navigate = useNavigate();
   const setAuth = useAuthStore((s) => s.setAuth);
   const [loading, setLoading] = useState(false);
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
+  const [email, setEmail] = useState(
+    IS_SITES_DEMO ? "demo@example.com" : "",
+  );
+  const [password, setPassword] = useState(IS_SITES_DEMO ? "demo" : "");
 
   const handleSubmit = async () => {
     if (!email || !password) {
@@ -63,8 +66,24 @@ export default function LoginPage() {
           <p style={{ color: "#86909c", fontSize: 13, marginTop: 4 }}>
             门店录音图谱检索与多级打标系统
           </p>
+          {IS_SITES_DEMO && (
+            <p
+              role="note"
+              style={{
+                margin: "12px 0 0",
+                padding: "8px 10px",
+                color: "#0e42d2",
+                background: "#e8f3ff",
+                border: "1px solid #bedaff",
+                borderRadius: 4,
+                fontSize: 12,
+              }}
+            >
+              在线演示数据已就绪，直接点击登录即可体验。
+            </p>
+          )}
         </div>
-        <Form layout="vertical" onSubmit={(e) => { e.preventDefault(); handleSubmit(); }}>
+        <Form layout="vertical" onSubmit={handleSubmit}>
           <FormItem label="邮箱">
             <Input
               prefix={<IconUser />}

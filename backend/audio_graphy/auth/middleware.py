@@ -13,6 +13,7 @@ See: docs/m3-architecture.md §3.1, §7.2, docs/m3-prd.md AUTH-02/03, QUAL-05.
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -20,6 +21,7 @@ from typing import TYPE_CHECKING
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
 from starlette.responses import Response
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from audio_graphy.auth.jwt_utils import JWTManager
 from audio_graphy.errors import InvalidTokenError, TokenExpiredError
@@ -30,6 +32,103 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 REQUEST_ID_HEADER = "X-Request-ID"
+_PLAYBACK_AUDIO_PATH = re.compile(
+    r"^/api/v1/receptions/[1-9]\d*/(?:audio|recordings/[1-9]\d*/audio)$"
+)
+
+
+class _RequestBodyTooLargeError(Exception):
+    """Internal signal raised while consuming a chunked request body."""
+
+
+class RequestBodyLimitMiddleware:
+    """Reject oversized HTTP bodies before application-level parsing.
+
+    Both declared ``Content-Length`` and streamed/chunked bodies are counted.
+    WebSockets are left untouched.
+    """
+
+    def __init__(self, app: ASGIApp, *, max_body_bytes: int) -> None:
+        if max_body_bytes <= 0:
+            raise ValueError("max_body_bytes must be positive")
+        self.app = app
+        self.max_body_bytes = max_body_bytes
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        headers = dict(scope.get("headers", []))
+        declared_length = headers.get(b"content-length")
+        if declared_length is not None:
+            try:
+                parsed_length = int(declared_length)
+            except ValueError:
+                parsed_length = -1
+            if parsed_length > self.max_body_bytes:
+                await self._send_rejection(scope, send)
+                return
+
+        received_bytes = 0
+        response_started = False
+
+        async def limited_receive() -> Message:
+            nonlocal received_bytes
+            message = await receive()
+            if message["type"] == "http.request":
+                received_bytes += len(message.get("body", b""))
+                if received_bytes > self.max_body_bytes:
+                    raise _RequestBodyTooLargeError
+            return message
+
+        async def tracked_send(message: Message) -> None:
+            nonlocal response_started
+            if message["type"] == "http.response.start":
+                response_started = True
+            await send(message)
+
+        try:
+            await self.app(scope, limited_receive, tracked_send)
+        except _RequestBodyTooLargeError:
+            if response_started:
+                raise
+            await self._send_rejection(scope, send)
+
+    async def _send_rejection(self, scope: Scope, send: Send) -> None:
+        import json
+
+        headers = dict(scope.get("headers", []))
+        request_id = headers.get(b"x-request-id", b"").decode("ascii", errors="ignore") or str(
+            uuid.uuid4()
+        )
+        detail: dict[str, object] = {
+            "max_bytes": self.max_body_bytes,
+            "request_id": request_id,
+        }
+        body = json.dumps(
+            {
+                "error": {
+                    "code": "REQUEST_BODY_TOO_LARGE",
+                    "message": "Request body exceeds the configured limit",
+                    "detail": detail,
+                }
+            },
+            separators=(",", ":"),
+        ).encode()
+        response_headers = [
+            (b"content-type", b"application/json"),
+            (b"content-length", str(len(body)).encode()),
+        ]
+        response_headers.append((b"x-request-id", request_id.encode()))
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 413,
+                "headers": response_headers,
+            }
+        )
+        await send({"type": "http.response.body", "body": body})
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,12 +169,10 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
 class AuthMiddleware(BaseHTTPMiddleware):
     """JWT authentication + tenant isolation middleware.
 
-    Public paths (no auth required):
-        - Paths ending with ``/auth/login``
-        - Paths ending with ``/auth/refresh``
-        - Paths ending with ``/health/readiness``
-        - Paths ending with ``/health`` (liveness)
-        - Paths ending with ``/docs`` / ``/openapi.json`` / ``/redoc``
+    Public paths (no auth required) are exact allow-list entries:
+        - ``/api/v1/auth/login`` and ``/api/v1/auth/refresh``
+        - ``/health/readiness`` and ``/health``
+        - ``/docs``, ``/openapi.json``, ``/redoc`` and the root page
 
     For all other paths, the middleware:
         1. Extracts the JWT from ``Authorization: Bearer <token>``.
@@ -86,34 +183,72 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
     Args:
         jwt_manager: JWTManager instance for token verification.
-        public_paths: Set of path suffixes that bypass auth.
+        Public routes are intentionally exact matches so a protected URL that
+        merely ends with a public-looking suffix cannot bypass authentication.
     """
 
-    DEFAULT_PUBLIC_SUFFIXES: tuple[str, ...] = (
-        "/auth/login",
-        "/auth/refresh",
-        "/health",
-        "/health/readiness",
-        "/docs",
-        "/openapi.json",
-        "/redoc",
-        "/",
+    DEFAULT_PUBLIC_PATHS: frozenset[str] = frozenset(
+        {
+            "/api/v1/auth/login",
+            "/api/v1/auth/refresh",
+            "/health",
+            "/health/readiness",
+            "/docs",
+            "/openapi.json",
+            "/redoc",
+            "/",
+        }
     )
 
-    def __init__(self, app: object, jwt_manager: JWTManager) -> None:
+    def __init__(
+        self,
+        app: object,
+        jwt_manager: JWTManager,
+        playback_secret: str | None = None,
+    ) -> None:
         super().__init__(app)  # type: ignore[arg-type]
         self._jwt_manager = jwt_manager
+        self._playback_secret = playback_secret
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         path = request.url.path
 
         # Skip auth for public paths
-        if any(path.endswith(suffix) or path == suffix for suffix in self.DEFAULT_PUBLIC_SUFFIXES):
+        if path in self.DEFAULT_PUBLIC_PATHS:
             return await call_next(request)
 
         # Extract and verify token
         token = self._extract_token(request)
         if token is None:
+            grant = request.query_params.get("playback_grant")
+            if grant and self._playback_secret and _PLAYBACK_AUDIO_PATH.fullmatch(path):
+                try:
+                    from audio_graphy.services.receptions import (
+                        verify_playback_grant,
+                    )
+
+                    claims = verify_playback_grant(
+                        secret=self._playback_secret,
+                        grant=grant,
+                        expected_path=path,
+                    )
+                except ValueError:
+                    return self._error_response(
+                        InvalidTokenError("Invalid playback grant"),
+                        request,
+                    )
+                request.state.user = AuthUser(
+                    id=claims.subject_id,
+                    name="",
+                    email="",
+                    role=claims.role,
+                    tenant_id=claims.tenant_id,
+                )
+                request.state.tenant_id = claims.tenant_id
+                if claims.role == "agent":
+                    request.state.agent_filter = None
+                return await call_next(request)
+
             return self._error_response(
                 InvalidTokenError("Missing Authorization header"),
                 request,

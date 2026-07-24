@@ -210,7 +210,7 @@ class DualChannelRetriever:
 
         # Look up chunk details
         chunk_ids = [int(h.id) for h in hits if isinstance(h.id, int)]
-        chunk_details = await self._lookup_chunks(chunk_ids)
+        chunk_details = await self._lookup_chunks(chunk_ids, tenant_id=tenant_id)
 
         candidates: list[CandidateSegment] = []
         for hit in hits:
@@ -324,7 +324,10 @@ class DualChannelRetriever:
             return []
 
         # Look up chunk details
-        chunk_details = await self._lookup_chunks(list(chunk_score_map.keys()))
+        chunk_details = await self._lookup_chunks(
+            list(chunk_score_map.keys()),
+            tenant_id=tenant_id,
+        )
 
         candidates: list[CandidateSegment] = []
         for chunk_id, score in chunk_score_map.items():
@@ -534,7 +537,12 @@ class DualChannelRetriever:
     # Chunk detail lookup
     # ------------------------------------------------------------------
 
-    async def _lookup_chunks(self, chunk_ids: list[int]) -> dict[int, dict[str, Any]]:
+    async def _lookup_chunks(
+        self,
+        chunk_ids: list[int],
+        *,
+        tenant_id: str,
+    ) -> dict[int, dict[str, Any]]:
         """Look up chunk details (text, segment_ids, recording_id, recorded_at).
 
         Uses MySQL if session_factory is available, otherwise file_index.
@@ -549,12 +557,17 @@ class DualChannelRetriever:
             return {}
 
         if self._session_factory is not None:
-            return await self._lookup_chunks_mysql(chunk_ids)
+            return await self._lookup_chunks_mysql(chunk_ids, tenant_id=tenant_id)
         if self._file_index is not None:
             return await self._lookup_chunks_file_index(chunk_ids)
         return {}
 
-    async def _lookup_chunks_mysql(self, chunk_ids: list[int]) -> dict[int, dict[str, Any]]:
+    async def _lookup_chunks_mysql(
+        self,
+        chunk_ids: list[int],
+        *,
+        tenant_id: str,
+    ) -> dict[int, dict[str, Any]]:
         """Look up chunk details from MySQL.
 
         Args:
@@ -568,8 +581,14 @@ class DualChannelRetriever:
         async with self._session_factory() as session:
             stmt = (
                 select(Chunk, Recording.recorded_at)
-                .outerjoin(Recording, Chunk.recording_id == Recording.id)
-                .where(Chunk.id.in_(chunk_ids))
+                .join(
+                    Recording,
+                    (Chunk.recording_id == Recording.id) & (Recording.tenant_id == tenant_id),
+                )
+                .where(
+                    Chunk.id.in_(chunk_ids),
+                    Chunk.tenant_id == tenant_id,
+                )
             )
             rows = await session.execute(stmt)
             for chunk, recorded_at in rows:
@@ -731,7 +750,9 @@ class ThreeChannelRetriever(DualChannelRetriever):
         audio_task = self._audio_channel(audio_query_path, tenant_id, top_k)
 
         naive_candidates, graph_candidates, audio_candidates = await asyncio.gather(
-            naive_task, graph_task, audio_task,
+            naive_task,
+            graph_task,
+            audio_task,
         )
 
         # Step 3: Union + dedup across all three channels.
@@ -796,7 +817,9 @@ class ThreeChannelRetriever(DualChannelRetriever):
                 return []
             query_vec = embeds[0].vector
             hits = await self._audio_vector_store.search_audio(
-                tenant_id, query_vec, top_k=top_k,
+                tenant_id,
+                query_vec,
+                top_k=top_k,
             )
         except Exception as exc:
             logger.warning("Audio channel failed: %s", exc)
@@ -805,45 +828,49 @@ class ThreeChannelRetriever(DualChannelRetriever):
         if not hits:
             return []
 
-        # Reverse-lookup chunk details via segment_id → chunk mapping.
-        # We look up by chunk_id when it exists (M7 stores chunk_id on
-        # vectors_audio); otherwise we synthesise minimal CandidateSegment
-        # entries without text (downstream rerank can still score by audio).
-        chunk_ids: list[int] = []
-        for h in hits:
-            if isinstance(h.id, int):
-                chunk_ids.append(h.id)
-        chunk_details = await self._lookup_chunks(chunk_ids) if chunk_ids else {}
+        # ``search_audio`` has already resolved tenant-scoped vector metadata.
+        # Only real chunk IDs are reverse-looked-up; segment indexes are never
+        # treated as chunk IDs.
+        chunk_ids = sorted({hit.chunk_id for hit in hits if hit.chunk_id is not None})
+        chunk_details = (
+            await self._lookup_chunks(chunk_ids, tenant_id=tenant_id) if chunk_ids else {}
+        )
 
         candidates: list[CandidateSegment] = []
-        for h in hits:
-            if not isinstance(h.id, int):
-                continue
-            detail = chunk_details.get(h.id)
+        for hit in hits:
+            chunk_id = hit.chunk_id
+            detail = chunk_details.get(chunk_id) if chunk_id is not None else None
             if detail is not None:
+                assert chunk_id is not None
+                if detail["recording_id"] != hit.recording_id:
+                    logger.warning(
+                        "Audio vector/chunk recording mismatch vector=%d chunk=%d",
+                        hit.vector_id,
+                        chunk_id,
+                    )
+                    continue
                 candidates.append(
                     CandidateSegment(
-                        chunk_id=h.id,
+                        chunk_id=chunk_id,
                         recording_id=detail["recording_id"],
                         segment_ids=detail["segment_ids"],
                         text=detail["text"],
                         recorded_at=detail["recorded_at"],
-                        score=h.score,
+                        score=hit.score,
                         source_channel="audio",
                     )
                 )
             else:
-                # No chunk detail — synthesise minimal entry. chunk_id is
-                # the segment_id (we use segment_id as the unique key when
-                # chunk_id linkage is absent).
+                # A vector without chunk linkage remains retrievable without
+                # colliding with positive, globally unique Chunk primary keys.
                 candidates.append(
                     CandidateSegment(
-                        chunk_id=h.id,
-                        recording_id=0,
-                        segment_ids=[h.id],
+                        chunk_id=(hit.chunk_id if hit.chunk_id is not None else -hit.vector_id),
+                        recording_id=hit.recording_id,
+                        segment_ids=[hit.segment_id],
                         text="",
                         recorded_at=None,
-                        score=h.score,
+                        score=hit.score,
                         source_channel="audio",
                     )
                 )

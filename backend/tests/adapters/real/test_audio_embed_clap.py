@@ -67,9 +67,7 @@ async def test_clap_multiple_files(respx_mock: respx.MockRouter, tmp_wav: Path) 
         )
     )
     try:
-        results = await adapter.embed_audio(
-            [str(tmp_wav), str(tmp_wav)], segment_ids=[3, 7]
-        )
+        results = await adapter.embed_audio([str(tmp_wav), str(tmp_wav)], segment_ids=[3, 7])
         assert len(results) == 2
         assert results[0].segment_id == 3
         assert results[1].segment_id == 7
@@ -147,9 +145,7 @@ async def test_clap_err_timeout(respx_mock: respx.MockRouter, tmp_wav: Path) -> 
 @pytest.mark.asyncio
 async def test_clap_err_bad_json(respx_mock: respx.MockRouter, tmp_wav: Path) -> None:
     adapter = _make_adapter()
-    respx_mock.post(_CLAP_URL).mock(
-        return_value=httpx.Response(200, text="<html/>")
-    )
+    respx_mock.post(_CLAP_URL).mock(return_value=httpx.Response(200, text="<html/>"))
     try:
         with pytest.raises(CLAPServerError):
             await adapter.embed_audio([str(tmp_wav)])
@@ -174,13 +170,9 @@ async def test_clap_dim_mismatch(respx_mock: respx.MockRouter, tmp_wav: Path) ->
 
 
 @pytest.mark.asyncio
-async def test_clap_missing_embedding_key(
-    respx_mock: respx.MockRouter, tmp_wav: Path
-) -> None:
+async def test_clap_missing_embedding_key(respx_mock: respx.MockRouter, tmp_wav: Path) -> None:
     adapter = _make_adapter()
-    respx_mock.post(_CLAP_URL).mock(
-        return_value=httpx.Response(200, json={"foo": "bar"})
-    )
+    respx_mock.post(_CLAP_URL).mock(return_value=httpx.Response(200, json={"foo": "bar"}))
     try:
         with pytest.raises(CLAPServerError):
             await adapter.embed_audio([str(tmp_wav)])
@@ -189,9 +181,7 @@ async def test_clap_missing_embedding_key(
 
 
 @pytest.mark.asyncio
-async def test_clap_transport_error(
-    respx_mock: respx.MockRouter, tmp_wav: Path
-) -> None:
+async def test_clap_transport_error(respx_mock: respx.MockRouter, tmp_wav: Path) -> None:
     adapter = _make_adapter()
     respx_mock.post(_CLAP_URL).mock(side_effect=httpx.ConnectError("conn refused"))
     try:
@@ -209,9 +199,7 @@ async def test_clap_aclose_idempotent() -> None:
 
 
 @pytest.mark.asyncio
-async def test_clap_recreate_after_close(
-    respx_mock: respx.MockRouter, tmp_wav: Path
-) -> None:
+async def test_clap_recreate_after_close(respx_mock: respx.MockRouter, tmp_wav: Path) -> None:
     adapter = _make_adapter()
     respx_mock.post(_CLAP_URL).mock(
         return_value=httpx.Response(

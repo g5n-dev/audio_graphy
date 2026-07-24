@@ -21,7 +21,6 @@ from audio_graphy.eval.types import (
     MetricResult,
 )
 
-
 # ============================================================
 # Fixtures
 # ============================================================
@@ -95,9 +94,7 @@ def test_to_json_creates_parent_dirs(tmp_path: Path, sample_run: EvalRun) -> Non
     assert out.is_file()
 
 
-def test_to_markdown_contains_expected_sections(
-    tmp_path: Path, sample_run: EvalRun
-) -> None:
+def test_to_markdown_contains_expected_sections(tmp_path: Path, sample_run: EvalRun) -> None:
     """Markdown report has Header + Aggregate + Highlights + Errors sections."""
     out = tmp_path / "report.md"
     to_markdown(sample_run, out)
@@ -130,9 +127,7 @@ def test_to_markdown_empty_per_example(tmp_path: Path) -> None:
     assert "## Errors" not in md  # no errors section when empty
 
 
-def test_to_markdown_mock_pipeline_banner(
-    tmp_path: Path, sample_run: EvalRun
-) -> None:
+def test_to_markdown_mock_pipeline_banner(tmp_path: Path, sample_run: EvalRun) -> None:
     """When config['pipeline'] contains 'MockPipeline', the warning banner appears."""
     out = tmp_path / "report.md"
     to_markdown(sample_run, out)
@@ -167,9 +162,7 @@ def test_to_markdown_truncates_long_errors(tmp_path: Path) -> None:
         finished_at="2026-07-21T00:00:01+00:00",
         config={},
         aggregate_metrics={},
-        per_example=(
-            EvalExampleResult(example_id="ex-001", metrics=(), error=long_err),
-        ),
+        per_example=(EvalExampleResult(example_id="ex-001", metrics=(), error=long_err),),
     )
     out = tmp_path / "report.md"
     to_markdown(run, out)

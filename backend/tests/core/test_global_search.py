@@ -164,9 +164,7 @@ async def test_concurrency_does_not_exceed_cap():
 @pytest.mark.asyncio
 async def test_community_ids_filter():
     recs = [_rec(i, f"社区 {i}", f"摘要 {i}") for i in range(10)]
-    searcher = GlobalSearcher(
-        provider=lambda **kw: recs, top_k=10
-    )
+    searcher = GlobalSearcher(provider=lambda **kw: recs, top_k=10)
     result = await searcher.search(
         query="社区",
         tenant_id="t1",

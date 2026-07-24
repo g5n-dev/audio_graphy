@@ -95,7 +95,8 @@ class BGEEmbedAdapter:
             logger.warning("Embed %d url=%s body=%s", resp.status_code, _redact(full_url), preview)
             raise EmbedServerError(
                 f"embed {resp.status_code}: {preview}",
-                url=self._base_url, status_code=resp.status_code,
+                url=self._base_url,
+                status_code=resp.status_code,
             )
         return self._parse_response(resp)
 
@@ -120,14 +121,16 @@ class BGEEmbedAdapter:
         except ValueError as exc:
             raise EmbedServerError(
                 f"embed non-JSON: {exc}",
-                url=self._base_url, status_code=resp.status_code,
+                url=self._base_url,
+                status_code=resp.status_code,
             ) from exc
         try:
             data_items = body["data"]
         except (KeyError, TypeError) as exc:
             raise EmbedServerError(
                 f"embed JSON missing 'data': {str(body)[:200]}",
-                url=self._base_url, status_code=resp.status_code,
+                url=self._base_url,
+                status_code=resp.status_code,
             ) from exc
 
         out: list[EmbeddingResult] = []
@@ -136,13 +139,16 @@ class BGEEmbedAdapter:
             if len(vector) != self.dim:
                 raise EmbedDimMismatchError(
                     f"embed dim mismatch: expected {self.dim}, got {len(vector)}",
-                    url=self._base_url, status_code=resp.status_code,
+                    url=self._base_url,
+                    status_code=resp.status_code,
                 )
-            out.append(EmbeddingResult(
-                vector=tuple(float(x) for x in vector),
-                dim=self.dim,
-                model=self.model,
-            ))
+            out.append(
+                EmbeddingResult(
+                    vector=tuple(float(x) for x in vector),
+                    dim=self.dim,
+                    model=self.model,
+                )
+            )
         logger.debug("Embed OK count=%d dim=%d", len(out), self.dim)
         return tuple(out)
 

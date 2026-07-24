@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from audio_graphy.api.deps import get_current_user, get_db
 from audio_graphy.auth.middleware import AuthUser
-from audio_graphy.auth.tenants import get_agent_filter, get_tenant_id
+from audio_graphy.auth.tenants import get_tenant_id
 from audio_graphy.errors import RecordingNotFoundError
 from audio_graphy.models.recording import Recording
 from audio_graphy.models.segment import Segment
@@ -31,7 +31,7 @@ async def get_segments(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
-    _user: AuthUser = Depends(get_current_user),
+    user: AuthUser = Depends(get_current_user),
 ) -> SegmentListResponse:
     """Get VAD segments for a recording (paginated).
 
@@ -39,15 +39,14 @@ async def get_segments(
     Agent role: only sees own recordings.
     """
     tenant_id = get_tenant_id(request)
-    agent_filter = get_agent_filter(request)
 
     # Verify recording exists in tenant scope
     rec_stmt = select(Recording).where(
         Recording.id == recording_id,
         Recording.tenant_id == tenant_id,
     )
-    if agent_filter is not None:
-        rec_stmt = rec_stmt.where(Recording.agent_name == agent_filter)
+    if user.role == "agent":
+        rec_stmt = rec_stmt.where(Recording.agent_user_id == user.id)
     rec_result = await db.execute(rec_stmt)
     if rec_result.scalar_one_or_none() is None:
         raise RecordingNotFoundError(detail={"recording_id": recording_id})

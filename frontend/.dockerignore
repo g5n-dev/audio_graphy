@@ -1,0 +1,12 @@
+.git
+node_modules
+dist
+build
+.vite
+.wrangler
+coverage
+playwright-report
+test-results
+*.tsbuildinfo
+*.log
+.DS_Store

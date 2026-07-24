@@ -22,7 +22,7 @@ COPY pyproject.toml README.md ./
 COPY audio_graphy ./audio_graphy
 
 RUN pip install --upgrade pip && \
-    pip install --prefix=/install -e ".[dev]"
+    pip install --prefix=/install .
 
 # --- runtime ---------------------------------------------------------
 FROM python:3.13-slim AS runtime
@@ -31,11 +31,11 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PATH="/usr/local/bin:$PATH"
 
-# Runtime system deps (libmysqlclient for aiomysql, curl for healthchecks)
+# Runtime system deps. ffmpeg provides both ffmpeg and ffprobe for auditable
+# physical reception assembly.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        default-libmysqlclient-dev \
         curl \
-        git \
+        ffmpeg \
     && rm -rf /var/lib/apt/lists/* \
     && useradd -m -u 1000 app
 
@@ -44,8 +44,8 @@ WORKDIR /app
 COPY --from=builder /install /usr/local
 COPY --chown=app:app . /app
 
-# Alembic + uvicorn live in /usr/local/bin (copied from builder)
-# Pytest / ruff / mypy available too for dev iteration inside container.
+# Alembic + uvicorn live in /usr/local/bin (copied from builder). Test and
+# lint tooling stay outside the runtime image and run in CI/the local venv.
 
 USER app
 

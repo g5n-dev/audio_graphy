@@ -59,13 +59,9 @@ class SpeakerMergePending(TenantScopedBase):
     )
     fuzzy_score: Mapped[float] = mapped_column(Numeric(5, 4), nullable=False)
     status: Mapped[str] = mapped_column(String(24), nullable=False, default="pending")
-    voiceprint_score: Mapped[float | None] = mapped_column(
-        Numeric(5, 4), nullable=True
-    )
+    voiceprint_score: Mapped[float | None] = mapped_column(Numeric(5, 4), nullable=True)
     resolved_by: Mapped[str | None] = mapped_column(String(24), nullable=True)
-    resolved_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (
@@ -74,11 +70,8 @@ class SpeakerMergePending(TenantScopedBase):
             name="ck_speaker_merge_pending_status",
         ),
         CheckConstraint(
-            "resolved_by IS NULL OR resolved_by IN "
-            "('voiceprint', 'human', 'timeout')",
+            "resolved_by IS NULL OR resolved_by IN ('voiceprint', 'human', 'timeout')",
             name="ck_speaker_merge_pending_resolved_by",
         ),
-        Index(
-            "ix_speaker_merge_pending_tenant_status", "tenant_id", "status"
-        ),
+        Index("ix_speaker_merge_pending_tenant_status", "tenant_id", "status"),
     )

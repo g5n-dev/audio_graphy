@@ -96,9 +96,7 @@ def seeded_speaker_data(test_client, db_session_factory):
 # ============================================================
 
 
-def test_list_merge_pending_viewer_can_read(
-    test_client, auth_headers, seeded_speaker_data
-):
+def test_list_merge_pending_viewer_can_read(test_client, auth_headers, seeded_speaker_data):
     """Viewer+ can read the queue (architecture §25.13)."""
     resp = test_client.get(
         "/api/v1/speakers/merge-pending",
@@ -112,9 +110,7 @@ def test_list_merge_pending_viewer_can_read(
     assert item["candidate_name"] == "speaker:vp_abcdef12"
 
 
-def test_list_merge_pending_status_filter(
-    test_client, auth_headers, seeded_speaker_data
-):
+def test_list_merge_pending_status_filter(test_client, auth_headers, seeded_speaker_data):
     resp = test_client.get(
         "/api/v1/speakers/merge-pending",
         headers=auth_headers["inspector_t1"],
@@ -124,9 +120,7 @@ def test_list_merge_pending_status_filter(
     assert resp.json()["total"] == 0  # no resolved items yet
 
 
-def test_list_merge_pending_cross_tenant_empty(
-    test_client, auth_headers, seeded_speaker_data
-):
+def test_list_merge_pending_cross_tenant_empty(test_client, auth_headers, seeded_speaker_data):
     """Tenant 2 viewer sees no rows from tenant 1."""
     resp = test_client.get(
         "/api/v1/speakers/merge-pending",
@@ -146,9 +140,7 @@ def test_list_merge_pending_unauth_401(test_client):
 # ============================================================
 
 
-def test_confirm_merge_inspector_happy_path(
-    test_client, auth_headers, seeded_speaker_data
-):
+def test_confirm_merge_inspector_happy_path(test_client, auth_headers, seeded_speaker_data):
     pending_id = seeded_speaker_data["pending_id"]
     target_id = seeded_speaker_data["node_id"]
     resp = test_client.post(
@@ -164,9 +156,7 @@ def test_confirm_merge_inspector_happy_path(
     assert body["voiceprint_score"] == pytest.approx(0.85)
 
 
-def test_confirm_merge_forbidden_viewer(
-    test_client, auth_headers, seeded_speaker_data
-):
+def test_confirm_merge_forbidden_viewer(test_client, auth_headers, seeded_speaker_data):
     pending_id = seeded_speaker_data["pending_id"]
     target_id = seeded_speaker_data["node_id"]
     resp = test_client.post(
@@ -186,9 +176,7 @@ def test_confirm_merge_404_pending_missing(test_client, auth_headers):
     assert resp.status_code == 404, resp.text
 
 
-def test_confirm_merge_404_target_missing(
-    test_client, auth_headers, seeded_speaker_data
-):
+def test_confirm_merge_404_target_missing(test_client, auth_headers, seeded_speaker_data):
     pending_id = seeded_speaker_data["pending_id"]
     resp = test_client.post(
         f"/api/v1/speakers/{pending_id}/merge/999999",
@@ -198,9 +186,7 @@ def test_confirm_merge_404_target_missing(
     assert resp.status_code == 404, resp.text
 
 
-def test_confirm_merge_409_when_already_resolved(
-    test_client, auth_headers, seeded_speaker_data
-):
+def test_confirm_merge_409_when_already_resolved(test_client, auth_headers, seeded_speaker_data):
     pending_id = seeded_speaker_data["pending_id"]
     target_id = seeded_speaker_data["node_id"]
     # First resolution.
@@ -224,9 +210,7 @@ def test_confirm_merge_409_when_already_resolved(
 # ============================================================
 
 
-def test_reject_merge_inspector_happy_path(
-    test_client, auth_headers, seeded_speaker_data
-):
+def test_reject_merge_inspector_happy_path(test_client, auth_headers, seeded_speaker_data):
     pending_id = seeded_speaker_data["pending_id"]
     resp = test_client.post(
         f"/api/v1/speakers/{pending_id}/reject-merge",
@@ -239,9 +223,7 @@ def test_reject_merge_inspector_happy_path(
     assert body["resolved_by"] == "human"
 
 
-def test_reject_merge_admin_happy_path(
-    test_client, auth_headers, seeded_speaker_data
-):
+def test_reject_merge_admin_happy_path(test_client, auth_headers, seeded_speaker_data):
     pending_id = seeded_speaker_data["pending_id"]
     resp = test_client.post(
         f"/api/v1/speakers/{pending_id}/reject-merge",
@@ -251,9 +233,7 @@ def test_reject_merge_admin_happy_path(
     assert resp.status_code == 200, resp.text
 
 
-def test_reject_merge_forbidden_viewer(
-    test_client, auth_headers, seeded_speaker_data
-):
+def test_reject_merge_forbidden_viewer(test_client, auth_headers, seeded_speaker_data):
     pending_id = seeded_speaker_data["pending_id"]
     resp = test_client.post(
         f"/api/v1/speakers/{pending_id}/reject-merge",
@@ -272,9 +252,7 @@ def test_reject_merge_404_pending_missing(test_client, auth_headers):
     assert resp.status_code == 404, resp.text
 
 
-def test_reject_merge_cross_tenant_404(
-    test_client, auth_headers, seeded_speaker_data
-):
+def test_reject_merge_cross_tenant_404(test_client, auth_headers, seeded_speaker_data):
     """Tenant 2 admin cannot reject tenant 1 pending row."""
     pending_id = seeded_speaker_data["pending_id"]
     resp = test_client.post(

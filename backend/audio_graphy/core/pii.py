@@ -45,7 +45,7 @@ PII_CATEGORIES: tuple[str, ...] = (
 )
 
 _CATEGORY_PRIORITY: dict[str, int] = {
-    "id_card": 0,   # most specific (18-digit strict) — wins over bank_card
+    "id_card": 0,  # most specific (18-digit strict) — wins over bank_card
     "phone": 1,
     "bank_card": 2,
     "email": 3,
@@ -101,17 +101,11 @@ class PIIScrubber:
             r"(?<!\d)(0\d{2,3}-?\d{7,8})(?!\d)"
         ),
         # 18-digit Chinese ID (last char may be X/x).
-        "id_card": re.compile(
-            r"(?<!\d)(\d{17}[\dXx])(?!\d)"
-        ),
+        "id_card": re.compile(r"(?<!\d)(\d{17}[\dXx])(?!\d)"),
         # 16-19 digit bank card; first char non-zero.
-        "bank_card": re.compile(
-            r"(?<!\d)([1-9]\d{15,18})(?!\d)"
-        ),
+        "bank_card": re.compile(r"(?<!\d)([1-9]\d{15,18})(?!\d)"),
         # Email — simplified RFC.
-        "email": re.compile(
-            r"([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})"
-        ),
+        "email": re.compile(r"([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})"),
         # IPv4 — 4 octets 0-255.
         "ipv4": re.compile(
             r"(?<!\d)((?:25[0-5]|2[0-4]\d|[01]?\d\d?)"
@@ -266,11 +260,27 @@ class PIIScrubber:
         if len(s) <= keep_first + keep_last:
             # Too short to keep + mask — mask everything.
             return self._redaction_char * max(len(s), mask_len)
-        return (
-            s[:keep_first]
-            + self._redaction_char * mask_len
-            + s[len(s) - keep_last :]
-        )
+        return s[:keep_first] + self._redaction_char * mask_len + s[len(s) - keep_last :]
+
+
+_DEFAULT_PII_SCRUBBER = PIIScrubber()
+
+
+def scrubbed_segment_text(
+    text_scrubbed: str | None,
+    transcript: str | None,
+    *,
+    scrubber: PIIScrubber | None = None,
+) -> str:
+    """Resolve segment text without ever exposing a legacy raw fallback.
+
+    Persisted ``text_scrubbed`` remains authoritative, including an explicitly
+    empty string. Legacy rows with a NULL scrubbed value are sanitized at the
+    read boundary before they can enter responses or downstream analysis.
+    """
+    if text_scrubbed is not None:
+        return text_scrubbed
+    return (scrubber or _DEFAULT_PII_SCRUBBER).scrub_simple(transcript or "")
 
 
 __all__ = [
@@ -278,4 +288,5 @@ __all__ = [
     "PIIScrubber",
     "RedactionRecord",
     "ScrubResult",
+    "scrubbed_segment_text",
 ]

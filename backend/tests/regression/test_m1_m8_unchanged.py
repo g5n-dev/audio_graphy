@@ -95,9 +95,7 @@ def test_r2_endpoints_disabled_when_flag_false(test_client, auth_headers):
         )
 
 
-def test_m9_speaker_endpoints_still_disabled_without_flag(
-    test_client, auth_headers
-):
+def test_m9_speaker_endpoints_still_disabled_without_flag(test_client, auth_headers):
     """T13 endpoints are appended to the speakers router, so they're
     registered even when flag=False. We assert the merge-pending endpoint
     exists at the path level (it doesn't need the flag because the

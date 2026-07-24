@@ -11,9 +11,7 @@ from tests.api.conftest import _run_async, seed_recording
 pytestmark = pytest.mark.integration
 
 
-def test_e2e_local_search_and_drill_down(
-    test_client, auth_headers, db_session_factory
-):
+def test_e2e_local_search_and_drill_down(test_client, auth_headers, db_session_factory):
     rec_id = _run_async(seed_recording(db_session_factory, tenant_id="chang_an"))
 
     # Seed graph.
@@ -42,8 +40,26 @@ def test_e2e_local_search_and_drill_down(
             source_ids=_list_to_str([f"{rec_id}_1"]),
             recording_ids=_list_to_str([str(rec_id)]),
         )
-    g.add_edge("种子节点", "邻居A", key="r", relation="r", weight=1.0, confidence="EXTRACTED", confidence_score=0.9, source_ids=_list_to_str([f"{rec_id}_1"]))
-    g.add_edge("邻居A", "邻居B", key="r", relation="r", weight=1.0, confidence="EXTRACTED", confidence_score=0.9, source_ids=_list_to_str([f"{rec_id}_1"]))
+    g.add_edge(
+        "种子节点",
+        "邻居A",
+        key="r",
+        relation="r",
+        weight=1.0,
+        confidence="EXTRACTED",
+        confidence_score=0.9,
+        source_ids=_list_to_str([f"{rec_id}_1"]),
+    )
+    g.add_edge(
+        "邻居A",
+        "邻居B",
+        key="r",
+        relation="r",
+        weight=1.0,
+        confidence="EXTRACTED",
+        confidence_score=0.9,
+        source_ids=_list_to_str([f"{rec_id}_1"]),
+    )
     store._loaded = True
 
     # 1. Local search.

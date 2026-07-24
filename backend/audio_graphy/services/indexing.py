@@ -19,6 +19,7 @@ from audio_graphy.adapters.bundle import AdapterBundle
 from audio_graphy.core.chunker import Chunker
 from audio_graphy.core.extractor import EntityExtractor
 from audio_graphy.core.graph import GraphBuilder
+from audio_graphy.core.pii import PIIScrubber
 from audio_graphy.core.types import DEFAULT_ENTITY_TYPES
 from audio_graphy.models.chunk import Chunk
 from audio_graphy.models.enums import PipelineState, RecordingStatus
@@ -67,12 +68,17 @@ class IndexingService:
         vector_store: MySQLVectorStore,
         graph_store: NetworkXGraphStore,
         file_index: FileIndex,
+        *,
+        pii_scrubber: PIIScrubber | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._bundle = bundle
         self._vector_store = vector_store
         self._graph_store = graph_store
         self._file_index = file_index
+        # Persistence is fail-safe by default: raw ASR text must not reach
+        # chunks, embeddings, extraction prompts, graphs, or file indexes.
+        self._pii_scrubber = pii_scrubber or PIIScrubber()
 
     async def run_pipeline(self, recording: Recording) -> None:
         """Execute the full indexing pipeline for a recording.
@@ -140,6 +146,7 @@ class IndexingService:
             self._bundle,
             session_factory=self._session_factory,
             file_index=self._file_index,
+            pii_scrubber=self._pii_scrubber,
         )
         await chunker.process_recording(
             recording.id,

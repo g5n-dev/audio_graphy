@@ -3,7 +3,8 @@
 Targets the uncovered branches:
 - error path (delete raises → captured in report.errors + retention_delete_failed audit)
 - audio file unlink OSError (best-effort: logged but not raised)
-- graph_store factory returns a real store → _remove_graph_refs exercise
+- graph_store factory returns a real store → erase is persisted
+- graph persistence failures enter the failure/retry path
 - override retention_days=None falls back to Settings.recording_retention_days
 - recorded_at=None rows skipped from candidate query
 - archived status included (not just 'indexed')
@@ -139,14 +140,14 @@ async def test_delete_failure_recorded_in_errors(
 
 
 @pytest.mark.asyncio
-async def test_unlink_oserror_swallowed(
+async def test_unlink_oserror_keeps_recording_retryable(
     rg_factory: async_sessionmaker[AsyncSession],
     rg_crypto: AudioCrypto,
     rg_audit: AuditWriter,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """OSError during audio unlink is logged but not re-raised."""
+    """OSError during audio unlink must not falsely complete retention."""
     audio = tmp_path / "oserror.wav"
     audio.write_bytes(b"\x00" * 100)
     await _seed(rg_factory, days_ago=400, path=str(audio))
@@ -155,12 +156,6 @@ async def test_unlink_oserror_swallowed(
         rg_factory, rg_crypto, rg_audit, _noop_graph_factory, retention_days=90
     )
 
-    def _raise_unlink(_self: Path) -> None:
-        raise OSError("permission denied")
-
-    # Path.unlink is the call site; monkeypatch via tmp_path subclass is fragile,
-    # so patch the bound method on the audio object's class via monkeypatch.setattr
-    # targeting the standard library. Use a wrapper approach instead.
     original_unlink = Path.unlink
 
     def patched_unlink(self: Path, *args: Any, **kwargs: Any) -> None:
@@ -170,10 +165,12 @@ async def test_unlink_oserror_swallowed(
 
     monkeypatch.setattr(Path, "unlink", patched_unlink)
 
-    # Should not raise — OSError is swallowed inside _delete_one.
     report = await enforcer.run_sweep()
-    assert report.deleted == 1
-    assert report.errors == []
+    assert report.deleted == 0
+    assert len(report.errors) == 1
+    async with rg_factory() as session:
+        remaining = await session.get(Recording, 1)
+        assert remaining is not None
 
 
 @pytest.mark.asyncio
@@ -240,7 +237,7 @@ async def test_audio_encrypted_path_preferred(
     rg_audit: AuditWriter,
     tmp_path: Path,
 ) -> None:
-    """When audio_encrypted_path is set, that file is unlinked (not the raw path)."""
+    """Encrypted and transient plaintext copies are both unlinked."""
     raw = tmp_path / "raw.wav"
     raw.write_bytes(b"\x00" * 100)
     enc = tmp_path / "raw.wav.enc"
@@ -249,9 +246,7 @@ async def test_audio_encrypted_path_preferred(
 
     # Update recording with encrypted path.
     async with rg_factory() as session:
-        rec_row = (
-            await session.execute(select(Recording).where(Recording.id == 1))
-        ).scalar_one()
+        rec_row = (await session.execute(select(Recording).where(Recording.id == 1))).scalar_one()
         rec_row.audio_encrypted_path = str(enc)
         await session.commit()
 
@@ -259,9 +254,57 @@ async def test_audio_encrypted_path_preferred(
         rg_factory, rg_crypto, rg_audit, _noop_graph_factory, retention_days=90
     )
     await enforcer.run_sweep()
-    # Encrypted file unlinked; raw file still on disk (not the deletion target).
+    # Both representations contain personal audio and must be erased.
     assert not enc.exists()
-    assert raw.exists()
+    assert not raw.exists()
+
+
+@pytest.mark.asyncio
+async def test_retention_durably_clears_file_index_and_llm_cache(
+    rg_factory: async_sessionmaker[AsyncSession],
+    rg_crypto: AudioCrypto,
+    rg_audit: AuditWriter,
+    tmp_path: Path,
+) -> None:
+    from audio_graphy.storage.file_index import (
+        STORE_LLM_RESPONSE_CACHE,
+        STORE_TEXT_CHUNKS,
+        STORE_VIDEO_SEGMENTS,
+        FileIndex,
+    )
+
+    audio = tmp_path / "indexed.wav"
+    audio.write_bytes(b"\x00" * 100)
+    await _seed(rg_factory, days_ago=400, path=str(audio))
+    index = FileIndex(tmp_path, tenant_id="chang_an")
+    await index.set(
+        STORE_VIDEO_SEGMENTS,
+        "1_0",
+        {"recording_id": 1, "transcript": "private"},
+    )
+    await index.set(
+        STORE_TEXT_CHUNKS,
+        "1_1",
+        {"recording_id": 1, "text": "private"},
+    )
+    await index.set_llm_cache("opaque", "private response")
+    await index.flush()
+
+    enforcer = RetentionEnforcer(
+        rg_factory,
+        rg_crypto,
+        rg_audit,
+        _noop_graph_factory,
+        retention_days=90,
+        working_dir=tmp_path,
+        file_index_factory=lambda _tenant: index,
+    )
+    report = await enforcer.run_sweep()
+
+    assert report.deleted == 1
+    assert await index.get_all(STORE_VIDEO_SEGMENTS) == {}
+    assert await index.get_all(STORE_TEXT_CHUNKS) == {}
+    assert await index.get_all(STORE_LLM_RESPONSE_CACHE) == {}
 
 
 @pytest.mark.asyncio
@@ -286,6 +329,13 @@ async def test_graph_store_factory_returns_store_exercises_remove(
     class _Store:
         def __init__(self, g: Any) -> None:
             self.graph = g
+            self.saved = False
+
+        async def save(self) -> None:
+            self.saved = True
+
+        def invalidate_path_projection(self) -> None:
+            return None
 
     fake_store = _Store(graph)
 
@@ -296,9 +346,7 @@ async def test_graph_store_factory_returns_store_exercises_remove(
     audio.write_bytes(b"\x00" * 100)
     await _seed(rg_factory, days_ago=400, path=str(audio))
 
-    enforcer = RetentionEnforcer(
-        rg_factory, rg_crypto, rg_audit, factory, retention_days=90
-    )
+    enforcer = RetentionEnforcer(rg_factory, rg_crypto, rg_audit, factory, retention_days=90)
     report = await enforcer.run_sweep()
     assert report.deleted == 1
     # n1 dropped (only source); n2 still present with stripped recording_ids.
@@ -310,21 +358,29 @@ async def test_graph_store_factory_returns_store_exercises_remove(
     n2_rec = _str_to_list(str(graph.nodes["n2"]["recording_ids"]))
     assert "1" not in n2_rec
     assert "2" in n2_rec
+    assert fake_store.saved is True
 
 
 @pytest.mark.asyncio
-async def test_graph_cleanup_exception_does_not_fail_delete(
+async def test_graph_cleanup_exception_is_reported_and_recording_is_retryable(
     rg_factory: async_sessionmaker[AsyncSession],
     rg_crypto: AudioCrypto,
     rg_audit: AuditWriter,
     tmp_path: Path,
 ) -> None:
-    """Exception inside graph cleanup is logged + downgraded (delete still counts)."""
+    """Graph persistence failure enters the existing failure/retry reporting path."""
 
     class _BrokenStore:
-        @property
-        def graph(self) -> Any:
-            raise RuntimeError("graph load failed")
+        def __init__(self) -> None:
+            import networkx as nx
+
+            self.graph = nx.MultiDiGraph()
+
+        async def save(self) -> None:
+            raise RuntimeError("graph save failed")
+
+        def invalidate_path_projection(self) -> None:
+            return None
 
     def factory(_tenant: str) -> Any:
         return _BrokenStore()
@@ -333,10 +389,74 @@ async def test_graph_cleanup_exception_does_not_fail_delete(
     audio.write_bytes(b"\x00" * 100)
     await _seed(rg_factory, days_ago=400, path=str(audio))
 
-    enforcer = RetentionEnforcer(
-        rg_factory, rg_crypto, rg_audit, factory, retention_days=90
-    )
+    enforcer = RetentionEnforcer(rg_factory, rg_crypto, rg_audit, factory, retention_days=90)
     report = await enforcer.run_sweep()
-    # Delete succeeded; graph cleanup failure was swallowed.
+    assert report.deleted == 0
+    assert len(report.errors) == 1
+    assert "graph save failed" in report.errors[0]
+
+    async with rg_factory() as session:
+        recording = await session.get(Recording, 1)
+    assert recording is not None
+
+    await rg_audit.flush()
+    from audio_graphy.models.audit_log import AuditLog
+
+    async with rg_factory() as session:
+        failure_actions = {
+            row.action
+            for row in (
+                await session.execute(
+                    select(AuditLog).where(
+                        AuditLog.target == "recording:1",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        }
+    assert "retention_delete_failed" in failure_actions
+
+
+@pytest.mark.asyncio
+async def test_async_factory_loads_cold_graph_and_cleanup_survives_reload(
+    rg_factory: async_sessionmaker[AsyncSession],
+    rg_crypto: AudioCrypto,
+    rg_audit: AuditWriter,
+    tmp_path: Path,
+) -> None:
+    """Retention awaits the cold-store factory and flushes erasure to GraphML."""
+    from audio_graphy.core.types import _list_to_str, _str_to_list
+    from audio_graphy.storage.graph_networkx import NetworkXGraphStore
+
+    audio = tmp_path / "cold-graph.wav"
+    audio.write_bytes(b"\x00" * 100)
+    await _seed(rg_factory, days_ago=400, path=str(audio))
+
+    seeded = NetworkXGraphStore(tmp_path, tenant_id="chang_an")
+    await seeded.load()
+    seeded.graph.add_node("exclusive", recording_ids=_list_to_str(["1"]))
+    seeded.graph.add_node("shared", recording_ids=_list_to_str(["1", "2"]))
+    seeded.invalidate_path_projection()
+    await seeded.save()
+
+    cold_store = NetworkXGraphStore(tmp_path, tenant_id="chang_an")
+    factory_calls = 0
+
+    async def factory(_tenant: str) -> Any:
+        nonlocal factory_calls
+        factory_calls += 1
+        await cold_store.load()
+        return cold_store
+
+    enforcer = RetentionEnforcer(rg_factory, rg_crypto, rg_audit, factory, retention_days=90)
+    report = await enforcer.run_sweep()
+
     assert report.deleted == 1
     assert report.errors == []
+    assert factory_calls == 1
+
+    reloaded = NetworkXGraphStore(tmp_path, tenant_id="chang_an")
+    await reloaded.load()
+    assert "exclusive" not in reloaded.graph
+    assert _str_to_list(reloaded.graph.nodes["shared"]["recording_ids"]) == ["2"]

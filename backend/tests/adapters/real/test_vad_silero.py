@@ -20,8 +20,8 @@ import respx
 from audio_graphy.adapters.exceptions import (
     VADRequestError,
     VADServerError,
-    VADTooLargeError,
     VADTimeoutError,
+    VADTooLargeError,
 )
 from audio_graphy.adapters.real.vad_silero import SileroVADAdapter
 
@@ -109,9 +109,7 @@ async def test_vad_err_timeout(respx_mock: respx.MockRouter, tmp_wav: Path) -> N
 async def test_vad_err_bad_json(respx_mock: respx.MockRouter, tmp_wav: Path) -> None:
     """200 + non-JSON body maps to VADServerError."""
     adapter = _make_adapter()
-    respx_mock.post(_VAD_URL).mock(
-        return_value=httpx.Response(200, text="<html>not json</html>")
-    )
+    respx_mock.post(_VAD_URL).mock(return_value=httpx.Response(200, text="<html>not json</html>"))
     try:
         with pytest.raises(VADServerError):
             await adapter.segment(str(tmp_wav))

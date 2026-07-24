@@ -12,9 +12,7 @@ from tests.api.conftest import _run_async, seed_recording
 pytestmark = pytest.mark.integration
 
 
-def test_e2e_community_summary_then_global_search(
-    test_client, auth_headers, db_session_factory
-):
+def test_e2e_community_summary_then_global_search(test_client, auth_headers, db_session_factory):
     _run_async(seed_recording(db_session_factory, tenant_id="chang_an"))
 
     # Seed a LeidenJob + CommunitySummary directly via the ORM.

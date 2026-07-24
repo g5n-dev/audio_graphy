@@ -41,6 +41,7 @@ def _pred(entities: tuple[tuple[str, str], ...]) -> PredictedResult:
 # Case 1 — strict + fuzzy both returned with distinct names
 # --------------------------------------------------------------------
 
+
 def test_dual_mode_returns_two_metrics() -> None:
     """Calling entity_f1 with strict + fuzzy yields two MetricResults with distinct names."""
     gold = _gold((("CS75 Plus", "车型"),))
@@ -56,6 +57,7 @@ def test_dual_mode_returns_two_metrics() -> None:
 # --------------------------------------------------------------------
 # Case 2 — partial fuzzy match scores correctly
 # --------------------------------------------------------------------
+
 
 def test_partial_fuzzy_match() -> None:
     """CS75 Plus (gold) vs CS75PLUS (pred): strict fails, fuzzy passes.
@@ -77,6 +79,7 @@ def test_partial_fuzzy_match() -> None:
 # Case 3 — fuzzy_threshold=1.0 behaves identically to strict mode
 # --------------------------------------------------------------------
 
+
 def test_threshold_1_equals_strict() -> None:
     """threshold=1.0 → fuzzy mode is disabled, behaves exactly like strict."""
     gold = _gold((("CS75 Plus", "车型"), ("哈弗H6", "竞品")))
@@ -93,6 +96,7 @@ def test_threshold_1_equals_strict() -> None:
 # Case 4 — both empty → both return 1.0
 # --------------------------------------------------------------------
 
+
 def test_both_empty_returns_one() -> None:
     """Both gold and pred entity sets empty → strict and fuzzy both 1.0."""
     gold = _gold(())
@@ -108,6 +112,7 @@ def test_both_empty_returns_one() -> None:
 # --------------------------------------------------------------------
 # Bonus — entity type mismatch blocks fuzzy match
 # --------------------------------------------------------------------
+
 
 def test_fuzzy_type_mismatch_blocks_match() -> None:
     """Same text but different type → fuzzy does NOT match."""

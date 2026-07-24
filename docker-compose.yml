@@ -1,21 +1,22 @@
 # ============================================================
-# AudioGraphy single-host docker-compose (Phase 1 + minimal Phase 3)
+# AudioGraphy single-host docker-compose
 #
-# Services:
-#   mysql        — state layer + vectors (brute-force cosine Phase 1)
-#   adminer      — DB web UI (dev-only, port 8081)
-#   backend      — FastAPI (uvicorn)
-#   frontend     — Vite dev server (port 5173) — replaced by nginx in prod
+# Supported, mutually-exclusive model profiles:
+#   mock                 — core app only; all adapters stay mock
+#   models-cpu           — funASR + BGE-M3 CPU + CAM++
+#   models-single-gpu    — CPU models + one vLLM + BGE-M3/CLAP on one GPU
+#   models-multi-gpu     — CPU models + two vLLMs split across explicit GPUs
 #
-# All model adapters (ASR/LLM/VAD/Embed) ship as MOCK by default
-# (ADAPTER_MODE=mock). Real vLLM/funASR services are out-of-scope for this sprint.
-#
-# Bring up:  docker compose up -d
-# Health:    docker compose ps
-# Logs:      docker compose logs -f backend
+# Example: docker compose --profile mock up -d
 # ============================================================
 
 name: audiography
+
+x-model-security: &model-security
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
 
 services:
   mysql:
@@ -44,7 +45,7 @@ services:
     ports:
       # Host 3307 → container 3306 (avoid conflict with locally-installed MySQL on 3306)
       # Backend / adminer connect via the internal docker network on 3306 directly.
-      - "3307:3306"
+      - "${COMPOSE_PRIVATE_BIND_HOST:-127.0.0.1}:${MYSQL_HOST_PORT:-3307}:3306"
     healthcheck:
       test:
         [
@@ -61,16 +62,39 @@ services:
   adminer:
     image: adminer:5.3.0
     container_name: audiography-adminer
+    profiles: ["mock"]
     restart: unless-stopped
     depends_on:
       mysql:
         condition: service_healthy
     ports:
-      - "8081:8080"
+      - "${COMPOSE_PRIVATE_BIND_HOST:-127.0.0.1}:${ADMINER_HOST_PORT:-8081}:8080"
     environment:
       ADMINER_DEFAULT_SERVER: mysql
     networks:
       - audiography_net
+
+  master-key-init:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    user: "0:0"
+    restart: "no"
+    network_mode: "none"
+    read_only: true
+    cap_drop: ["ALL"]
+    cap_add: ["CHOWN", "DAC_OVERRIDE", "FOWNER"]
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - master_key:/run/secrets
+      - working_dir:/data/working_dir
+    command:
+      - python
+      - /app/scripts/init_master_key.py
+      - /run/secrets/audiography_master.key
+      - --state-dir
+      - /data/working_dir
 
   backend:
     build:
@@ -79,20 +103,23 @@ services:
     container_name: audiography-backend
     restart: unless-stopped
     env_file:
-      - .env
+      - path: .env
+        required: false
     environment:
       ADAPTER_MODE: ${ADAPTER_MODE:-mock}
-      # M4 per-adapter modes — default "mock" preserves M3 behavior.
-      # Set to "real" + `docker compose --profile real up` to enable.
+      # Per-adapter modes default to mock. Enable only the models actually
+      # present in the selected profile.
       ADAPTER_ASR_MODE: ${ADAPTER_ASR_MODE:-mock}
       ADAPTER_VAD_MODE: ${ADAPTER_VAD_MODE:-mock}
       ADAPTER_LLM_MODE: ${ADAPTER_LLM_MODE:-mock}
       ADAPTER_EMBED_MODE: ${ADAPTER_EMBED_MODE:-mock}
-      # Real-mode endpoints (only consulted when the corresponding mode is "real").
-      SILERO_VAD_URL: ${SILERO_VAD_URL:-http://silero-vad:8002}
-      BGE_M3_URL: ${BGE_M3_URL:-http://bge-m3:8080}
+      # Batch VAD has no bundled third-party container: provide an audited
+      # compatible endpoint before setting ADAPTER_VAD_MODE=real.
+      SILERO_VAD_URL: ${SILERO_VAD_URL:-http://silero-vad.invalid:8000}
+      # Compose service DNS uses container ports, never host-published ports.
+      BGE_M3_URL: ${BGE_M3_URL:-http://bge-m3:80}
       OPENAI_BASE_URL_STRONG: ${OPENAI_BASE_URL_STRONG:-http://vllm-strong:8000/v1}
-      OPENAI_BASE_URL_WEAK: ${OPENAI_BASE_URL_WEAK:-http://vllm-weak:8001/v1}
+      OPENAI_BASE_URL_WEAK: ${OPENAI_BASE_URL_WEAK:-http://vllm-weak:8000/v1}
       HF_TOKEN: ${HF_TOKEN:-}
       MYSQL_HOST: mysql
       MYSQL_PORT: 3306
@@ -100,9 +127,12 @@ services:
     volumes:
       - ./backend:/app
       - working_dir:/data/working_dir
+      - master_key:/run/secrets:ro
     ports:
-      - "8000:8000"
+      - "${COMPOSE_APP_BIND_HOST:-127.0.0.1}:${BACKEND_HOST_PORT:-8000}:8000"
     depends_on:
+      master-key-init:
+        condition: service_completed_successfully
       mysql:
         condition: service_healthy
     healthcheck:
@@ -128,12 +158,14 @@ services:
     container_name: audiography-frontend
     restart: unless-stopped
     environment:
-      VITE_API_BASE: http://localhost:8000/api/v1
+      # The browser keeps same-origin /api/v1; only Vite resolves this
+      # container-internal upstream through Compose DNS.
+      VITE_API_PROXY_TARGET: http://backend:8000
     volumes:
       - ./frontend:/app
       - /app/node_modules
     ports:
-      - "5173:5173"
+      - "${COMPOSE_APP_BIND_HOST:-127.0.0.1}:${FRONTEND_HOST_PORT:-5173}:5173"
     depends_on:
       backend:
         condition: service_healthy
@@ -146,32 +178,27 @@ services:
       start_period: 30s
     networks:
       - audiography_net
-    command: pnpm dev --host 0.0.0.0
+    command: npm run dev -- --host 0.0.0.0
 
   # ============================================================
-  # M4 real-adapter services — opt-in via `--profile real`
-  #   docker compose --profile real up -d
-  #   docker compose --profile real config        # YAML validation
-  # ============================================================
-  # NOTE: services below are GPU-heavy. CPU-only CI does NOT run them.
-  # Silero VAD image (jetresearch/silero-vad-server) is community-maintained
-  # and NOT affiliated with the official Silero project — audit before prod.
+  # Model services. Profiles are mutually exclusive; do not combine them.
+  # Host ports are loopback-only and deliberately separated from backend:8000.
   # ============================================================
 
   vllm-strong:
+    <<: *model-security
     image: vllm/vllm-openai:v0.7.2
     container_name: audiography-vllm-strong
-    profiles: ["real"]
+    profiles: ["models-single-gpu", "models-multi-gpu"]
     restart: unless-stopped
     environment:
       HF_TOKEN: ${HF_TOKEN:-}
-      VLLM_API_KEY: dummy
+      VLLM_API_KEY: ${OPENAI_API_KEY:-dummy}
     volumes:
       - vllm_cache:/root/.cache/huggingface
     ports:
-      - "8000:8000"
+      - "${COMPOSE_PRIVATE_BIND_HOST:-127.0.0.1}:${VLLM_STRONG_HOST_PORT:-18000}:8000"
     healthcheck:
-      # Image ships Python but no curl — use urllib.
       test:
         - "CMD-SHELL"
         - "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).status==200 else 1)\""
@@ -181,32 +208,35 @@ services:
       start_period: 300s
     deploy:
       resources:
+        limits:
+          memory: ${VLLM_STRONG_MEMORY_LIMIT:-72G}
         reservations:
           devices:
             - driver: nvidia
-              count: all
+              device_ids: ["${VLLM_STRONG_GPU_ID:-0}"]
               capabilities: [gpu]
     command: >
-      --model Qwen/Qwen3.6-27B
-      --served-model-name qwen3.6-27b
+      --model ${VLLM_STRONG_MODEL:-Qwen/Qwen3.6-27B}
+      --served-model-name ${VLLM_STRONG_SERVED_NAME:-qwen3.6-27b}
       --host 0.0.0.0 --port 8000
       --tensor-parallel-size 1
-      --gpu-memory-utilization 0.90
+      --gpu-memory-utilization ${VLLM_STRONG_GPU_MEMORY_UTILIZATION:-0.72}
     networks:
       - audiography_net
 
   vllm-weak:
+    <<: *model-security
     image: vllm/vllm-openai:v0.7.2
     container_name: audiography-vllm-weak
-    profiles: ["real"]
+    profiles: ["models-multi-gpu"]
     restart: unless-stopped
     environment:
       HF_TOKEN: ${HF_TOKEN:-}
-      VLLM_API_KEY: dummy
+      VLLM_API_KEY: ${OPENAI_API_KEY:-dummy}
     volumes:
       - vllm_cache:/root/.cache/huggingface
     ports:
-      - "8001:8000"
+      - "${COMPOSE_PRIVATE_BIND_HOST:-127.0.0.1}:${VLLM_WEAK_HOST_PORT:-18001}:8000"
     healthcheck:
       test:
         - "CMD-SHELL"
@@ -217,85 +247,100 @@ services:
       start_period: 300s
     deploy:
       resources:
+        limits:
+          memory: ${VLLM_WEAK_MEMORY_LIMIT:-80G}
         reservations:
           devices:
             - driver: nvidia
-              count: all
+              device_ids: ["${VLLM_WEAK_GPU_ID:-1}"]
               capabilities: [gpu]
     command: >
-      --model Qwen/Qwen3.6-35B-A3B
-      --served-model-name qwen3.6-35b-a3b
+      --model ${VLLM_WEAK_MODEL:-Qwen/Qwen3.6-35B-A3B}
+      --served-model-name ${VLLM_WEAK_SERVED_NAME:-qwen3.6-35b-a3b}
       --host 0.0.0.0 --port 8000
       --tensor-parallel-size 1
-      --gpu-memory-utilization 0.90
+      --gpu-memory-utilization ${VLLM_WEAK_GPU_MEMORY_UTILIZATION:-0.82}
     networks:
       - audiography_net
 
-  silero-vad:
-    # Community-maintained, not Silero official. Audit before production use.
-    image: jetresearch/silero-vad-server:latest
-    container_name: audiography-silero-vad
-    profiles: ["real"]
-    restart: unless-stopped
-    ports:
-      - "8002:8000"
-    healthcheck:
-      test:
-        - "CMD-SHELL"
-        - "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).status==200 else 1)\""
-      interval: 10s
-      timeout: 5s
-      retries: 6
-      start_period: 30s
-    networks:
-      - audiography_net
-
-  bge-m3:
-    image: ghcr.io/huggingface/text-embeddings-inference:1.5
-    container_name: audiography-bge-m3
-    profiles: ["real"]
+  bge-m3-cpu:
+    <<: *model-security
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.8.2
+    container_name: audiography-bge-m3-cpu
+    profiles: ["models-cpu"]
     restart: unless-stopped
     environment:
       HF_TOKEN: ${HF_TOKEN:-}
     volumes:
       - tei_cache:/data
     ports:
-      - "8080:80"
+      - "${COMPOSE_PRIVATE_BIND_HOST:-127.0.0.1}:${BGE_M3_HOST_PORT:-18080}:80"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=256m
     healthcheck:
-      test:
-        - "CMD-SHELL"
-        - "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:80/health', timeout=2).status==200 else 1)\""
-      interval: 10s
-      timeout: 5s
-      retries: 12
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:80/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    command: >
+      --model-id ${BGE_M3_MODEL:-BAAI/bge-m3}
+      --max-batch-tokens ${BGE_M3_MAX_BATCH_TOKENS:-8192}
+    networks:
+      audiography_net:
+        aliases:
+          - bge-m3
+
+  bge-m3-gpu:
+    <<: *model-security
+    image: ghcr.io/huggingface/text-embeddings-inference:cuda-1.8.2
+    container_name: audiography-bge-m3-gpu
+    profiles: ["models-single-gpu", "models-multi-gpu"]
+    restart: unless-stopped
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+    volumes:
+      - tei_cache:/data
+    ports:
+      - "${COMPOSE_PRIVATE_BIND_HOST:-127.0.0.1}:${BGE_M3_HOST_PORT:-18080}:80"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=256m
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:80/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
       start_period: 120s
     deploy:
       resources:
+        limits:
+          memory: ${BGE_M3_MEMORY_LIMIT:-8G}
         reservations:
           devices:
             - driver: nvidia
-              count: all
+              device_ids: ["${BGE_M3_GPU_ID:-0}"]
               capabilities: [gpu]
     command: >
-      --model-id BAAI/bge-m3
-      --max-batch-tokens 16384
+      --model-id ${BGE_M3_MODEL:-BAAI/bge-m3}
+      --max-batch-tokens ${BGE_M3_MAX_BATCH_TOKENS:-16384}
     networks:
-      - audiography_net
+      audiography_net:
+        aliases:
+          - bge-m3
 
   funasr:
-    # Official funASR server image with OpenAI-compatible HTTP API.
-    # 镜像 tag 锁定 funasr/server:1.0.5（齐活林 Q1 locked）。
+    <<: *model-security
     image: funasr/server:1.0.5
     container_name: audiography-funasr
-    profiles: ["real"]
+    profiles: ["models-cpu", "models-single-gpu", "models-multi-gpu"]
     restart: unless-stopped
     environment:
       FUNASR_MODEL: ${FUNASR_MODEL:-fun-asr-nano}
-      FUNASR_DEVICE: ${FUNASR_DEVICE:-cpu}
+      FUNASR_DEVICE: cpu
     ports:
-      # Host 10095 → container 8000: backwards compat with M4 host port.
-      # Container internal 8000 matches funasr/server:1.0.5 OpenAI-compat default.
-      - "10095:8000"
+      - "${COMPOSE_PRIVATE_BIND_HOST:-127.0.0.1}:${FUNASR_HOST_PORT:-10095}:8000"
     volumes:
       - funasr_cache:/root/.cache/funasr
     healthcheck:
@@ -307,30 +352,25 @@ services:
     networks:
       - audiography_net
 
-  # ============================================================
-  # M7 — Phase 2 audio + speaker services (opt-in via `--profile real`)
-  # ============================================================
-  # clap-service: GPU mandatory (L8). laion_clap HTSAT-base, 512-d.
-  # campplus-service: CPU default, GPU optional. CAM++ 192-d L2-normalized.
-  #
-  # Build context = ./docker/{clap,campplus}-service to keep the Dockerfile
-  # tree self-contained. services/*.py are copied in at build time.
-  # ============================================================
   clap-service:
+    <<: *model-security
     build:
       context: ./backend
       dockerfile: ../docker/clap-service/Dockerfile
+      additional_contexts:
+        model_files: ./docker
     container_name: audiography-clap-service
-    profiles: ["real"]
+    profiles: ["models-single-gpu", "models-multi-gpu"]
     restart: unless-stopped
     environment:
-      CUDA_VISIBLE_DEVICES: 0
+      CUDA_VISIBLE_DEVICES: "0"
     volumes:
-      - clap_cache:/root/.cache/torch
-    command: ["uvicorn", "audio_graphy.services.clap_service:app", "--host", "0.0.0.0", "--port", "8006"]
-    working_dir: /app
+      - clap_cache:/home/audiography/.cache/torch
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=512m
     ports:
-      - "8006:8006"
+      - "${COMPOSE_PRIVATE_BIND_HOST:-127.0.0.1}:${CLAP_HOST_PORT:-18006}:8006"
     healthcheck:
       test:
         - "CMD-SHELL"
@@ -341,30 +381,35 @@ services:
       start_period: 180s
     deploy:
       resources:
+        limits:
+          memory: ${CLAP_MEMORY_LIMIT:-4G}
         reservations:
           devices:
             - driver: nvidia
-              count: all
+              device_ids: ["${CLAP_GPU_ID:-0}"]
               capabilities: [gpu]
-          memory: 4g
     networks:
       - audiography_net
 
   campplus-service:
+    <<: *model-security
     build:
       context: ./backend
       dockerfile: ../docker/campplus-service/Dockerfile
+      additional_contexts:
+        model_files: ./docker
     container_name: audiography-campplus-service
-    profiles: ["real"]
+    profiles: ["models-cpu", "models-single-gpu", "models-multi-gpu"]
     restart: unless-stopped
     environment:
-      CAMPPLUS_DEVICE: ${CAMPPLUS_DEVICE:-cpu}
+      CAMPPLUS_DEVICE: cpu
     volumes:
-      - campplus_cache:/root/.cache/modelscope
-    command: ["uvicorn", "audio_graphy.services.campplus_service:app", "--host", "0.0.0.0", "--port", "8007"]
-    working_dir: /app
+      - campplus_cache:/home/audiography/.cache/modelscope
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=512m
     ports:
-      - "8007:8007"
+      - "${COMPOSE_PRIVATE_BIND_HOST:-127.0.0.1}:${CAMPPLUS_HOST_PORT:-18007}:8007"
     healthcheck:
       test:
         - "CMD-SHELL"
@@ -381,6 +426,8 @@ volumes:
     name: audiography_mysql_data
   working_dir:
     name: audiography_working_dir
+  master_key:
+    name: audiography_master_key
   # M4 — model cache volumes for real-adapter services.
   vllm_cache:
     name: audiography_vllm_cache

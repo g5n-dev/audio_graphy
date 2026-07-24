@@ -10,13 +10,15 @@ Verifies L8 ruling:
 
 from __future__ import annotations
 
+from dataclasses import FrozenInstanceError
+
 import pytest
 
 from audio_graphy.core.speaker_fuzzy_matcher import (
-    DefaultVoiceprintComparator,
     L8_FUZZY_AMBIGUOUS,
     L8_FUZZY_INFERRED,
     L8_VOICEPRINT_COSINE_RECONFIRM,
+    DefaultVoiceprintComparator,
     SpeakerCandidate,
     SpeakerFuzzyMatcher,
     SpeakerFuzzyResult,
@@ -52,9 +54,7 @@ def test_constructor_rejects_out_of_range_thresholds() -> None:
 def test_constructor_rejects_inverted_thresholds() -> None:
     """inferred_threshold must NOT exceed ambiguous_threshold."""
     with pytest.raises(SpeakerLinkerFuzzyThresholdError):
-        SpeakerFuzzyMatcher(
-            ambiguous_threshold=0.7, inferred_threshold=0.85
-        )
+        SpeakerFuzzyMatcher(ambiguous_threshold=0.7, inferred_threshold=0.85)
 
 
 def test_l8_constants_locked() -> None:
@@ -294,5 +294,5 @@ def test_result_is_frozen() -> None:
         voiceprint_score=None,
         needs_reconfirm=False,
     )
-    with pytest.raises(Exception):  # FrozenInstanceError subclasses Exception
+    with pytest.raises(FrozenInstanceError):
         r.verdict = "CONFIRMED"  # type: ignore[misc]

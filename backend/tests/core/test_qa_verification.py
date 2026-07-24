@@ -602,6 +602,7 @@ class TestQADualChannelRetrieval:
         assert DualChannelRetriever._parse_chunk_id("invalid") is None
         assert DualChannelRetriever._parse_chunk_id("1_abc") is None
 
+    @pytest.mark.integration
     async def test_naive_channel_with_vectors(
         self,
         mock_bundle: Any,
@@ -657,6 +658,7 @@ class TestQADualChannelRetrieval:
             "The inserted chunk should be in the results"
         )
 
+    @pytest.mark.integration
     async def test_graph_channel_with_entities(
         self,
         scripted_bundle: Any,
@@ -985,6 +987,7 @@ class TestQAProvenanceChain:
 # ============================================================
 
 
+@pytest.mark.integration
 @pytest.mark.e2e
 class TestQAE2EIndexQuery:
     """End-to-end verification: index → query → answer + citations.

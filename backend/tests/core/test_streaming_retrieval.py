@@ -66,44 +66,75 @@ async def _seed_graph(store: NetworkXGraphStore) -> None:
     客户A -[听说 AMBIGUOUS]-> UNI-V."""
     await store.upsert_node(
         GraphNode(
-            entity_id="客户A", name="客户A", type="客户", description="",
-            source_ids=["1_1"], recording_ids=[1],
+            entity_id="客户A",
+            name="客户A",
+            type="客户",
+            description="",
+            source_ids=["1_1"],
+            recording_ids=[1],
         )
     )
     await store.upsert_node(
         GraphNode(
-            entity_id="长安CS75", name="长安CS75", type="车型", description="",
-            source_ids=["1_1"], recording_ids=[1],
+            entity_id="长安CS75",
+            name="长安CS75",
+            type="车型",
+            description="",
+            source_ids=["1_1"],
+            recording_ids=[1],
         )
     )
     await store.upsert_node(
         GraphNode(
-            entity_id="销售张三", name="销售张三", type="坐席", description="",
-            source_ids=["1_2"], recording_ids=[1],
+            entity_id="销售张三",
+            name="销售张三",
+            type="坐席",
+            description="",
+            source_ids=["1_2"],
+            recording_ids=[1],
         )
     )
     await store.upsert_node(
         GraphNode(
-            entity_id="UNI-V", name="UNI-V", type="车型", description="",
-            source_ids=["1_3"], recording_ids=[1],
+            entity_id="UNI-V",
+            name="UNI-V",
+            type="车型",
+            description="",
+            source_ids=["1_3"],
+            recording_ids=[1],
         )
     )
     await store.upsert_edge(
         GraphEdge(
-            source="客户A", target="长安CS75", relation="询问", weight=2.0,
-            confidence="EXTRACTED", confidence_score=1.0, source_ids=["1_1"],
+            source="客户A",
+            target="长安CS75",
+            relation="询问",
+            weight=2.0,
+            confidence="EXTRACTED",
+            confidence_score=1.0,
+            source_ids=["1_1"],
         )
     )
     await store.upsert_edge(
         GraphEdge(
-            source="长安CS75", target="销售张三", relation="推荐", weight=1.0,
-            confidence="INFERRED", confidence_score=0.5, source_ids=["1_2"],
+            source="长安CS75",
+            target="销售张三",
+            relation="推荐",
+            weight=1.0,
+            confidence="INFERRED",
+            confidence_score=0.5,
+            source_ids=["1_2"],
         )
     )
     await store.upsert_edge(
         GraphEdge(
-            source="客户A", target="UNI-V", relation="听说", weight=1.0,
-            confidence="AMBIGUOUS", confidence_score=None, source_ids=["1_3"],
+            source="客户A",
+            target="UNI-V",
+            relation="听说",
+            weight=1.0,
+            confidence="AMBIGUOUS",
+            confidence_score=None,
+            source_ids=["1_3"],
         )
     )
 
@@ -255,7 +286,10 @@ class TestConfidenceWeighting:
     @pytest.mark.asyncio
     async def test_custom_multipliers_respected(self, tmp_path: Path) -> None:
         retriever, store, _ = _make_retriever(
-            tmp_path, keywords="客户A", ambiguous_w=0.3, inferred_w=0.6,
+            tmp_path,
+            keywords="客户A",
+            ambiguous_w=0.3,
+            inferred_w=0.6,
         )
         await _seed_graph(store)
         result = await retriever.retrieve("q", tenant_id="t1", top_k=10)
@@ -283,7 +317,10 @@ class TestMinConfidence:
         retriever, store, _ = _make_retriever(tmp_path, keywords="客户A")
         await _seed_graph(store)
         result = await retriever.retrieve(
-            "q", tenant_id="t1", top_k=10, min_confidence="INFERRED",
+            "q",
+            tenant_id="t1",
+            top_k=10,
+            min_confidence="INFERRED",
         )
         edge_cands = [c for c in result.candidates if c.depth == 1]
         assert all(c.confidence in ("EXTRACTED", "INFERRED") for c in edge_cands)
@@ -291,13 +328,17 @@ class TestMinConfidence:
 
     @pytest.mark.asyncio
     async def test_min_confidence_extracted_filters_inferred_and_ambiguous(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         """Strict mode: only EXTRACTED edges survive."""
         retriever, store, _ = _make_retriever(tmp_path, keywords="客户A")
         await _seed_graph(store)
         result = await retriever.retrieve(
-            "q", tenant_id="t1", top_k=10, min_confidence="EXTRACTED",
+            "q",
+            tenant_id="t1",
+            top_k=10,
+            min_confidence="EXTRACTED",
         )
         edge_cands = [c for c in result.candidates if c.depth == 1]
         assert all(c.confidence == "EXTRACTED" for c in edge_cands)
@@ -310,7 +351,10 @@ class TestMinConfidence:
         retriever, store, _ = _make_retriever(tmp_path, keywords="客户A")
         await _seed_graph(store)
         result = await retriever.retrieve(
-            "q", tenant_id="t1", top_k=10, min_confidence="EXTRACTED",
+            "q",
+            tenant_id="t1",
+            top_k=10,
+            min_confidence="EXTRACTED",
         )
         direct = [c for c in result.candidates if c.depth == 0]
         assert len(direct) == 1  # keyword-matched entity always included
@@ -334,9 +378,7 @@ class TestRWLock:
     async def test_concurrent_reads_do_not_block_each_other(self, tmp_path: Path) -> None:
         retriever, store, _ = _make_retriever(tmp_path, keywords="客户A")
         await _seed_graph(store)
-        results = await asyncio.gather(
-            *(retriever.retrieve("q", tenant_id="t1") for _ in range(5))
-        )
+        results = await asyncio.gather(*(retriever.retrieve("q", tenant_id="t1") for _ in range(5)))
         assert all(r.candidates for r in results)
 
     @pytest.mark.asyncio
@@ -353,8 +395,12 @@ class TestRWLock:
                 await asyncio.sleep(0.1)
                 await store.upsert_node(
                     GraphNode(
-                        entity_id="新实体", name="新实体", type="车型",
-                        description="", source_ids=["1_9"], recording_ids=[1],
+                        entity_id="新实体",
+                        name="新实体",
+                        type="车型",
+                        description="",
+                        source_ids=["1_9"],
+                        recording_ids=[1],
                     )
                 )
                 order.append("writer_released")
@@ -452,7 +498,9 @@ class TestTenantIsolation:
         rwlock = StreamingRWLock()
         bundle = _FakeBundle(weak_llm=_KeywordLLM("客户A"))
         retriever = StreamingRetriever(
-            lambda t: stores[t], rwlock, bundle,  # type: ignore[arg-type]
+            lambda t: stores[t],
+            rwlock,
+            bundle,  # type: ignore[arg-type]
         )
         res_a = await retriever.retrieve("q", tenant_id="tenant-a")
         res_b = await retriever.retrieve("q", tenant_id="tenant-b")

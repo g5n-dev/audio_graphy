@@ -17,11 +17,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-_PROMPTS_DIR = (
-    Path(__file__).resolve().parent.parent.parent
-    / "audio_graphy"
-    / "prompts"
-)
+_PROMPTS_DIR = Path(__file__).resolve().parent.parent.parent / "audio_graphy" / "prompts"
 
 
 def _load_versions() -> dict:
@@ -33,6 +29,7 @@ def _load_versions() -> dict:
 # Case 1 — v1.1 registered in versions.yaml
 # --------------------------------------------------------------------
 
+
 def test_v1_1_registered_in_versions_yaml() -> None:
     """versions.yaml must contain entity_zh_parenting v1.1."""
     versions = _load_versions()
@@ -43,12 +40,13 @@ def test_v1_1_registered_in_versions_yaml() -> None:
     v11 = parenting["v1.1"]
     assert v11["file"] == "entity_zh_parenting.md"
     assert v11["active"] is False  # v1.0 stays default
-    assert "changelog" in v11 and v11["changelog"]
+    assert v11.get("changelog")
 
 
 # --------------------------------------------------------------------
 # Case 2 — prompt file loads and parses delimiter format
 # --------------------------------------------------------------------
+
 
 def test_prompt_file_loads_and_has_delimiters() -> None:
     """The v1.1 prompt file exists and contains all required placeholders."""
@@ -77,6 +75,7 @@ def test_prompt_file_loads_and_has_delimiters() -> None:
 # Case 3 — scenario field set correctly
 # --------------------------------------------------------------------
 
+
 def test_scenario_field_parenting_consulting() -> None:
     """scenario field on v1.1 entry must be 'parenting_consulting'."""
     versions = _load_versions()
@@ -87,6 +86,7 @@ def test_scenario_field_parenting_consulting() -> None:
 # --------------------------------------------------------------------
 # Bonus — v1.0 entity_zh unchanged (regression check)
 # --------------------------------------------------------------------
+
 
 def test_v1_0_entity_zh_unchanged() -> None:
     """v1.0 entity_zh entry must remain active=true (default prompt)."""

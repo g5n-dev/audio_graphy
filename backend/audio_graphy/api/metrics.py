@@ -166,8 +166,7 @@ BITEMPORAL_SUPERSEDE_CHAIN_DEPTH = Histogram(
 # Leiden
 LEIDEN_RUNS_TOTAL = Counter(
     "audiography_leiden_runs_total",
-    "M9 Leiden runs, by job_type (full / incremental) and outcome "
-    "(succeeded / failed).",
+    "M9 Leiden runs, by job_type (full / incremental) and outcome (succeeded / failed).",
     ["job_type", "status"],
     registry=REGISTRY,
 )
@@ -195,8 +194,7 @@ LEIDEN_MODULARITY = Histogram(
 # Community summaries
 COMMUNITY_SUMMARIES_TOTAL = Counter(
     "audiography_community_summaries_total",
-    "M9 community summaries generated, by level (0/1/2) and strategy "
-    "(eager / lazy).",
+    "M9 community summaries generated, by level (0/1/2) and strategy (eager / lazy).",
     ["level", "strategy"],
     registry=REGISTRY,
 )
@@ -235,8 +233,7 @@ COMPRESSION_EDGES_DEPRECATED = Counter(
 
 COMPRESSION_ORPHANS_INVALIDATED = Counter(
     "audiography_compression_orphans_invalidated_total",
-    "M9 compression Phase 3: orphan edges invalidated (source/target "
-    "node already soft-deleted).",
+    "M9 compression Phase 3: orphan edges invalidated (source/target node already soft-deleted).",
     registry=REGISTRY,
 )
 
@@ -250,8 +247,7 @@ GLOBAL_SEARCH_DURATION = Histogram(
 # Speaker fuzzy
 SPEAKER_FUZZY_MATCHES_TOTAL = Counter(
     "audiography_speaker_fuzzy_matches_total",
-    "M9 SpeakerFuzzyMatcher verdicts, by verdict "
-    "(CONFIRMED / AMBIGUOUS / INFERRED / NO_MATCH).",
+    "M9 SpeakerFuzzyMatcher verdicts, by verdict (CONFIRMED / AMBIGUOUS / INFERRED / NO_MATCH).",
     ["verdict"],
     registry=REGISTRY,
 )

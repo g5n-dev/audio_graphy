@@ -78,9 +78,7 @@ class SpeakerNode(TenantScopedBase):
 
     voiceprint_id: Mapped[str] = mapped_column(String(64), nullable=False)
     display_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    speaker_role: Mapped[str] = mapped_column(
-        String(32), nullable=False, default="unknown"
-    )
+    speaker_role: Mapped[str] = mapped_column(String(32), nullable=False, default="unknown")
     recordings_list: Mapped[list[int]] = mapped_column(JSON, nullable=False, default=list)
     recordings_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     first_seen: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

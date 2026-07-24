@@ -115,7 +115,10 @@ class FunASRAdapter:
         full_url = f"{self._base_url}{_ASR_PATH}"
         logger.debug(
             "ASR transcribe url=%s path=%s model=%s lang=%s",
-            _redact(full_url), audio_path, self.model, language,
+            _redact(full_url),
+            audio_path,
+            self.model,
+            language,
         )
 
         with path.open("rb") as fh:
@@ -129,9 +132,7 @@ class FunASRAdapter:
             }
             headers = {"Authorization": f"Bearer {self._api_key}"}
             try:
-                resp = await client.post(
-                    full_url, files=files, data=data, headers=headers
-                )
+                resp = await client.post(full_url, files=files, data=data, headers=headers)
             except httpx.TimeoutException as exc:
                 logger.warning("ASR timeout url=%s err=%s", _redact(full_url), exc)
                 raise ASRTimeoutError(
@@ -174,7 +175,9 @@ class FunASRAdapter:
             return
         body_preview = (resp.text or "")[:200]
         if resp.status_code in (400, 422):
-            logger.warning("ASR %d url=%s body=%s", resp.status_code, _redact(full_url), body_preview)
+            logger.warning(
+                "ASR %d url=%s body=%s", resp.status_code, _redact(full_url), body_preview
+            )
             raise ASRRequestError(
                 f"ASR {resp.status_code}: {body_preview}",
                 url=self._base_url,
@@ -208,9 +211,7 @@ class FunASRAdapter:
             status_code=resp.status_code,
         )
 
-    def _parse_response(
-        self, resp: httpx.Response, *, fallback_language: str
-    ) -> ASRResult:
+    def _parse_response(self, resp: httpx.Response, *, fallback_language: str) -> ASRResult:
         try:
             payload = resp.json()
         except ValueError as exc:
@@ -252,13 +253,13 @@ class FunASRAdapter:
                     with contextlib.suppress(TypeError, ValueError):
                         confidences.append(float(seg["confidence"]))
 
-        overall = (
-            sum(confidences) / len(confidences) if confidences else _FALLBACK_CONFIDENCE
-        )
+        overall = sum(confidences) / len(confidences) if confidences else _FALLBACK_CONFIDENCE
 
         logger.debug(
             "ASR OK text_len=%d segments=%d model=%s",
-            len(text), len(words), payload.get("model", "?"),
+            len(text),
+            len(words),
+            payload.get("model", "?"),
         )
         return ASRResult(
             text=text,

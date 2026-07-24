@@ -76,6 +76,11 @@ class TestGraphHappyPath:
         assert resp.status_code == 200
         body = resp.json()
         assert len(body["nodes"]) <= 1
+        visible_ids = {node["id"] for node in body["nodes"]}
+        assert all(
+            edge["source"] in visible_ids and edge["target"] in visible_ids
+            for edge in body["edges"]
+        )
 
     def test_explore_with_filters(self, test_client: TestClient, auth_headers: dict) -> None:
         """GET /graph/explore supports node_type and min_degree filters (no data)."""

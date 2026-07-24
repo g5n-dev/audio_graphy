@@ -12,7 +12,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import CheckConstraint, DateTime, Index, String
+from sqlalchemy import BigInteger, CheckConstraint, DateTime, ForeignKey, Index, String
 from sqlalchemy.dialects.mysql import JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -47,6 +47,13 @@ class Recording(TenantScopedBase):
 
     store_id: Mapped[str] = mapped_column(String(64), nullable=False)
     agent_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Stable authorization identity. ``agent_name`` is a historical display
+    # snapshot and must not be used as an ownership key.
+    agent_user_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     customer_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     path: Mapped[str] = mapped_column(String(512), nullable=False)
     status: Mapped[str] = mapped_column(
@@ -67,9 +74,7 @@ class Recording(TenantScopedBase):
     # When audio_encrypted_path is NULL, the recording reverts to plaintext
     # behaviour (read `path` directly, e.g. legacy M5 rows).
     audio_encrypted_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
-    audio_encryption_meta: Mapped[dict[str, Any] | None] = mapped_column(
-        JSON, nullable=True
-    )
+    audio_encryption_meta: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
     # ORM relationships (lazy-loaded, cascade delete for children)
     segments: Mapped[list[Segment]] = relationship(
@@ -97,6 +102,21 @@ class Recording(TenantScopedBase):
         ),
         Index("ix_recordings_tenant_store", "tenant_id", "store_id"),
         Index("ix_recordings_tenant_status", "tenant_id", "status"),
+        Index(
+            "ix_recordings_tenant_store_status_recorded_id",
+            "tenant_id",
+            "store_id",
+            "status",
+            "recorded_at",
+            "id",
+        ),
+        Index(
+            "ix_recordings_tenant_agent_recorded_id",
+            "tenant_id",
+            "agent_user_id",
+            "recorded_at",
+            "id",
+        ),
         Index("ix_recordings_recorded_at", "recorded_at"),
         Index("ix_recordings_prompt_version", "prompt_version"),
     )

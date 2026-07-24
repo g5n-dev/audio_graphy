@@ -92,8 +92,7 @@ def load_snapshot(path: Path) -> PartitionSnapshot:
         raise LeidenSnapshotCorruptError(f"cannot load {path}: {exc}") from exc
     if not isinstance(obj, PartitionSnapshot):
         raise LeidenSnapshotCorruptError(
-            f"snapshot {path} contains {type(obj).__name__}, "
-            "expected PartitionSnapshot"
+            f"snapshot {path} contains {type(obj).__name__}, expected PartitionSnapshot"
         )
     if obj.algorithm_version != 1:
         raise LeidenSnapshotCorruptError(

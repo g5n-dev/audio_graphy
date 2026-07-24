@@ -39,8 +39,26 @@ def test_e2e_leiden_admin_full_flow(test_client, auth_headers, db_session_factor
             source_ids=_list_to_str([f"{rec_id}_1"]),
             recording_ids=_list_to_list([str(rec_id)]),
         )
-    g.add_edge("节点A", "节点B", key="r", relation="r", weight=1.0, confidence="EXTRACTED", confidence_score=0.9, source_ids=_list_to_str([f"{rec_id}_1"]))
-    g.add_edge("节点B", "节点C", key="r", relation="r", weight=1.0, confidence="EXTRACTED", confidence_score=0.9, source_ids=_list_to_str([f"{rec_id}_1"]))
+    g.add_edge(
+        "节点A",
+        "节点B",
+        key="r",
+        relation="r",
+        weight=1.0,
+        confidence="EXTRACTED",
+        confidence_score=0.9,
+        source_ids=_list_to_str([f"{rec_id}_1"]),
+    )
+    g.add_edge(
+        "节点B",
+        "节点C",
+        key="r",
+        relation="r",
+        weight=1.0,
+        confidence="EXTRACTED",
+        confidence_score=0.9,
+        source_ids=_list_to_str([f"{rec_id}_1"]),
+    )
     store._loaded = True
 
     # 1. Recompute.

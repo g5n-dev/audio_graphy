@@ -35,9 +35,7 @@ class EvalRunCreate(BaseModel):
     pipeline: str = Field("mock", pattern="^(mock|rag)$")
     judge_enabled: bool = Field(True, description="Enable LLM-as-judge metrics")
     k: int = Field(5, ge=1, le=50)
-    position_debias: bool = Field(
-        True, description="Run judge twice (original + reversed context)"
-    )
+    position_debias: bool = Field(True, description="Run judge twice (original + reversed context)")
     metadata: dict[str, str] = Field(default_factory=dict)
 
 

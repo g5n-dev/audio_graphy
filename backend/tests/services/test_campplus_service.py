@@ -103,9 +103,7 @@ class TestHealth:
 
 
 class TestDiarize:
-    def test_503_when_model_not_loaded(
-        self, client: TestClient, campplus_app: Any
-    ) -> None:
+    def test_503_when_model_not_loaded(self, client: TestClient, campplus_app: Any) -> None:
         campplus_app._SV_MODEL = None
         resp = client.post(
             "/v1/diarize",
@@ -113,9 +111,7 @@ class TestDiarize:
         )
         assert resp.status_code == 503
 
-    def test_400_on_empty_upload(
-        self, client: TestClient, campplus_app: Any
-    ) -> None:
+    def test_400_on_empty_upload(self, client: TestClient, campplus_app: Any) -> None:
         campplus_app._SV_MODEL = _StubSVModel()
         resp = client.post(
             "/v1/diarize",
@@ -131,17 +127,13 @@ class TestDiarize:
         campplus_app._DIARIZE_MODEL = None
 
         # _diarize_with_sv_only is a sync function.
-        def _fake_sv_only(
-            path: str, min_seg: float
-        ) -> tuple[list[dict[str, Any]], float]:
+        def _fake_sv_only(path: str, min_seg: float) -> tuple[list[dict[str, Any]], float]:
             return (
                 [{"speaker_id": "spk_0", "start_sec": 0.0, "end_sec": 5.0}],
                 5.0,
             )
 
-        monkeypatch.setattr(
-            campplus_app, "_diarize_with_sv_only", _fake_sv_only
-        )
+        monkeypatch.setattr(campplus_app, "_diarize_with_sv_only", _fake_sv_only)
 
         resp = client.post(
             "/v1/diarize",
@@ -160,9 +152,7 @@ class TestDiarize:
 
 
 class TestExtractVoiceprint:
-    def test_503_when_model_not_loaded(
-        self, client: TestClient, campplus_app: Any
-    ) -> None:
+    def test_503_when_model_not_loaded(self, client: TestClient, campplus_app: Any) -> None:
         campplus_app._SV_MODEL = None
         resp = client.post(
             "/v1/voiceprint/extract",
@@ -170,9 +160,7 @@ class TestExtractVoiceprint:
         )
         assert resp.status_code == 503
 
-    def test_400_on_empty_upload(
-        self, client: TestClient, campplus_app: Any
-    ) -> None:
+    def test_400_on_empty_upload(self, client: TestClient, campplus_app: Any) -> None:
         campplus_app._SV_MODEL = _StubSVModel()
         resp = client.post(
             "/v1/voiceprint/extract",
@@ -189,13 +177,9 @@ class TestExtractVoiceprint:
         """When SV model returns wrong-dim vector → 500."""
         campplus_app._SV_MODEL = _StubSVModel(dim=128)  # wrong dim
         # Stub _crop_audio to be a no-op (avoids librosa).
-        monkeypatch.setattr(
-            campplus_app, "_crop_audio", lambda path, s, e: path
-        )
+        monkeypatch.setattr(campplus_app, "_crop_audio", lambda path, s, e: path)
         # Stub _save_tmp to skip file write.
-        monkeypatch.setattr(
-            campplus_app, "_save_tmp", lambda data, suffix: "/tmp/fake.wav"
-        )
+        monkeypatch.setattr(campplus_app, "_save_tmp", lambda data, suffix: "/tmp/fake.wav")
         # Stub os.unlink to no-op.
         import os
 
@@ -216,12 +200,8 @@ class TestExtractVoiceprint:
     ) -> None:
         """Stubbed happy path returns 192-d L2-normalized vector."""
         campplus_app._SV_MODEL = _StubSVModel(dim=192, fill=0.7)
-        monkeypatch.setattr(
-            campplus_app, "_crop_audio", lambda path, s, e: path
-        )
-        monkeypatch.setattr(
-            campplus_app, "_save_tmp", lambda data, suffix: "/tmp/fake.wav"
-        )
+        monkeypatch.setattr(campplus_app, "_crop_audio", lambda path, s, e: path)
+        monkeypatch.setattr(campplus_app, "_save_tmp", lambda data, suffix: "/tmp/fake.wav")
         import os
 
         monkeypatch.setattr(os, "unlink", lambda *a, **kw: None)

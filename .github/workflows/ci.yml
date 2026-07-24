@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 jobs:
-  lint-and-test:
+  backend:
     runs-on: ubuntu-latest
 
     services:
@@ -60,9 +60,66 @@ jobs:
           MYSQL_USER: audiography
           MYSQL_PASSWORD: change-me
           MYSQL_DB: audiography_test
+          MODEL_TEST_MYSQL_HOST: 127.0.0.1
+          MODEL_TEST_MYSQL_PORT: "3306"
+          # The Alembic roundtrip creates and drops its own isolated database.
+          # Keep that administrative capability out of the application account.
+          MODEL_TEST_MYSQL_USER: root
+          MODEL_TEST_MYSQL_PASSWORD: root
+          MODEL_TEST_MYSQL_DB: audiography_test
           JWT_SECRET: ci-test-secret-32-chars-minimum!!
           WORKING_DIR: /tmp/audiography_ci
           ADAPTER_MODE: mock
         run: |
           mkdir -p /tmp/audiography_ci
           python -m pytest tests/ -v --cov=audio_graphy --cov-report=term-missing
+
+      - name: Vector hot-query performance gate
+        working-directory: backend
+        env:
+          RUN_PERF_TESTS: "1"
+          VECTOR_PERF_DIM: "128"
+          VECTOR_PERF_P95_SECONDS: "0.2"
+        run: python -m pytest tests/perf/test_vector_search_perf.py --no-cov -q
+
+  frontend:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: ESLint
+        working-directory: frontend
+        run: npm run lint
+
+      - name: Unit tests
+        working-directory: frontend
+        run: npm test
+
+      - name: Build and bundle budget
+        working-directory: frontend
+        run: npm run build
+
+  compose:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate deployment profiles
+        run: |
+          for profile in mock models-cpu models-single-gpu models-multi-gpu; do
+            docker compose --env-file .env.example --profile "$profile" config --quiet
+          done
+          docker compose -f docker-compose.yml -f docker-compose.streaming-vad.yml --env-file .env.example --profile models-single-gpu config --quiet

@@ -44,7 +44,11 @@ class TestStreamingProtocols:
         from audio_graphy.adapters.protocols import ASRDeltaResult
 
         d = ASRDeltaResult(
-            seq=1, mode="realtime", text="hello", is_final=False, sentence_id=0,
+            seq=1,
+            mode="realtime",
+            text="hello",
+            is_final=False,
+            sentence_id=0,
         )
         assert d.confidence == 0.95
 
@@ -80,9 +84,7 @@ class TestStreamingProtocols:
             StreamingFunASRAdapter,
         )
 
-        assert isinstance(
-            StreamingFunASRAdapter(ws_url="ws://example"), StreamingASRAdapter
-        )
+        assert isinstance(StreamingFunASRAdapter(ws_url="ws://example"), StreamingASRAdapter)
 
 
 class TestStreamingExceptions:
@@ -446,7 +448,9 @@ class TestMockStreamingASR:
         from audio_graphy.adapters.mock_streaming_asr import MockStreamingASRAdapter
 
         asr = MockStreamingASRAdapter(
-            connect_latency_ms=0, push_latency_ms=0, realtime_interval=4,
+            connect_latency_ms=0,
+            push_latency_ms=0,
+            realtime_interval=4,
         )
         await asr.connect(session_id="s1", tenant_id="t1")
         realtime_count = 0
@@ -461,8 +465,10 @@ class TestMockStreamingASR:
         from audio_graphy.adapters.mock_streaming_asr import MockStreamingASRAdapter
 
         asr = MockStreamingASRAdapter(
-            connect_latency_ms=0, push_latency_ms=0,
-            realtime_interval=2, confirmed_interval=4,
+            connect_latency_ms=0,
+            push_latency_ms=0,
+            realtime_interval=2,
+            confirmed_interval=4,
         )
         await asr.connect(session_id="s1", tenant_id="t1")
         confirmed_count = 0
@@ -477,7 +483,8 @@ class TestMockStreamingASR:
         from audio_graphy.adapters.mock_streaming_asr import MockStreamingASRAdapter
 
         asr = MockStreamingASRAdapter(
-            connect_latency_ms=0, push_latency_ms=0,
+            connect_latency_ms=0,
+            push_latency_ms=0,
         )
         await asr.connect(session_id="s1", tenant_id="t1")
         deltas = await asr.finalize()
@@ -500,12 +507,16 @@ class TestMockStreamingASR:
         from audio_graphy.adapters.mock_streaming_asr import MockStreamingASRAdapter
 
         asr1 = MockStreamingASRAdapter(
-            connect_latency_ms=0, push_latency_ms=0,
-            realtime_interval=1, confirmed_interval=1,
+            connect_latency_ms=0,
+            push_latency_ms=0,
+            realtime_interval=1,
+            confirmed_interval=1,
         )
         asr2 = MockStreamingASRAdapter(
-            connect_latency_ms=0, push_latency_ms=0,
-            realtime_interval=1, confirmed_interval=1,
+            connect_latency_ms=0,
+            push_latency_ms=0,
+            realtime_interval=1,
+            confirmed_interval=1,
         )
         await asr1.connect(session_id="s1", tenant_id="t1")
         await asr2.connect(session_id="s2", tenant_id="t2")
@@ -519,7 +530,9 @@ class TestMockStreamingASR:
         from audio_graphy.adapters.mock_streaming_asr import MockStreamingASRAdapter
 
         asr = MockStreamingASRAdapter(
-            connect_latency_ms=0, push_latency_ms=0, flaky=True,
+            connect_latency_ms=0,
+            push_latency_ms=0,
+            flaky=True,
         )
         await asr.connect(session_id="s1", tenant_id="t1")
         # Push 99 chunks; 100th raises.
@@ -578,7 +591,9 @@ class TestStreamingFunASRAdapter:
             ws_client=ws,
         )
         await adapter.connect(
-            session_id="s1", tenant_id="t1", hotwords=("CS75", "UNI-V"),
+            session_id="s1",
+            tenant_id="t1",
+            hotwords=("CS75", "UNI-V"),
         )
         assert len(ws.sent) == 1
         init = json.loads(ws.sent[0])
@@ -630,7 +645,9 @@ class TestStreamingFunASRAdapter:
 
         ws = _MockWebSocketClient(recv_queue=[])  # never responds
         adapter = StreamingFunASRAdapter(
-            ws_url="ws://x", ws_client=ws, push_timeout_sec=0.05,
+            ws_url="ws://x",
+            ws_client=ws,
+            push_timeout_sec=0.05,
         )
         await adapter.connect(session_id="s", tenant_id="t")
         with pytest.raises(StreamingASRPushTimeout):
@@ -673,7 +690,9 @@ class TestStreamingFunASRAdapter:
             ],
         )
         adapter = StreamingFunASRAdapter(
-            ws_url="ws://x", ws_client=ws, finalize_timeout_sec=1.0,
+            ws_url="ws://x",
+            ws_client=ws,
+            finalize_timeout_sec=1.0,
         )
         await adapter.connect(session_id="s", tenant_id="t")
         deltas = await adapter.finalize()
@@ -689,7 +708,8 @@ class TestStreamingFunASRAdapter:
         ws = _MockWebSocketClient()
         adapter = StreamingFunASRAdapter(ws_url="ws://x", ws_client=ws)
         await adapter.connect(
-            session_id="s", tenant_id="t",
+            session_id="s",
+            tenant_id="t",
             hotwords=("长安CS75", "退订意向", "投诉"),
         )
         init = json.loads(ws.sent[0])
@@ -725,7 +745,9 @@ class _PoolingASRAdapter:
         self._ws = object()  # truthy → alive
         self.connect_called = False
 
-    async def connect(self, *, session_id: str, tenant_id: str, hotwords: Sequence[str] = ()) -> None:
+    async def connect(
+        self, *, session_id: str, tenant_id: str, hotwords: Sequence[str] = ()
+    ) -> None:
         self._tenant_id = tenant_id
         self.connect_called = True  # type: ignore[attr-defined]
 

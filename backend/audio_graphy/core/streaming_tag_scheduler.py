@@ -128,7 +128,10 @@ class StreamingTagScheduler:
             return None
         # Debounce — if we triggered very recently, keep accumulating.
         now = time.monotonic()
-        if self._last_trigger_at > 0.0 and (now - self._last_trigger_at) * 1000.0 < self._debounce_ms:
+        if (
+            self._last_trigger_at > 0.0
+            and (now - self._last_trigger_at) * 1000.0 < self._debounce_ms
+        ):
             return None
         return await self._trigger()
 
@@ -166,7 +169,10 @@ class StreamingTagScheduler:
         except Exception as exc:  # recompute failure must not kill the WS session
             logger.warning(
                 "StreamingTagScheduler recompute failed tenant=%s recording=%s segments=%d: %s",
-                self._tenant, self._recording, len(seg_ids), exc,
+                self._tenant,
+                self._recording,
+                len(seg_ids),
+                exc,
             )
             return TagBatchResult(
                 tenant_id=self._tenant,

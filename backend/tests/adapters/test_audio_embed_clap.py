@@ -57,9 +57,7 @@ async def test_embed_audio_single_file(tmp_path, adapter):
     """Single audio file with valid response returns one AudioEmbeddingResult."""
     wav = tmp_path / "a.wav"
     wav.write_bytes(b"\x00\x00" * 100)
-    respx.post(f"{_CLAP_URL}/v1/audio/embed").respond(
-        status_code=200, json=_ok_payload()
-    )
+    respx.post(f"{_CLAP_URL}/v1/audio/embed").respond(status_code=200, json=_ok_payload())
     results = await adapter.embed_audio([str(wav)])
     assert len(results) == 1
     r = results[0]
@@ -78,12 +76,8 @@ async def test_embed_audio_multiple_files_parallel(tmp_path, adapter):
         p = tmp_path / f"a{i}.wav"
         p.write_bytes(b"\x00\x00" * 100)
         paths.append(p)
-    respx.post(f"{_CLAP_URL}/v1/audio/embed").respond(
-        status_code=200, json=_ok_payload()
-    )
-    results = await adapter.embed_audio(
-        [str(p) for p in paths], segment_ids=[10, 11, 12]
-    )
+    respx.post(f"{_CLAP_URL}/v1/audio/embed").respond(status_code=200, json=_ok_payload())
+    results = await adapter.embed_audio([str(p) for p in paths], segment_ids=[10, 11, 12])
     assert len(results) == 3
     assert {r.segment_id for r in results} == {10, 11, 12}
 
@@ -118,9 +112,7 @@ async def test_embed_audio_400_raises_request_error(tmp_path, adapter):
     """HTTP 400 raises CLAPRequestError with body preview."""
     p = tmp_path / "a.wav"
     p.write_bytes(b"x")
-    respx.post(f"{_CLAP_URL}/v1/audio/embed").respond(
-        status_code=400, text="bad request"
-    )
+    respx.post(f"{_CLAP_URL}/v1/audio/embed").respond(status_code=400, text="bad request")
     with pytest.raises(CLAPRequestError, match="CLAP 400"):
         await adapter.embed_audio([str(p)])
 
@@ -130,9 +122,7 @@ async def test_embed_audio_413_raises_too_large(tmp_path, adapter):
     """HTTP 413 raises CLAPTooLargeError."""
     p = tmp_path / "a.wav"
     p.write_bytes(b"x")
-    respx.post(f"{_CLAP_URL}/v1/audio/embed").respond(
-        status_code=413, text="too large"
-    )
+    respx.post(f"{_CLAP_URL}/v1/audio/embed").respond(status_code=413, text="too large")
     with pytest.raises(CLAPTooLargeError):
         await adapter.embed_audio([str(p)])
 
@@ -142,9 +132,7 @@ async def test_embed_audio_500_raises_server_error(tmp_path, adapter):
     """HTTP 500 raises CLAPServerError."""
     p = tmp_path / "a.wav"
     p.write_bytes(b"x")
-    respx.post(f"{_CLAP_URL}/v1/audio/embed").respond(
-        status_code=500, text="internal"
-    )
+    respx.post(f"{_CLAP_URL}/v1/audio/embed").respond(status_code=500, text="internal")
     with pytest.raises(CLAPServerError, match="CLAP 500"):
         await adapter.embed_audio([str(p)])
 
@@ -154,9 +142,7 @@ async def test_embed_audio_timeout_raises_timeout_error(tmp_path, adapter):
     """TimeoutException raises CLAPTimeoutError."""
     p = tmp_path / "a.wav"
     p.write_bytes(b"x")
-    respx.post(f"{_CLAP_URL}/v1/audio/embed").mock(
-        side_effect=httpx.TimeoutException("timed out")
-    )
+    respx.post(f"{_CLAP_URL}/v1/audio/embed").mock(side_effect=httpx.TimeoutException("timed out"))
     with pytest.raises(CLAPTimeoutError):
         await adapter.embed_audio([str(p)])
 
@@ -166,9 +152,7 @@ async def test_embed_audio_http_error_raises_server_error(tmp_path, adapter):
     """Generic HTTPError raises CLAPServerError."""
     p = tmp_path / "a.wav"
     p.write_bytes(b"x")
-    respx.post(f"{_CLAP_URL}/v1/audio/embed").mock(
-        side_effect=httpx.ConnectError("conn refused")
-    )
+    respx.post(f"{_CLAP_URL}/v1/audio/embed").mock(side_effect=httpx.ConnectError("conn refused"))
     with pytest.raises(CLAPServerError, match="transport error"):
         await adapter.embed_audio([str(p)])
 
@@ -183,9 +167,7 @@ async def test_embed_audio_non_json_response_raises(tmp_path, adapter):
     """Non-JSON response raises CLAPServerError."""
     p = tmp_path / "a.wav"
     p.write_bytes(b"x")
-    respx.post(f"{_CLAP_URL}/v1/audio/embed").respond(
-        status_code=200, text="not-json"
-    )
+    respx.post(f"{_CLAP_URL}/v1/audio/embed").respond(status_code=200, text="not-json")
     with pytest.raises(CLAPServerError, match="non-JSON"):
         await adapter.embed_audio([str(p)])
 
@@ -195,9 +177,7 @@ async def test_embed_audio_missing_embedding_key_raises(tmp_path, adapter):
     """Response without 'embedding' key raises CLAPServerError."""
     p = tmp_path / "a.wav"
     p.write_bytes(b"x")
-    respx.post(f"{_CLAP_URL}/v1/audio/embed").respond(
-        status_code=200, json={"dim": 512}
-    )
+    respx.post(f"{_CLAP_URL}/v1/audio/embed").respond(status_code=200, json={"dim": 512})
     with pytest.raises(CLAPServerError, match="missing 'embedding'"):
         await adapter.embed_audio([str(p)])
 
@@ -270,9 +250,7 @@ async def test_embed_audio_unnormalised_vector_logs_warning(tmp_path, adapter, c
         status_code=200,
         json={"embedding": bad_norm_vec, "dim": 512},
     )
-    with caplog.at_level(
-        "WARNING", logger="audio_graphy.adapters.real.audio_embed_clap"
-    ):
+    with caplog.at_level("WARNING", logger="audio_graphy.adapters.real.audio_embed_clap"):
         results = await adapter.embed_audio([str(p)])
     assert len(results) == 1
     assert any("L2 norm" in r.message for r in caplog.records)

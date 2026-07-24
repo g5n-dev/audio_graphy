@@ -64,9 +64,7 @@ _DEFAULT_K = 5
 # Metric names that depend on LLM-judge output. Position de-bias only
 # applies to these — retrieval / entity / edge / tag metrics are pure
 # set operations and do not vary with context order.
-_JUDGE_DEPENDENT_METRICS = frozenset(
-    {"faithfulness", "answer_relevance", "factual_correctness"}
-)
+_JUDGE_DEPENDENT_METRICS = frozenset({"faithfulness", "answer_relevance", "factual_correctness"})
 
 
 # ============================================================
@@ -191,9 +189,7 @@ class RAGPipeline:
 
         # 5. Inject retrieved_text for the faithfulness metric (PRD §5.3.1):
         # the LLM-as-judge needs a single context string to verify facts.
-        retrieved_text = "\n".join(
-            str(c.get("transcript_snippet") or "") for c in citations
-        )
+        retrieved_text = "\n".join(str(c.get("transcript_snippet") or "") for c in citations)
         if retrieved_text:
             tags.append({"tag_path": "retrieved_text", "value": retrieved_text})
 
@@ -207,10 +203,7 @@ class RAGPipeline:
         )
 
     def __repr__(self) -> str:
-        return (
-            f"RAGPipeline(tenant={self._tenant_id!r}, "
-            f"user_id={self._user_id!r})"
-        )
+        return f"RAGPipeline(tenant={self._tenant_id!r}, user_id={self._user_id!r})"
 
     # ------------------------------------------------------------------
     # Helpers
@@ -271,9 +264,12 @@ class RAGPipeline:
                 TUPLE_DELIMITER,
             )
 
-            template = minimal_prompt.format(
-                td=TUPLE_DELIMITER, rd=RECORD_DELIMITER, cd=COMPLETION_DELIMITER
-            ) + "\n\n输入文本:\n{input_text}"
+            template = (
+                minimal_prompt.format(
+                    td=TUPLE_DELIMITER, rd=RECORD_DELIMITER, cd=COMPLETION_DELIMITER
+                )
+                + "\n\n输入文本:\n{input_text}"
+            )
 
             extractor = EntityExtractor(
                 self._bundle,
@@ -289,14 +285,11 @@ class RAGPipeline:
             )
             ents = [(e.name, e.type) for e in result.entities]
             eds = [
-                (r.source_name, r.relation, r.target_name, r.confidence)
-                for r in result.relations
+                (r.source_name, r.relation, r.target_name, r.confidence) for r in result.relations
             ]
             return ents, eds
         except Exception as exc:
-            logger.warning(
-                "RAGPipeline entity extraction failed: %s — returning empty", exc
-            )
+            logger.warning("RAGPipeline entity extraction failed: %s — returning empty", exc)
             return [], []
 
 
@@ -346,7 +339,8 @@ class EvalRunner:
         self._semaphore = asyncio.Semaphore(max(1, concurrency))
         self._config_snapshot = dict(config_snapshot or {})
         self._config_snapshot.setdefault(
-            "pipeline", type(pipeline).__name__ + f"(precision={getattr(pipeline, 'precision', 'n/a')})"
+            "pipeline",
+            type(pipeline).__name__ + f"(precision={getattr(pipeline, 'precision', 'n/a')})",
         )
         self._config_snapshot.setdefault("k", str(k))
         self._config_snapshot.setdefault("judge", "enabled" if judge is not None else "disabled")
@@ -431,19 +425,26 @@ class EvalRunner:
         # Entity F1 is computed twice — strict (threshold=1.0) and fuzzy
         # (threshold=settings.entity_fuzzy_threshold) — so the aggregate
         # report shows both for diagnosing near-dup clustering quality.
-        results.extend([
-            entity_f1(gold, pred, fuzzy_threshold=1.0),
-            entity_f1(gold, pred, fuzzy_threshold=self._entity_fuzzy_threshold),
-            edge_precision_by_confidence(gold, pred),
-            tag_accuracy(gold, pred),
-        ])
+        results.extend(
+            [
+                entity_f1(gold, pred, fuzzy_threshold=1.0),
+                entity_f1(gold, pred, fuzzy_threshold=self._entity_fuzzy_threshold),
+                edge_precision_by_confidence(gold, pred),
+                tag_accuracy(gold, pred),
+            ]
+        )
 
         # LLM-backed metrics — skipped when judge is None.
         if self._judge is None:
             for name in ("faithfulness", "answer_relevance", "factual_correctness"):
-                results.append(MetricResult(
-                    name=name, value=0.0, denominator=0, details={"skipped": True},
-                ))
+                results.append(
+                    MetricResult(
+                        name=name,
+                        value=0.0,
+                        denominator=0,
+                        details={"skipped": True},
+                    )
+                )
         else:
             from audio_graphy.eval.metrics.generation import (
                 answer_relevance,
@@ -453,9 +454,7 @@ class EvalRunner:
 
             if self._position_debias:
                 results.append(
-                    await self._judge_with_debias(
-                        faithfulness, gold, pred, name="faithfulness"
-                    )
+                    await self._judge_with_debias(faithfulness, gold, pred, name="faithfulness")
                 )
                 results.append(
                     await self._judge_with_debias(
@@ -480,7 +479,8 @@ class EvalRunner:
         return results
 
     async def _compute_phase2_metrics(
-        self, gold: GoldExample,
+        self,
+        gold: GoldExample,
     ) -> list[MetricResult]:
         """M7 Phase 2 metrics — voiceprint EER + diarization DER.
 
@@ -521,9 +521,8 @@ class EvalRunner:
                 same_cos: list[float] = []
                 diff_cos: list[float] = []
                 tokens = (
-                    trials
-                    .replace("\\n", " ")  # literal "\n" (YAML single-quoted)
-                    .replace("\n", " ")   # actual newline
+                    trials.replace("\\n", " ")  # literal "\n" (YAML single-quoted)
+                    .replace("\n", " ")  # actual newline
                     .split()
                 )
                 i = 0
@@ -557,7 +556,6 @@ class EvalRunner:
             ref_path = gold.metadata.get("reference_rttm", "")
             hyp_path = gold.metadata.get("hypothesis_rttm", "")
             if ref_path and hyp_path:
-
                 from audio_graphy.eval.metrics.diarization import (
                     diarization_der_metric,
                     parse_rttm,
@@ -640,9 +638,7 @@ class EvalRunner:
             if t.get("tag_path") == "retrieved_text":
                 # Reverse line order (keeps each snippet intact, flips ranking).
                 lines = str(t.get("value", "")).split("\n")
-                new_tags.append(
-                    {"tag_path": "retrieved_text", "value": "\n".join(reversed(lines))}
-                )
+                new_tags.append({"tag_path": "retrieved_text", "value": "\n".join(reversed(lines))})
                 found = True
             else:
                 new_tags.append(dict(t))
@@ -671,9 +667,7 @@ class EvalRunner:
             raise FileNotFoundError(f"gold set not found: {self._gold_set_path}")
         raw = yaml.safe_load(self._gold_set_path.read_text(encoding="utf-8"))
         if not isinstance(raw, list):
-            raise ValueError(
-                f"gold set must be a YAML list, got {type(raw).__name__}"
-            )
+            raise ValueError(f"gold set must be a YAML list, got {type(raw).__name__}")
         return [self._gold_from_dict(item, i) for i, item in enumerate(raw)]
 
     @staticmethod
@@ -685,23 +679,16 @@ class EvalRunner:
                 query=str(item["query"]),
                 gold_answer=str(item["gold_answer"]),
                 gold_context_ids=tuple(str(x) for x in item.get("gold_context_ids", [])),
-                gold_entities=tuple(
-                    (str(t), str(y)) for t, y in item.get("gold_entities", [])
-                ),
+                gold_entities=tuple((str(t), str(y)) for t, y in item.get("gold_entities", [])),
                 gold_edges=tuple(
                     (str(s), str(r), str(d), str(c))  # type: ignore[misc]
                     for s, r, d, c in item.get("gold_edges", [])
                 ),
                 gold_tags=tuple(
-                    {str(k): str(v) for k, v in dict(t).items()}
-                    for t in item.get("gold_tags", [])
+                    {str(k): str(v) for k, v in dict(t).items()} for t in item.get("gold_tags", [])
                 ),
-                recording_id=(
-                    str(item["recording_id"]) if item.get("recording_id") else None
-                ),
-                metadata={
-                    str(k): str(v) for k, v in dict(item.get("metadata", {})).items()
-                },
+                recording_id=(str(item["recording_id"]) if item.get("recording_id") else None),
+                metadata={str(k): str(v) for k, v in dict(item.get("metadata", {})).items()},
             )
         except KeyError as exc:
             raise ValueError(f"gold[{idx}] missing required key: {exc}") from exc

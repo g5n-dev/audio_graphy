@@ -8,7 +8,6 @@ through its public API (start/aclose/flush/record).
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -188,6 +187,7 @@ async def test_exception_in_writer_does_not_propagate(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """A DB failure surfaces as a WARNING log but does NOT raise to caller."""
+
     # Build a writer whose factory always raises.
     class _BadFactory:
         def __call__(self) -> Any:

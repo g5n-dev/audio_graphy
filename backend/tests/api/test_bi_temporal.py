@@ -121,9 +121,7 @@ async def _seed_edge_event(
 
 @pytest.fixture
 def seeded_recording(test_client, db_session_factory) -> int:
-    rec_id = _run_async(
-        seed_recording(db_session_factory, tenant_id="chang_an")
-    )
+    rec_id = _run_async(seed_recording(db_session_factory, tenant_id="chang_an"))
     _seed_bi_temporal_graph(test_client, tenant_id="chang_an", recording_id=rec_id)
     _run_async(_seed_edge_event(db_session_factory))
     return rec_id
@@ -151,9 +149,7 @@ def test_time_travel_edges_happy_path(test_client, auth_headers, seeded_recordin
     assert edge["confidence"] == "EXTRACTED"
 
 
-def test_time_travel_edges_far_past_returns_empty(
-    test_client, auth_headers, seeded_recording
-):
+def test_time_travel_edges_far_past_returns_empty(test_client, auth_headers, seeded_recording):
     """As-of 10 years ago → no edges."""
     long_ago = (datetime.now(UTC) - timedelta(days=3650)).isoformat()
     resp = test_client.get(
@@ -187,9 +183,7 @@ def test_edges_range_happy_path(test_client, auth_headers, seeded_recording):
     assert body["total"] == 1
 
 
-def test_edges_range_inverted_returns_400(
-    test_client, auth_headers, seeded_recording
-):
+def test_edges_range_inverted_returns_400(test_client, auth_headers, seeded_recording):
     """from >= to → 400."""
     now = datetime.now(UTC)
     params = {
@@ -204,9 +198,7 @@ def test_edges_range_inverted_returns_400(
     assert resp.status_code == 400, resp.text
 
 
-def test_edges_range_bad_iso_returns_400(
-    test_client, auth_headers, seeded_recording
-):
+def test_edges_range_bad_iso_returns_400(test_client, auth_headers, seeded_recording):
     params = {"from": "not-a-date", "to": "2026-01-01T00:00:00+00:00"}
     resp = test_client.get(
         f"/api/v1/recordings/{seeded_recording}/edges/range",
@@ -263,9 +255,7 @@ def test_time_travel_404_cross_tenant(test_client, auth_headers, seeded_recordin
 # ============================================================
 
 
-def test_time_travel_edges_forbidden_for_agent(
-    test_client, auth_headers, seeded_recording
-):
+def test_time_travel_edges_forbidden_for_agent(test_client, auth_headers, seeded_recording):
     resp = test_client.get(
         f"/api/v1/recordings/{seeded_recording}/edges",
         headers=auth_headers["agent_t1"],
@@ -273,9 +263,7 @@ def test_time_travel_edges_forbidden_for_agent(
     assert resp.status_code == 403, resp.text
 
 
-def test_time_travel_edges_forbidden_for_viewer(
-    test_client, auth_headers, seeded_recording
-):
+def test_time_travel_edges_forbidden_for_viewer(test_client, auth_headers, seeded_recording):
     resp = test_client.get(
         f"/api/v1/recordings/{seeded_recording}/edges",
         headers=auth_headers["viewer_t1"],

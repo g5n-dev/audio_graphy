@@ -43,8 +43,8 @@ _TARGET_SR = 16000
 _EXPECTED_DIM = 192  # L2 locked
 
 # Module-level state populated in lifespan.
-_SV_MODEL: Any = None        # speaker-verification CAM++ model
-_DIARIZE_MODEL: Any = None   # diarization (ERO2SV) model; optional
+_SV_MODEL: Any = None  # speaker-verification CAM++ model
+_DIARIZE_MODEL: Any = None  # diarization (ERO2SV) model; optional
 _DEVICE: str = "cpu"
 
 
@@ -110,11 +110,18 @@ async def health() -> dict[str, Any]:
 
 def _save_tmp(raw_bytes: bytes, suffix: str) -> str:
     """Write bytes to a NamedTemporaryFile; return path. Caller cleans up."""
-    tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
-    tmp.write(raw_bytes)
-    tmp.flush()
-    tmp.close()
-    return tmp.name
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp.write(raw_bytes)
+        tmp.flush()
+        return tmp.name
+
+
+def _unlink_tmp(path: str) -> None:
+    """Best-effort temporary audio cleanup with residue observability."""
+    try:
+        os.unlink(path)
+    except OSError as exc:
+        logger.warning("Temporary audio cleanup failed path=%s: %s", path, exc)
 
 
 def _l2_normalize(vec: np.ndarray) -> np.ndarray:
@@ -156,10 +163,7 @@ async def diarize(
             # Fallback: SV-only — single-speaker timeline (whole file).
             segments, duration = _diarize_with_sv_only(tmp_path, min_segment_sec)
     finally:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
+        _unlink_tmp(tmp_path)
 
     num_speakers = len({s["speaker_id"] for s in segments})
     return JSONResponse(
@@ -235,15 +239,11 @@ async def extract_voiceprint(
         if vec_np.shape[0] != _EXPECTED_DIM:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"CAM++ dim mismatch: got {vec_np.shape[0]}, "
-                f"expected {_EXPECTED_DIM}",
+                detail=f"CAM++ dim mismatch: got {vec_np.shape[0]}, expected {_EXPECTED_DIM}",
             )
         vec_np = _l2_normalize(vec_np)
     finally:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
+        _unlink_tmp(tmp_path)
 
     return JSONResponse(
         {
@@ -333,20 +333,22 @@ def _crop_audio(path: str, start_sec: float, end_sec: float | None) -> str:
     import librosa
     import soundfile as sf
 
-    y, sr = librosa.load(path, sr=_TARGET_SR, mono=True,
-                         offset=start_sec,
-                         duration=(end_sec - start_sec) if end_sec is not None else None)
-    new_tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-    new_tmp.close()
-    sf.write(new_tmp.name, y, sr)
-    try:
-        os.unlink(path)
-    except OSError:
-        pass
-    return new_tmp.name
+    y, sr = librosa.load(
+        path,
+        sr=_TARGET_SR,
+        mono=True,
+        offset=start_sec,
+        duration=(end_sec - start_sec) if end_sec is not None else None,
+    )
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as new_tmp:
+        new_tmp_path = new_tmp.name
+    sf.write(new_tmp_path, y, sr)
+    _unlink_tmp(path)
+    return new_tmp_path
 
 
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8007)
+    # Container entry point must listen beyond loopback.
+    uvicorn.run(app, host="0.0.0.0", port=8007)  # noqa: S104

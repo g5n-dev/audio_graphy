@@ -74,12 +74,12 @@ class ChannelWeights:
                 f"text={self.text} graph={self.graph} audio={self.audio})"
             )
         for label, value in (
-            ("text", self.text), ("graph", self.graph), ("audio", self.audio),
+            ("text", self.text),
+            ("graph", self.graph),
+            ("audio", self.audio),
         ):
             if not 0.0 <= value <= 1.0:
-                raise ValueError(
-                    f"ChannelWeights.{label} must be in [0.0, 1.0], got {value}"
-                )
+                raise ValueError(f"ChannelWeights.{label} must be in [0.0, 1.0], got {value}")
 
     @property
     def total(self) -> float:
@@ -276,8 +276,7 @@ class Reranker:
                 elif isinstance(raw_sources, str) and source_id in raw_sources:
                     return True
         except Exception as exc:
-            logger.debug("AMBIGUOUS speaker probe failed for chunk %d: %s",
-                         candidate.chunk_id, exc)
+            logger.debug("AMBIGUOUS speaker probe failed for chunk %d: %s", candidate.chunk_id, exc)
         return False
 
     def rank_candidates(

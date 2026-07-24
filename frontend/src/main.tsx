@@ -4,6 +4,7 @@ import { HashRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ConfigProvider } from "@arco-design/web-react";
 import App from "./App";
+import "@arco-design/web-react/dist/css/arco.css";
 import "./styles/global.css";
 
 const queryClient = new QueryClient({

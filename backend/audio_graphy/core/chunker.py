@@ -33,6 +33,7 @@ from audio_graphy.models.chunk import Chunk
 from audio_graphy.models.segment import Segment
 
 if TYPE_CHECKING:
+    from audio_graphy.core.pii import PIIScrubber
     from audio_graphy.storage.file_index import FileIndex
 
 logger = logging.getLogger(__name__)
@@ -129,6 +130,7 @@ class Chunker:
         file_index: FileIndex | None = None,
         encoding_name: str = "cl100k_base",
         enable_voiceprint: bool = False,
+        pii_scrubber: PIIScrubber | None = None,
     ) -> None:
         self._bundle = bundle
         self._token_budget = token_budget
@@ -138,6 +140,7 @@ class Chunker:
         self._encoding_name = encoding_name
         self._enc = tiktoken.get_encoding(encoding_name)
         self._enable_voiceprint = enable_voiceprint
+        self._pii_scrubber = pii_scrubber
 
     async def process_recording(
         self,
@@ -171,6 +174,11 @@ class Chunker:
         # Step 2: ASR per segment
         segment_records = await self._transcribe_segments(vad_segments, audio_path)
 
+        # Raw ASR text exists only in memory. Redact before chunk construction,
+        # database persistence, embeddings, graph extraction or file-index
+        # fallback can observe it.
+        segment_records = self._scrub_segments(segment_records)
+
         # Step 3: Pack into chunks by token budget
         chunks = self._pack_chunks(segment_records)
 
@@ -189,6 +197,21 @@ class Chunker:
             segments=segment_records,
             chunks=chunks,
         )
+
+    def _scrub_segments(
+        self,
+        segments: list[SegmentRecord],
+    ) -> list[SegmentRecord]:
+        """Return persistence-safe segments while preserving timing metadata."""
+        if self._pii_scrubber is None:
+            return segments
+        return [
+            replace(
+                segment,
+                transcript=self._pii_scrubber.scrub_simple(segment.transcript),
+            )
+            for segment in segments
+        ]
 
     # ------------------------------------------------------------------
     # ASR transcription
@@ -438,6 +461,7 @@ class Chunker:
                         start_sec=seg.start_sec,
                         end_sec=seg.end_sec,
                         transcript=seg.transcript if seg.transcript else None,
+                        text_scrubbed=seg.transcript if seg.transcript else None,
                         speaker=seg.speaker,
                         vad_conf=seg.vad_conf,
                     )

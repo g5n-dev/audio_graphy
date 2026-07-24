@@ -102,7 +102,9 @@ class MockStreamingASRAdapter:
         self._closed = False
         logger.debug(
             "MockStreamingASR connect session=%s tenant=%s hotwords=%d",
-            session_id, tenant_id, len(hotwords),
+            session_id,
+            tenant_id,
+            len(hotwords),
         )
 
     async def push_pcm(self, pcm: bytes, *, seq: int) -> ASRDeltaResult:

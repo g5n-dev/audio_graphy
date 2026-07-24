@@ -31,6 +31,15 @@ from audio_graphy.models.eval_run import EvalRunORM
 from audio_graphy.models.leiden_job import LeidenJob
 from audio_graphy.models.llm_call_log import LLMCallLog
 from audio_graphy.models.prompt import Prompt
+from audio_graphy.models.reception import (
+    DialogueStateTransition,
+    DialogueTagAssignment,
+    DialogueUnit,
+    ProvenanceEvent,
+    Reception,
+    ReceptionAutomationRun,
+    ReceptionRecording,
+)
 from audio_graphy.models.recompute_task import RecomputeTask
 from audio_graphy.models.recording import Recording
 from audio_graphy.models.segment import Segment
@@ -52,6 +61,9 @@ __all__ = [
     "Base",
     "Chunk",
     "CommunitySummary",
+    "DialogueStateTransition",
+    "DialogueTagAssignment",
+    "DialogueUnit",
     "EdgeEvent",
     "EntityAlias",
     "EvalRunORM",
@@ -59,6 +71,10 @@ __all__ = [
     "LeidenJob",
     "PipelineState",
     "Prompt",
+    "ProvenanceEvent",
+    "Reception",
+    "ReceptionAutomationRun",
+    "ReceptionRecording",
     "RecomputeTask",
     "Recording",
     "RecordingStatus",

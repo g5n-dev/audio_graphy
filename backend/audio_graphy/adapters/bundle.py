@@ -139,10 +139,12 @@ def build_hybrid_bundle(settings: Settings) -> AdapterBundle:
         )
     else:
         strong_llm = MockLLMAdapter(
-            model=settings.llm_strong_model, error_rate=settings.mock_llm_error_rate,
+            model=settings.llm_strong_model,
+            error_rate=settings.mock_llm_error_rate,
         )
         weak_llm = MockLLMAdapter(
-            model=settings.llm_weak_model, error_rate=settings.mock_llm_error_rate,
+            model=settings.llm_weak_model,
+            error_rate=settings.mock_llm_error_rate,
         )
 
     # Embedding (text)
@@ -365,9 +367,7 @@ async def acquire_streaming_adapters_for_session(
     vad = build_streaming_vad_for_session(settings)
     if settings.adapter_streaming_asr_mode == "real":
         if pool is None:
-            raise RuntimeError(
-                "Real streaming ASR mode requires a FunASRConnectionPool"
-            )
+            raise RuntimeError("Real streaming ASR mode requires a FunASRConnectionPool")
         asr: StreamingASRAdapter = await pool.acquire(tenant_id, session_id, hotwords)
     else:
         asr = build_streaming_asr_for_session(settings)

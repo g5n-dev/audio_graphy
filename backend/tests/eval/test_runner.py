@@ -15,7 +15,6 @@ import pytest
 from audio_graphy.eval.runner import EvalRunner, MockPipeline
 from audio_graphy.eval.types import GoldExample, PredictedResult
 
-
 # ============================================================
 # Fixtures
 # ============================================================
@@ -115,9 +114,9 @@ async def test_runner_aggregate_skips_errors(tmp_path: Path) -> None:
     yaml_path = tmp_path / "mix.yaml"
     yaml_path.write_text(
         '- query: "q1"\n  gold_answer: "a1"\n  gold_context_ids: ["c1"]\n'
-        '  gold_entities: []\n  gold_edges: []\n  gold_tags: []\n'
+        "  gold_entities: []\n  gold_edges: []\n  gold_tags: []\n"
         '- query: "q2"\n  gold_answer: "a2"\n  gold_context_ids: ["c2"]\n'
-        '  gold_entities: []\n  gold_edges: []\n  gold_tags: []\n',
+        "  gold_entities: []\n  gold_edges: []\n  gold_tags: []\n",
         encoding="utf-8",
     )
 

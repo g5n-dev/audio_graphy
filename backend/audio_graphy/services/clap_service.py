@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 _MODEL_NAME = "clap-htsat-base-2022"
 _EXPECTED_DIM = 512  # L1 locked
-_TARGET_SR = 48000    # laion_clap 强制
+_TARGET_SR = 48000  # laion_clap 强制
 _CACHE_SIZE = 256
 
 # Module-level state populated in lifespan.
@@ -233,4 +233,5 @@ async def embed_audio(
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8006)
+    # Container entry point must listen beyond loopback.
+    uvicorn.run(app, host="0.0.0.0", port=8006)  # noqa: S104

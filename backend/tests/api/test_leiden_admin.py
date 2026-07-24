@@ -97,9 +97,7 @@ def test_recompute_happy_path(test_client, auth_headers, seeded_graph_and_record
     assert body["edge_count_snapshot"] >= 2
 
 
-def test_recompute_forbidden_for_inspector(
-    test_client, auth_headers, seeded_graph_and_recording
-):
+def test_recompute_forbidden_for_inspector(test_client, auth_headers, seeded_graph_and_recording):
     resp = test_client.post(
         "/api/v1/admin/leiden/recompute",
         headers=auth_headers["inspector_t1"],
@@ -108,9 +106,7 @@ def test_recompute_forbidden_for_inspector(
     assert resp.status_code == 403, resp.text
 
 
-def test_recompute_forbidden_for_viewer(
-    test_client, auth_headers, seeded_graph_and_recording
-):
+def test_recompute_forbidden_for_viewer(test_client, auth_headers, seeded_graph_and_recording):
     resp = test_client.post(
         "/api/v1/admin/leiden/recompute",
         headers=auth_headers["viewer_t1"],
@@ -119,9 +115,7 @@ def test_recompute_forbidden_for_viewer(
     assert resp.status_code == 403, resp.text
 
 
-def test_recompute_unauthenticated_401(
-    test_client, seeded_graph_and_recording
-):
+def test_recompute_unauthenticated_401(test_client, seeded_graph_and_recording):
     resp = test_client.post(
         "/api/v1/admin/leiden/recompute",
         json={"force_full": True},
@@ -171,9 +165,7 @@ def test_get_job_404_when_missing(test_client, auth_headers):
     assert resp.status_code == 404, resp.text
 
 
-def test_list_jobs_cross_tenant_isolation(
-    test_client, auth_headers, seeded_graph_and_recording
-):
+def test_list_jobs_cross_tenant_isolation(test_client, auth_headers, seeded_graph_and_recording):
     """Tenant 2 admin sees no jobs from tenant 1."""
     resp = test_client.get(
         "/api/v1/admin/leiden/jobs",

@@ -39,9 +39,7 @@ def _adapter(dim: int = 1024) -> BGEEmbedAdapter:
 async def test_embed_happy_single(respx_mock: respx.MockRouter) -> None:
     """1 text → 1 EmbeddingResult with dim=1024 and full-length vector."""
     adapter = _adapter()
-    respx_mock.post(_EMBED_URL).mock(
-        return_value=httpx.Response(200, json=_embed_response(1))
-    )
+    respx_mock.post(_EMBED_URL).mock(return_value=httpx.Response(200, json=_embed_response(1)))
     try:
         results = await adapter.embed_texts(["hello"])
         assert len(results) == 1
@@ -56,9 +54,7 @@ async def test_embed_happy_single(respx_mock: respx.MockRouter) -> None:
 async def test_embed_happy_batch(respx_mock: respx.MockRouter) -> None:
     """4 texts → 4 EmbeddingResult entries."""
     adapter = _adapter()
-    respx_mock.post(_EMBED_URL).mock(
-        return_value=httpx.Response(200, json=_embed_response(4))
-    )
+    respx_mock.post(_EMBED_URL).mock(return_value=httpx.Response(200, json=_embed_response(4)))
     try:
         results = await adapter.embed_texts(["a", "b", "c", "d"])
         assert len(results) == 4
@@ -177,9 +173,7 @@ async def test_embed_close_idempotent() -> None:
 async def test_embed_missing_data_key(respx_mock: respx.MockRouter) -> None:
     """200 OK with valid JSON but missing 'data' key → EmbedServerError."""
     adapter = _adapter()
-    respx_mock.post(_EMBED_URL).mock(
-        return_value=httpx.Response(200, json={"unexpected": "shape"})
-    )
+    respx_mock.post(_EMBED_URL).mock(return_value=httpx.Response(200, json={"unexpected": "shape"}))
     try:
         with pytest.raises(EmbedServerError):
             await adapter.embed_texts(["x"])
