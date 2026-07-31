@@ -15,6 +15,7 @@ from audio_graphy.api.tag_insights import router
 from audio_graphy.auth.jwt_utils import JWTManager
 from audio_graphy.auth.middleware import AuthMiddleware
 from audio_graphy.errors import register_exception_handlers
+from audio_graphy.models.base import Base
 from audio_graphy.models.user import User
 from audio_graphy.schemas.tag_insights import MAX_ASSIGNMENTS
 
@@ -85,7 +86,10 @@ def tag_insights_client() -> Iterator[TestClient]:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         async with engine.begin() as connection:
-            await connection.run_sync(User.__table__.create)
+            # The endpoint records a blind-review-sensitive access audit.  Use
+            # the real governance schema so its review-task check and audit
+            # insert are exercised instead of failing on absent fixture tables.
+            await connection.run_sync(Base.metadata.create_all)
         async with session_factory() as session:
             session.add_all(
                 [
