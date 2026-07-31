@@ -39,7 +39,7 @@ from audio_graphy.core.language_detection import (
     detect_semantic_language,
     semantic_protected_identifiers,
 )
-from audio_graphy.services.llm_gateway import (
+from audio_graphy.llm.gateway import (
     CachePolicy,
     LLMProvenance,
     LLMRequest,

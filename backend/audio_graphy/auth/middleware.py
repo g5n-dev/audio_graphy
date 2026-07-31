@@ -159,7 +159,7 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
     """
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
-        from audio_graphy.services.llm_gateway import llm_request_memo_scope
+        from audio_graphy.llm.gateway import llm_request_memo_scope
 
         request_id = request.headers.get(REQUEST_ID_HEADER) or str(uuid.uuid4())
         request.state.request_id = request_id

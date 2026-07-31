@@ -44,14 +44,14 @@ from audio_graphy.core.language_detection import (
     semantic_protected_identifiers,
 )
 from audio_graphy.core.types import GraphNode
-from audio_graphy.models.chunk import Chunk
-from audio_graphy.models.recording import Recording
-from audio_graphy.services.llm_gateway import (
+from audio_graphy.llm.gateway import (
     CachePolicy,
     LLMProvenance,
     LLMRequest,
     execute_llm,
 )
+from audio_graphy.models.chunk import Chunk
+from audio_graphy.models.recording import Recording
 
 if TYPE_CHECKING:
     from audio_graphy.storage.file_index import FileIndex

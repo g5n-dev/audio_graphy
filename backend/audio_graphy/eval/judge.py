@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from audio_graphy.adapters.protocols import LLMAdapter, LLMResponse
-from audio_graphy.services.llm_gateway import (
+from audio_graphy.llm.gateway import (
     CachePolicy,
     LLMProvenance,
     LLMRequest,

@@ -28,7 +28,7 @@ from typing import Any, Protocol
 from audio_graphy.adapters.protocols import LLMAdapter, LLMResponse
 from audio_graphy.core.leiden import LeidenRunResult
 from audio_graphy.core.types import GraphEdge, GraphNode
-from audio_graphy.services.llm_gateway import (
+from audio_graphy.llm.gateway import (
     CachePolicy,
     LLMProvenance,
     LLMRequest,

@@ -35,7 +35,7 @@ from audio_graphy.core.types import (
     RECORD_DELIMITER,
     TUPLE_DELIMITER,
 )
-from audio_graphy.services.llm_gateway import (
+from audio_graphy.llm.gateway import (
     CachePolicy,
     LLMProvenance,
     LLMRequest,

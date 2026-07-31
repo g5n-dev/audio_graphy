@@ -8,7 +8,7 @@ module freezes the layering as it stands today and fails on any regression.
 Layer order, lowest first — a module may import anything at its own layer or below::
 
     0  models, adapters, observability, schemas
-    1  storage
+    1  storage, llm
     2  core, auth
     3  services, tags, eval, analytics
     4  api
@@ -35,9 +35,12 @@ Accepted — the target is a dependency-free leaf whose only sin is where it liv
 
 Outstanding debt — real upward runtime dependencies that should be inverted:
 
-* ``core.*`` and ``auth.middleware`` reaching into ``services`` (``llm_gateway``,
-  ``receptions``, ``reception_erasure``) and ``core.streaming_tag_scheduler`` reaching
+* ``core.retention`` and ``auth.middleware`` reaching into ``services``
+  (``receptions``, ``reception_erasure``) and ``core.streaming_tag_scheduler`` reaching
   into ``tags.recompute``. The domain layer depends on the orchestration layer above it.
+  The ``llm_gateway`` half of this group is gone: the gateway moved to
+  ``audio_graphy.llm``, below ``core``, with ``services.llm_gateway`` left as a
+  re-export shim so existing importers keep working.
 * ``adapters`` ↔ ``core.chunker`` is a genuine cycle (``core.chunker`` imports
   ``adapters.bundle`` and ``adapters.protocols`` at module scope), already papered over
   with ``TYPE_CHECKING`` and lazy imports in the three adapter modules on the other side.
@@ -61,7 +64,11 @@ PACKAGE_DIR = Path(audio_graphy.__file__ or "").resolve().parent
 
 LAYERS: tuple[tuple[str, ...], ...] = (
     ("models", "adapters", "observability", "schemas"),
-    ("storage",),
+    # `llm` wraps an LLMAdapter with retry, caching and cost accounting. It sits
+    # here, below core, because core/extractor, retrieval, rerank,
+    # community_summary and streaming_retrieval all need the request contract —
+    # while it lived under services/ those five imports pointed upward.
+    ("storage", "llm"),
     ("core", "auth"),
     ("services", "tags", "eval", "analytics"),
     ("api",),
@@ -103,18 +110,12 @@ KNOWN_VIOLATIONS: frozenset[tuple[str, str]] = frozenset(
         ("audio_graphy.auth.identity", "audio_graphy.errors"),
         ("audio_graphy.auth.jwt_utils", "audio_graphy.errors"),
         ("audio_graphy.auth.middleware", "audio_graphy.errors"),
-        ("audio_graphy.auth.middleware", "audio_graphy.services.llm_gateway"),
         ("audio_graphy.auth.middleware", "audio_graphy.services.receptions"),
         ("audio_graphy.auth.roles", "audio_graphy.errors"),
         ("audio_graphy.auth.tenants", "audio_graphy.errors"),
         ("audio_graphy.auth.ws_auth", "audio_graphy.errors"),
-        ("audio_graphy.core.community_summary", "audio_graphy.services.llm_gateway"),
-        ("audio_graphy.core.extractor", "audio_graphy.services.llm_gateway"),
-        ("audio_graphy.core.rerank", "audio_graphy.services.llm_gateway"),
         ("audio_graphy.core.retention", "audio_graphy.config"),
         ("audio_graphy.core.retention", "audio_graphy.services.reception_erasure"),
-        ("audio_graphy.core.retrieval", "audio_graphy.services.llm_gateway"),
-        ("audio_graphy.core.streaming_retrieval", "audio_graphy.services.llm_gateway"),
         ("audio_graphy.core.streaming_tag_scheduler", "audio_graphy.tags.recompute"),
         ("audio_graphy.eval.cli", "audio_graphy.config"),
         ("audio_graphy.eval.cli", "audio_graphy.db"),

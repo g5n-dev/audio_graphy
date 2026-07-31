@@ -43,7 +43,7 @@ from audio_graphy.core.language_detection import (
     semantic_protected_identifiers,
 )
 from audio_graphy.core.retrieval import CandidateSegment
-from audio_graphy.services.llm_gateway import (
+from audio_graphy.llm.gateway import (
     CachePolicy,
     LLMProvenance,
     LLMRequest,
