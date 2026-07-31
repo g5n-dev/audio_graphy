@@ -5,6 +5,7 @@ See: docs/m3-prd.md §4.9, API-09.
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -59,19 +60,35 @@ async def readiness(request: Request) -> JSONResponse:
                 all_ok = False
     checks["adapters"] = adapters_status
 
-    # Check graph_store (per default tenant)
-    graph_status = "ok"
-    try:
-        graph_stores = getattr(request.app.state, "graph_stores", {})
-        if graph_stores is not None:
-            checks["graph_store"] = "ok" if graph_stores is not None else "error"
-    except Exception as exc:
-        graph_status = f"error: {exc}"
+    # The graph store is loaded lazily per tenant, so an empty cache is normal.
+    # What must exist is the factory that loads it — its absence means the
+    # lifespan never got that far.
+    if getattr(request.app.state, "graph_store_factory", None) is None:
+        checks["graph_store"] = "error: factory not initialized"
         all_ok = False
-    checks["graph_store"] = graph_status
+    else:
+        checks["graph_store"] = "ok"
 
-    # Check file_index
-    checks["file_index"] = "ok"
+    # Graph and file indexes are written to working_dir; unreadable or
+    # unwritable storage is invisible until the first ingestion fails.
+    working_dir = getattr(getattr(request.app.state, "settings", None), "working_dir", None)
+    if working_dir is None:
+        checks["working_dir"] = "error: not configured"
+        all_ok = False
+    elif not os.access(str(working_dir), os.W_OK):
+        checks["working_dir"] = f"error: not writable: {working_dir}"
+        all_ok = False
+    else:
+        checks["working_dir"] = "ok"
+
+    # Subsystems whose wiring failed during lifespan. The process stays up so it
+    # can be inspected, but it must not be handed traffic as if it were whole.
+    degradations = getattr(request.app.state, "startup_degradations", []) or []
+    if degradations:
+        checks["startup"] = {item["component"]: item["error"] for item in degradations}
+        all_ok = False
+    else:
+        checks["startup"] = "ok"
 
     # Hot caching is optional and deliberately never gates readiness. Expose
     # the currently active backend so operators can verify Redis failover and

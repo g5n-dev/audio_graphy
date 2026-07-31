@@ -53,12 +53,17 @@ class TestHealthHappyPath:
         for adapter_name in ("vad", "asr", "strong_llm", "weak_llm", "embed"):
             assert adapters[adapter_name] == "ok", f"Adapter {adapter_name} not ok"
 
-    def test_readiness_graph_store_ok(self, test_client: TestClient) -> None:
-        """Readiness check should show graph_store and file_index as ok."""
+    def test_readiness_storage_ok(self, test_client: TestClient) -> None:
+        """Readiness reports on the graph factory and on writable storage.
+
+        It used to report a hardcoded ``file_index: "ok"`` and a graph check
+        whose branches were both "ok", so neither could ever fail.
+        """
         resp = test_client.get("/health/readiness")
         body = resp.json()
         assert body["checks"]["graph_store"] == "ok"
-        assert body["checks"]["file_index"] == "ok"
+        assert body["checks"]["working_dir"] == "ok"
+        assert body["checks"]["startup"] == "ok"
 
     def test_readiness_all_ok_returns_200(self, test_client: TestClient) -> None:
         """When all checks pass, readiness returns 200 with status=ready."""
@@ -92,6 +97,40 @@ class TestHealthHappyPath:
             assert body["status"] == "not_ready"
         finally:
             test_client.app.state.adapter_bundle = original_bundle
+
+    def test_readiness_reports_startup_degradations(self, test_client: TestClient) -> None:
+        """A subsystem that failed to wire up must keep the replica out of rotation.
+
+        Those failures used to be a warning line and nothing else, so a process
+        missing its pipeline worker or retention scheduler still advertised
+        itself as ready and kept receiving traffic.
+        """
+        app_state = test_client.app.state
+        original = getattr(app_state, "startup_degradations", [])
+        app_state.startup_degradations = [
+            {"component": "pipeline_worker", "error": "RuntimeError: boom"}
+        ]
+        try:
+            resp = test_client.get("/health/readiness")
+            assert resp.status_code == 503
+            body = resp.json()
+            assert body["status"] == "not_ready"
+            # Names the component, so the operator does not have to grep logs.
+            assert body["checks"]["startup"]["pipeline_worker"] == "RuntimeError: boom"
+        finally:
+            app_state.startup_degradations = original
+
+    def test_readiness_flags_unwritable_working_dir(self, test_client: TestClient) -> None:
+        """Storage the app cannot write to is a readiness failure, not a surprise later."""
+        settings = test_client.app.state.settings
+        original = settings.working_dir
+        try:
+            settings.working_dir = "/nonexistent/audiography-readiness-probe"
+            resp = test_client.get("/health/readiness")
+            assert resp.status_code == 503
+            assert "not writable" in resp.json()["checks"]["working_dir"]
+        finally:
+            settings.working_dir = original
 
     def test_root_endpoint(self, test_client: TestClient) -> None:
         """GET / returns API info."""

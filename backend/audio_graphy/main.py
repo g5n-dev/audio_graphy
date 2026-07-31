@@ -59,6 +59,20 @@ API_VERSION = "v1"
 API_PREFIX = f"/api/{API_VERSION}"
 
 
+def _record_degradation(app: FastAPI, component: str, exc: BaseException) -> None:
+    """Record that an optional subsystem failed to wire up.
+
+    Several lifespan steps are allowed to fail without stopping the process —
+    losing the retention scheduler should not take the API down. But logging a
+    warning and moving on means the process reports itself healthy while
+    silently missing a subsystem. Readiness reads this list, so orchestration
+    stops routing traffic to a replica that came up crippled.
+    """
+    degradations: list[dict[str, str]] = getattr(app.state, "startup_degradations", [])
+    degradations.append({"component": component, "error": f"{type(exc).__name__}: {exc}"})
+    app.state.startup_degradations = degradations
+
+
 def _build_audio_crypto(settings: Any) -> AudioCrypto:
     """Construct and eagerly validate the at-rest audio encryption service."""
     from audio_graphy.core.crypto import AudioCrypto
@@ -297,7 +311,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.engine = engine
         app.state.session_factory = session_factory
     except Exception as exc:
-        logger.warning("DB engine creation failed (continuing without DB): %s", exc)
+        if not settings.allow_degraded_startup:
+            logger.critical("DB engine creation failed: %s", exc, exc_info=True)
+            raise
+        logger.error(
+            "DB engine creation failed; ALLOW_DEGRADED_STARTUP is set so the app "
+            "will serve without a database: %s",
+            exc,
+            exc_info=True,
+        )
+        _record_degradation(app, "database", exc)
         app.state.engine = None
         app.state.session_factory = None
 
@@ -420,7 +443,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 name="erasure-outbox-reconciler",
             )
         except Exception as exc:
-            logger.warning("Erasure outbox reconciler wiring failed: %s", exc)
+            logger.error("Erasure outbox reconciler wiring failed: %s", exc, exc_info=True)
+            _record_degradation(app, "erasure_outbox_reconciler", exc)
 
     # Stateless PII scrubber is created before the worker so raw ASR text is
     # redacted before any persistent or derived store can observe it.
@@ -463,7 +487,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         worker_task = asyncio.create_task(worker.start_loop())
         app.state.pipeline_worker = worker
     except Exception as exc:
-        logger.warning("Failed to start pipeline worker: %s", exc)
+        logger.error("Failed to start pipeline worker: %s", exc, exc_info=True)
+        _record_degradation(app, "pipeline_worker", exc)
 
     reception_audio_reconciler_task: asyncio.Task[None] | None = None
     app.state.reception_audio_operation_service = None
@@ -495,7 +520,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 name="reception-audio-reconciler",
             )
         except Exception as exc:
-            logger.warning("Reception audio reconciler wiring failed: %s", exc)
+            logger.error("Reception audio reconciler wiring failed: %s", exc, exc_info=True)
+            _record_degradation(app, "reception_audio_reconciler", exc)
 
     # AuditWriter (async-batched; lifespan-managed).
     from audio_graphy.core.audit import AuditWriter
@@ -507,7 +533,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await audit_writer.start()
             app.state.audit_writer = audit_writer
         except Exception as exc:
-            logger.warning("AuditWriter init failed: %s", exc)
+            logger.error("AuditWriter init failed: %s", exc, exc_info=True)
+            _record_degradation(app, "audit_writer", exc)
             app.state.audit_writer = None
     else:
         app.state.audit_writer = None
@@ -566,7 +593,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             retention_scheduler.start()
             app.state.retention_scheduler = retention_scheduler
         except Exception as exc:
-            logger.warning("RetentionEnforcer wiring failed: %s", exc)
+            logger.error("RetentionEnforcer wiring failed: %s", exc, exc_info=True)
+            _record_degradation(app, "retention_enforcer", exc)
 
     yield
 
@@ -717,7 +745,11 @@ def create_app() -> FastAPI:
                 settings.adapter_streaming_asr_mode,
             )
         except Exception as exc:
-            logger.warning("M8 streaming router registration failed: %s", exc)
+            # ENABLE_STREAMING is on, so the operator asked for these routes.
+            # Swallowing this produced a 404 indistinguishable from the flag
+            # being off — the hardest possible thing to diagnose from outside.
+            logger.critical("M8 streaming router registration failed: %s", exc, exc_info=True)
+            raise
 
     # M9 R2 — Advanced Graph routers (L9 master flag).
     # When ``enable_advanced_graph=False`` (the default), every R2 path
@@ -739,7 +771,10 @@ def create_app() -> FastAPI:
             app.include_router(compression_admin_router, prefix=API_PREFIX)
             logger.info("M9 advanced graph ENABLED (R2 routers registered)")
         except Exception as exc:
-            logger.warning("M9 R2 router registration failed: %s", exc)
+            # Same reasoning as the streaming block above: a flag that is on
+            # must either work or stop the process.
+            logger.critical("M9 R2 router registration failed: %s", exc, exc_info=True)
+            raise
 
         # M9 R2 T10 — weekly Sunday 03:00 compression cron.
         try:

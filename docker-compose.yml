@@ -175,8 +175,13 @@ services:
       mysql:
         condition: service_healthy
     healthcheck:
+      # Readiness, not liveness: /health only proves the process is running.
+      # Readiness also reports the database, adapters, writable storage and any
+      # subsystem whose wiring failed during startup — so a replica that came up
+      # crippled is never marked healthy, and dependents waiting on
+      # service_healthy do not start against a half-wired backend.
       test:
-        ["CMD-SHELL", "python -c \"import httpx,sys; sys.exit(0 if httpx.get('http://127.0.0.1:8000/health', timeout=2).status_code==200 else 1)\""]
+        ["CMD-SHELL", "python -c \"import httpx,sys; sys.exit(0 if httpx.get('http://127.0.0.1:8000/health/readiness', timeout=2).status_code==200 else 1)\""]
       interval: 10s
       timeout: 5s
       retries: 6

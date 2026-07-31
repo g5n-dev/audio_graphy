@@ -271,6 +271,13 @@ class Settings(BaseSettings):
     enable_clap: bool = False
     enable_voiceprint: bool = False
 
+    # --- Startup strictness ---
+    # Serve even when the database engine could not be created. Off by default:
+    # an application answering requests with no database is worse than one that
+    # refuses to start, because the failure surfaces later and further away.
+    # The test suite enables it so the API tests can run against a stub.
+    allow_degraded_startup: bool = False
+
     # --- M8 Phase 4 — streaming feature flags ---
     # Master switch. When False (default), /ws/stream route is NOT registered
     # and M1-M7 tests have zero regression (PRD AC-P0-07 + §17.11).

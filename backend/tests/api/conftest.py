@@ -14,6 +14,7 @@ import os
 import sys
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -287,6 +288,15 @@ def test_client(api_settings):
 
     app.state.graph_stores = {}
     app.state.file_indexes = {}
+
+    # Readiness checks that a factory exists, so provide one. Deliberately not
+    # the production factory: that one mirrors the mapping into its own cache
+    # and writes it back, which would discard the stub stores several tests
+    # inject directly into `graph_stores`.
+    async def _test_graph_store_factory(tenant_id: str) -> Any:
+        return app.state.graph_stores.get(tenant_id)
+
+    app.state.graph_store_factory = _test_graph_store_factory
 
     from audio_graphy.auth.jwt_utils import JWTManager
 

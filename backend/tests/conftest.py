@@ -32,6 +32,9 @@ os.environ.setdefault("MYSQL_PASSWORD", "change-me")
 os.environ.setdefault("MYSQL_DB", "audiography_test")
 os.environ.setdefault("JWT_SECRET", "test-secret-32-chars-minimum-length!!")
 os.environ.setdefault("WORKING_DIR", "/tmp/audiography_test_working_dir")
+# The suite builds apps whose DB is a stub or absent; production refuses to
+# start in that state, so opt the tests out of the strict check explicitly.
+os.environ.setdefault("ALLOW_DEGRADED_STARTUP", "true")
 os.environ.setdefault("DEFAULT_TENANT_ID", "default")
 os.environ.setdefault("CORS_ORIGINS", "http://localhost:5173")
 
