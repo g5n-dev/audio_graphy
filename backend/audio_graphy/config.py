@@ -67,7 +67,10 @@ class Settings(BaseSettings):
 
     # --- LLM (only used when adapter_mode == "real") ---
     openai_base_url_strong: str = "http://vllm-strong:8000/v1"
-    openai_base_url_weak: str = "http://vllm-weak:8001/v1"
+    # Both vLLM containers listen on 8000 internally; only the published host
+    # ports differ. Defaulting this to 8001 pointed at nothing, and was masked
+    # by .env.example carrying the correct value.
+    openai_base_url_weak: str = "http://vllm-weak:8000/v1"
     openai_api_key: str = "dummy"
     llm_strong_model: str = "qwen3.6-27b"
     llm_weak_model: str = "qwen3.6-35b-a3b"

@@ -405,9 +405,18 @@ Redis 当时不可用，在途 leader 也不能复活结果，恢复后会自动
 
 ### 参与项目
 
-- [贡献指南](./CONTRIBUTING.md)
-- [第三方归属](./NOTICES.md)
-- [MIT License](./LICENSE)
+- [贡献指南](./CONTRIBUTING.md)：开发环境、代码规范、提交与 PR 流程。
+- [安全策略](./SECURITY.md)：漏洞私密报告通道与范围界定。
+
+## 许可
+
+本项目以 [MIT License](./LICENSE) 发布。
+
+## 致谢
+
+图谱 RAG 的设计范式承袭自 [VideoRAG](https://github.com/HKUDS/VideoRAG)（其自身的图谱内核来自 [LightRAG](https://github.com/HKUDS/LightRAG) / [nano-graphrag](https://github.com/gusye1234/nano-graphrag)），社区摘要与全局检索的分层模式参考微软 [GraphRAG](https://github.com/microsoft/graphrag)，双时态边模型参考 Graphiti。
+
+**本仓库不包含上述任何项目的源码**，也不依赖它们。逐字沿用的只有若干接口约定——`working_dir` 的文件命名，以及实体抽取的分隔符三元组。各项目的许可、版权方，以及哪些是承袭、哪些是独立实现，逐条列在 [NOTICES.md](./NOTICES.md)。
 
 ---
 

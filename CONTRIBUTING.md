@@ -15,8 +15,8 @@ covers setup, coding standards, and the pull request process.
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-org/audiography.git
-cd audiography
+git clone https://github.com/g5n-dev/audio_graphy.git
+cd audio_graphy
 
 # Create a virtual environment (or use the project venv)
 python3.13 -m venv .venv
@@ -26,16 +26,22 @@ source .venv/bin/activate
 cd backend
 pip install -e ".[dev]"
 
-# Start the local stack (MySQL 8 + Adminer)
+# Start MySQL. Plain `docker compose up -d` would also start the backend,
+# tag worker and frontend; for backend development you usually want just the
+# database. Adminer is behind the `mock` profile.
 cd ..
-docker compose up -d
+docker compose up -d mysql
 ```
 
 ### Running Tests
 
 ```bash
-# All tests (requires Docker for testcontainers)
+# The suites that run offline (SQLite): API, services, auth, config, ...
 cd backend
+python -m pytest tests/api tests/services tests/auth tests/config
+
+# Everything. tests/models, tests/storage and tests/core need the MySQL
+# started above, reachable on 127.0.0.1:3307.
 python -m pytest
 
 # Only model integration tests
@@ -119,7 +125,8 @@ only inserted (append-only semantics per PRD §5.6).
 ## Reporting Issues
 
 - Use the bug report or feature request templates in `.github/ISSUE_TEMPLATE/`.
-- For security vulnerabilities, do NOT open a public issue — email the maintainers directly.
+- For security vulnerabilities, do NOT open a public issue. See [SECURITY.md](./SECURITY.md)
+  for how to report them privately.
 
 ## License
 
