@@ -6,13 +6,18 @@
 > **范围（Scope）**: 架构 / 算法 / 音频适配 / 标签版本化 / 存储 / 评估 / 安全 / 部署 / UI / 路线图
 > **关联方案（Related Spec）**: `AudioRAG开发方案.docx`（本设计文档是其工程化落地）
 
+> **关于上游谱系**：本文多处以 VideoRAG / GraphRAG 作为**设计参照**说明取舍。这是设计范式上的承袭——
+> 本仓库不包含任何上游源码，也不依赖 VideoRAG / LightRAG / nano-graphrag 中的任何一个。
+> 逐字沿用的只有若干接口约定（`working_dir` 文件命名、实体抽取的分隔符三元组），
+> 完整的归属说明与许可分析见 [NOTICES.md](../NOTICES.md)。
+
 ---
 
 ## 目录（Table of Contents）
 
 1. [项目背景与定位](#1-项目背景与定位--background--positioning)
 2. [总体架构](#2-总体架构--overall-architecture)
-3. [核心算法（继承 VideoRAG 图谱内核）](#3-核心算法--inheriting-videorag-graph-kernel)
+3. [核心算法（图谱内核 · 设计参考 VideoRAG）](#3-核心算法--inheriting-videorag-graph-kernel)
 4. [音频适配层](#4-音频适配层--audio-adaptation-layer)
 5. [中文与领域适配](#5-中文与领域适配--chinese--domain-adaptation)
 6. [多级标签版本化与增量重算](#6-多级标签版本化与增量重算--tag-versioning--incremental-recompute)
@@ -40,7 +45,7 @@
 
 **关键洞察（Key Insight）**：VideoRAG 喂给知识图谱的文本，本来就是 ASR 转写（transcript）。所谓"视频专属"的只有两块——视觉 caption（MiniCPM-V 抽帧描述）和 ImageBind 视频段向量（视觉检索通道）。砍掉这两块，整个图谱 RAG 内核对音频完全成立，且 transcript 的信息密度高于稀疏抽帧 caption，图谱质量更优。
 
-**结论**：AudioRAG 不是重写，而是 VideoRAG 图谱内核的音频化改造——保留内核，替换模态预处理，砍掉视觉附属。
+**结论**：AudioRAG 沿用 VideoRAG 的图谱 RAG **范式**，将模态预处理整体替换为音频链路（VAD + ASR + 声纹 + 音频嵌入），不实现视觉分支；索引、图谱与检索链路按音频场景重新实现，不复用上游源码（见 [NOTICES.md](../NOTICES.md)）。
 
 ### 1.2 项目命名 (Naming)
 
@@ -56,9 +61,9 @@
 
 | 中文 | English | 含义 |
 |---|---|---|
-| 复用优先 | Reuse First | 图谱内核、存储抽象、检索-重排逻辑原样继承自 VideoRAG，零改动 |
+| 设计承袭 | Design Lineage | 图谱内核、存储分层、检索-重排的**设计范式**承袭自 VideoRAG（其自身内核来自 LightRAG / nano-graphrag）。代码按音频场景独立实现，不引入上游依赖，不复用上游源码 |
 | 模态替换 | Modality Swap | 视觉预处理整体替换为音频预处理（VAD + ASR），不改造内核 |
-| 两层分离 | Two-Layer Separation | MySQL 管流水线状态/版本/审计，VideoRAG 文件索引管 RAG 检索，各司其职 |
+| 两层分离 | Two-Layer Separation | MySQL 管流水线状态/版本/审计，文件索引管 RAG 检索，各司其职 |
 | 治理前置 | Governance First | 标签版本化 + 增量重算 + LLM 缓存幂等重打，从设计期就内建 |
 | 评估驱动 | Evaluation Driven | 分层评估框架，prompt 改动有量化指标，不靠感觉 |
 | 聚焦逻辑 | Logic Focus | 文档与方案聚焦算法/数据流/状态机，不堆部署细节（端口/容器/镜像/IP） |
@@ -79,7 +84,7 @@
 系统分为两层，由 `recording_id` 桥接：
 
 - **流水线状态层（Pipeline State Layer · MySQL · 新增）**：负责"谁处理到哪一步、打了哪些标、什么版本、推没推、能不能重试"——流水线编排 + 中间状态 + 审计 + 多级标签聚合。VideoRAG 本身没有这一层，必须外挂。
-- **RAG 引擎层（RAG Engine Layer · VideoRAG 文件索引 · 复用）**：负责"这些录音建出来的向量/图/chunk 索引"——检索引擎。模态无关，原样复用 VideoRAG 内核 + 音频适配。
+- **RAG 引擎层（RAG Engine Layer · 文件索引 · 自研）**：负责"这些录音建出来的向量/图/chunk 索引"——检索引擎，模态无关。`working_dir` 的目录布局与文件命名沿用 VideoRAG 约定（`graph_chunk_entity_relation.graphml`、`kv_store_*.json`）以便对照排查；索引、图谱与检索代码由本项目实现。
 
 复用现有编排基础设施（watchdog / daily_download / daily_pipeline 三层定时任务），把其中 tagging 阶段替换为 AudioRAG 图谱流程即可，状态机照旧。
 
@@ -89,9 +94,9 @@
 |---|---|---|
 | VAD 切分 (VAD Segmentation) | 音频分段（替代 VideoRAG 文件切分） | Silero VAD 服务 |
 | ASR 转写 (Transcription) | 每段音频转文本（替代 whisper） | funASR 服务 |
-| 文本切分 (Text Chunking) | 段→chunk 层次打包 + 溯源 | VideoRAG 内核（保留） |
-| 实体抽取/图谱 (Entity Extraction + Graph) | LLM 抽实体关系、合并进图 | VideoRAG 内核（保留） |
-| 双通道检索+重排 (Dual-channel Retrieval + Rerank) | naive + 图谱检索，LLM 过滤精化 | VideoRAG 内核（砍视觉通道） |
+| 文本切分 (Text Chunking) | 段→chunk 层次打包 + 溯源 | 自研（设计参考 VideoRAG） |
+| 实体抽取/图谱 (Entity Extraction + Graph) | LLM 抽实体关系、合并进图 | 自研（设计参考 VideoRAG） |
+| 双通道检索+重排 (Dual-channel Retrieval + Rerank) | naive + 图谱检索，LLM 过滤精化 | 自研（设计参考 VideoRAG；无视觉通道，另加音频通道） |
 | 强 LLM (Strong LLM) | 抽取/回答 | Qwen3.6-27B vLLM |
 | 弱 LLM (Weak LLM) | 改写/摘要/标签判定 | Qwen3.6-35B-A3B vLLM |
 | Embedding | 实体/文本块向量 | bge-m3 |
@@ -117,9 +122,9 @@
 
 ---
 
-## 3. 核心算法（继承 VideoRAG 图谱内核）(Inheriting VideoRAG Graph Kernel)
+## 3. 核心算法（图谱内核 · 设计参考 VideoRAG）(Graph Kernel — Design Reference: VideoRAG)
 
-本章算法全部从 VideoRAG 原样继承，与模态无关。AudioRAG 的改动只在"喂给图谱的文本来源"（transcript 替代 caption+transcript）和"砍掉视觉检索通道"。
+本章算法的整体流程（分块 → LLM 抽实体关系 → 跨块合并入图 → naive + 图谱双通道检索 → LLM 重排）**参考** VideoRAG / GraphRAG 范式，实现为本项目自写，未复用上游源码。与上游的具体差异见 §3.4：切分以 VAD/ASR 段为原子单位而非 token 滑窗；实体合并用类型多数投票 + 描述去重截断，而非上游的 LLM 描述摘要；关系记录 schema 为「源实体 / 关系标签 / 目标实体 / 详情」，不含上游的数值 strength 字段，与上游解析器不互通。
 
 ![索引数据流](./assets/dataflow-indexing.svg)
 
@@ -165,7 +170,7 @@
 3. **LLM 过滤（LLM as-judge）**：逐段判 yes/no 是否相关，去掉向量相似但语义无关的段。
 4. **精化重排（Refined Rerank）**：提取关键词 + 对存活段定向"精看"（音频场景用**高精度重转写**替代原版"重新抽帧"），把粗描述升级为查询导向的精描述。
 
-**VideoRAG 检索质量的三个真正亮点**：图结构排序（`relation_counts`）、粗/精两阶段描述、LLM 重排。这三项与模态无关，AudioRAG 全部保留，且 transcript 上效果更好。
+**VideoRAG 检索质量的三个亮点**：图结构排序（`relation_counts`）、粗/精两阶段描述、LLM 重排。三项均与模态无关，AudioGraphy 参照实现。其中图结构排序与 LLM 重排已落地（`core/retrieval.py` / `core/rerank.py`）；**粗/精两阶段描述目前是直通占位**——`core/rerank.py` 的 `_refine_descriptions()` 原样返回候选文本，高精度重转写尚未接入，列为待实现项。
 
 ### 3.4 AudioRAG 相对 VideoRAG：砍 / 留 / 加 (Cut / Keep / Add)
 
@@ -201,7 +206,7 @@ VideoRAG 需要 6 个模型角色，AudioRAG 砍掉视觉后只需 4 个，且�
 | ✗ 视觉 VLM | 抽帧描述 | — | 删 MiniCPM-V |
 | ✗ 多模态编码 | 视频段向量 | — | 删 ImageBind |
 
-**核心**：Qwen3.6 vLLM 暴露 OpenAI 兼容 API，直接吃 VideoRAG 桌面版的 `openai_base_url` 机制——LLM/Embedding 全部 **0 代码、只配地址**。唯一动代码的是 ASR（funASR 是自有服务、非 OpenAI 格式）。砍掉 MiniCPM-V（最吃显存）+ ImageBind 后，本地 GPU 需求大降，ASR 走现成服务不在本进程。
+**核心**：Qwen3.6 vLLM 暴露 OpenAI 兼容 API。AudioGraphy 自带 `adapters/real/llm_openai.py`（httpx 直连 `POST {base_url}/chat/completions`，**不依赖 openai SDK**），strong / weak 两档共用同一个类、仅 `(base_url, model)` 不同，由 `Settings.openai_base_url_strong` / `openai_base_url_weak` 配置——**换模型只改配置、不改代码**。唯一需要写适配代码的是 ASR（funASR 是自有服务、非 OpenAI 格式）。本项目**不集成** MiniCPM-V 与 ImageBind（音频场景无视觉模态），本地 GPU 需求相应下降，ASR 走现成服务不在本进程。
 
 ### 4.2 切分：VAD 替代文件切分 (VAD Replaces File Split)
 
@@ -335,11 +340,11 @@ prompt v2 上线
 
 ### 7.1 两层存储 (Two-Layer Storage)
 
-VideoRAG 只有文件存储（JSON/GraphML），不管流水线状态——这正是它不能直接用于多级打标的原因。AudioRAG 采用两层：**MySQL 管状态/版本/审计，VideoRAG 文件索引管 RAG 检索，用 `recording_id` 桥接**。
+VideoRAG 只有文件存储（JSON/GraphML），不管流水线状态——这正是它不能直接用于多级打标的原因。AudioRAG 采用两层：**MySQL 管状态/版本/审计，文件索引管 RAG 检索，用 `recording_id` 桥接**。
 
 ### 7.2 working_dir 布局与落盘机制 (working_dir Layout & Flush Mechanism)
 
-VideoRAG 文件索引全部持久化到 `working_dir`，**索引建一次反复查**：
+文件索引全部持久化到 `working_dir`，**索引建一次反复查**：
 
 | 文件 (File) | 内容 (Content) | AudioRAG |
 |---|---|---|
@@ -381,7 +386,7 @@ AudioRAG 规模估算（几百-几千录音 × 每条几百 chunk/实体 ≈ 10�
 
 **升级路径（Phase 3 可选）**：MySQL 管状态 + 独立向量库（NanoVectorDB/HNSW 或 pgvector）管 ANN。检索快，多一个组件。
 
-> VideoRAG 的 BaseStorage 抽象（`BaseKVStorage` / `BaseVectorStorage` / `BaseGraphStorage`）让三类存储都可插拔，实现对应子类即可，内核零改动。
+> VideoRAG / nano-graphrag 用 `BaseKVStorage` / `BaseVectorStorage` / `BaseGraphStorage` 三个抽象基类换取存储可插拔。**AudioGraphy 目前没有引入这层抽象**：`storage/` 下的 `FileIndex` / `MySQLVectorStore` / `NetworkXGraphStore` 是三个互不继承的具体类，由调用方直接依赖。后续若要更换向量库或图库，需先补一层 Protocol 再替换——这是**已知技术债，不是现成能力**。
 
 ### 7.5 并发与幂等 (Concurrency & Idempotency)
 
@@ -521,7 +526,7 @@ audio_graphy/
 │   │   │   ├── prompts.py                 # prompt 版本管理
 │   │   │   └── eval.py                    # 评估任务
 │   │   │
-│   │   ├── core/                          # AudioRAG 图谱内核（继承 VideoRAG）
+│   │   ├── core/                          # 图谱内核（自研；设计参考 VideoRAG）
 │   │   │   ├── chunker.py                 # VAD+ASR+chunking
 │   │   │   ├── extractor.py               # 实体抽取（中文 prompt）
 │   │   │   ├── graph.py                   # 图谱合并
@@ -539,7 +544,7 @@ audio_graphy/
 │   │   ├── storage/                       # BaseStorage 实现
 │   │   │   ├── mysql_state.py             # 状态层（新增）
 │   │   │   ├── mysql_vector.py            # Phase 1 暴力余弦（新增）
-│   │   │   ├── file_index.py              # VideoRAG 文件索引（复用）
+│   │   │   ├── file_index.py              # 文件索引（自研；沿用 VideoRAG 文件命名）
 │   │   │   └── graph_networkx.py          # NetworkX 图（复用）
 │   │   │
 │   │   ├── tags/                          # 标签版本化
@@ -626,7 +631,7 @@ audio_graphy/
 | `core/retrieval.py` | 双通道召回 + 时间过滤 | 复用 + 砍视觉 | MySQL vectors | 时间窗过滤精度、relation_counts 排序 |
 | `core/rerank.py` | LLM 过滤 + 精化重排 | 复用 + 改"重转写" | 强 LLM | 段过滤准确率、精描述相关性提升 |
 | `adapters/asr_funasr.py` | ASR HTTP 调用 | 新写 | funASR server | 中文识别准确率、超时重试 |
-| `adapters/llm_openai.py` | vLLM via OpenAI SDK | 复用 + 配 base_url | openai SDK | 0 代码、错误降级 |
+| `adapters/real/llm_openai.py` | vLLM via OpenAI 兼容 HTTP | 新写 | httpx | 换模型 0 代码改动、错误分级降级 |
 | `storage/mysql_state.py` | 状态/版本/审计 CRUD | 新写 | SQLAlchemy | 幂等、租户隔离、审计完整 |
 | `storage/mysql_vector.py` | Phase 1 暴力余弦 | 新写 | MySQL | top-k 召回正确、规模临界性能 |
 | `storage/file_index.py` | working_dir 文件读写 | 复用 | — | 跨次复用、fixed working_dir |
