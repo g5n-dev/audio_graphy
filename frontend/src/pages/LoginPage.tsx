@@ -87,7 +87,10 @@ export default function LoginPage() {
           <FormItem label="邮箱">
             <Input
               prefix={<IconUser />}
-              placeholder="admin@changan.com"
+              // Deliberately generic: a real-looking address here reads as a
+              // preconfigured account, and there is none — the first user is
+              // created with scripts/bootstrap_admin.py.
+              placeholder="you@example.com"
               value={email}
               onChange={setEmail}
               size="large"

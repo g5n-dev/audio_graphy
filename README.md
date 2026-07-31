@@ -179,10 +179,23 @@ Mock profile 不下载模型、不需要 GPU，适合产品体验、功能验证
 
 ```bash
 cp .env.example .env
-docker compose --profile mock up -d
+
+# --wait 会等到 backend 健康检查通过为止。backend 启动时先跑 alembic upgrade head，
+# 冷启动约 30 秒，不加 --wait 直接 curl 会连接被拒。
+docker compose --profile mock up -d --wait
 docker compose --profile mock ps
 curl --fail http://127.0.0.1:8000/health
 ```
+
+**创建第一个账号。** 数据库是空的，也没有自助注册接口，所以在这一步之前任何人都登录不进去。仓库刻意不预置演示账号——一个众所周知的默认口令比没有账号更糟：
+
+```bash
+BOOTSTRAP_ADMIN_EMAIL=you@example.com \
+BOOTSTRAP_ADMIN_PASSWORD='选一个至少 12 位的密码' \
+docker compose --profile bootstrap run --rm bootstrap-admin
+```
+
+命令可重复执行：租户或用户已存在时只会提示并跳过，`--reset-password` 是改动既有账号的唯一方式。本地不用 Docker 时等价命令是 `python backend/scripts/bootstrap_admin.py --email you@example.com`（不传密码则交互式询问）。
 
 | 服务 | 地址 |
 |---|---|
@@ -192,7 +205,28 @@ curl --fail http://127.0.0.1:8000/health
 | Prometheus | `http://127.0.0.1:8000/metrics` |
 | Adminer | `http://127.0.0.1:8081` |
 
-仓库不会写死生产演示账号或密码。首次连接真实环境仍需创建租户和用户、导入录音，并配置所属环境的密钥和模型 Adapter。
+登录后界面是空的：还需要导入录音，接入真实模型则要配置密钥和 Adapter。Mock 模式下各环节的真假边界见下表。
+
+### Mock 模式下哪些是真的
+
+Mock profile 的目的是让整条链路跑起来，不是产出可信结论。默认配置里：
+
+| 环节 | 默认 | 说明 |
+|---|---|---|
+| 数据库、迁移、多租户 | ✅ 真实 | — |
+| JWT 鉴权、RBAC、审计 | ✅ 真实 | 生产需替换 `JWT_SECRET` |
+| 音频静态加密（PIPL） | ✅ 真实 | 主密钥由 `master-key-init` 一次性任务生成 |
+| 图存储、Leiden、双时态 | ✅ 真实算法 | 但输入来自下面的 mock 抽取结果 |
+| 接待时间线与分段编辑 | ✅ 真实 | 物理拼接需要 ffmpeg，缺失时降级为逻辑合并 |
+| VAD | ❌ mock | 按文件大小推算切分点，与语音内容无关 |
+| ASR | ❌ mock | 从固定话术池中按哈希取一条 |
+| LLM（强/弱） | ❌ mock | 固定模板，抽取出的实体与录音无关 |
+| 文本 Embedding | ❌ mock | 伪随机向量，相似度无语义 |
+| 声纹 / CLAP | ❌ 默认关闭 | 需 `ENABLE_VOICEPRINT` / `ENABLE_CLAP` |
+| 流式实时转写 | ❌ 路由不注册 | 需 `ENABLE_STREAMING=true` |
+| 高级图 HTTP 接口 | ❌ 路由不注册 | 需 `ENABLE_ADVANCED_GRAPH=true` |
+
+也就是说：**mock 模式下问答页返回的是固定文案，不是对你的问题的回答**。要得到真实结论，按 [部署指南](./docs/deployment.md) 切换到 `models-cpu` 或 GPU profile。
 
 常用命令：
 
@@ -237,6 +271,10 @@ export WORKING_DIR=.local/working
 export MASTER_KEY_PATH=.local/audiography_master.key
 
 alembic upgrade head
+
+# 创建第一个租户和管理员（不传 --password 会交互式询问，不回显）
+python scripts/bootstrap_admin.py --email you@example.com
+
 uvicorn audio_graphy.main:app --reload --port 8000
 ```
 

@@ -189,6 +189,46 @@ services:
         uvicorn audio_graphy.main:app --host 0.0.0.0 --port 8000 --reload --reload-delay 1
       "
 
+  # One-shot: create the first tenant and administrator. A fresh database has no
+  # users and there is no self-service registration, so nothing can sign in until
+  # this has run. Kept behind its own profile and given no default credentials —
+  # a well-known bootstrap account would be worse than no account at all.
+  #
+  #   BOOTSTRAP_ADMIN_EMAIL=you@example.com \
+  #   BOOTSTRAP_ADMIN_PASSWORD='...' \
+  #   docker compose --profile bootstrap run --rm bootstrap-admin
+  bootstrap-admin:
+    profiles: ["bootstrap"]
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: "no"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      WORKING_DIR: /data/working_dir
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
+      BOOTSTRAP_TENANT_CODE: ${BOOTSTRAP_TENANT_CODE:-default}
+    volumes:
+      - working_dir:/data/working_dir
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - audiography_net
+    command:
+      - sh
+      - -c
+      - >
+        python /app/scripts/bootstrap_admin.py
+        --email "$$BOOTSTRAP_ADMIN_EMAIL"
+        --tenant-code "$$BOOTSTRAP_TENANT_CODE"
+        --no-prompt
+
   tag-worker:
     build:
       context: ./backend

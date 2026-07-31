@@ -45,7 +45,7 @@ describe("LoginPage", () => {
     );
 
     await user.type(
-      screen.getByPlaceholderText("admin@changan.com"),
+      screen.getByPlaceholderText("you@example.com"),
       "qa@example.com",
     );
     await user.type(
