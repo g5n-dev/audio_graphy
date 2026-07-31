@@ -1,7 +1,7 @@
 """Mock LLM adapter — deterministic, hash-keyed responses with optional flakiness.
 
 Strategy:
-- prompt_hash = MD5(model, messages) — same as real LLM cache key
+- prompt_hash = SHA-256(model, messages) — same as the real transport
 - Returns one of several canned responses per hash bucket
 - Simulates ~0.5% error rate by default (configurable)
 - Honors cache_key: if caller provides the same key twice, second call returns `cached=True`
@@ -14,7 +14,8 @@ import hashlib
 import json
 import logging
 import random
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 from audio_graphy.adapters.protocols import LLMResponse
 
@@ -47,10 +48,13 @@ class MockLLMAdapter:
         self,
         *,
         model: str,
+        model_epoch: str | None = None,
         error_rate: float = 0.005,
         latency_ms: int = 100,
     ) -> None:
         self.model = model
+        self.model_epoch = model_epoch or model
+        self.provider = "mock"
         self._error_rate = error_rate
         self._latency_ms = latency_ms
         self._call_count = 0
@@ -59,9 +63,9 @@ class MockLLMAdapter:
 
     @staticmethod
     def compute_prompt_hash(model: str, messages: Sequence[dict[str, str]]) -> str:
-        """MD5 of (model, messages) — same formula VideoRAG uses for cache key."""
+        """SHA-256 of ``(model, messages)`` for deterministic correlation."""
         payload = json.dumps({"model": model, "messages": list(messages)}, ensure_ascii=False)
-        return hashlib.md5(payload.encode("utf-8")).hexdigest()
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     async def complete(
         self,
@@ -70,7 +74,14 @@ class MockLLMAdapter:
         temperature: float = 0.0,
         max_tokens: int | None = None,
         cache_key: str | None = None,
+        top_p: float = 1.0,
+        seed: int | None = None,
+        stop: Sequence[str] = (),
+        tools: Sequence[Mapping[str, Any]] = (),
+        response_format: Mapping[str, Any] | None = None,
+        response_schema: Mapping[str, Any] | None = None,
     ) -> LLMResponse:
+        del temperature, max_tokens, top_p, seed, stop, tools, response_format, response_schema
         self._call_count += 1
 
         # Simulate error rate
@@ -90,14 +101,16 @@ class MockLLMAdapter:
                 prompt_hash=cached.prompt_hash,
                 cached=True,
                 usage=cached.usage,
+                cache_source="mock_adapter",
+                provider_called=False,
             )
 
         # Simulate latency
         await asyncio.sleep(self._latency_ms / 1000.0)
 
-        # Deterministic response selection — pick by prompt_hash prefix
+        structured_tags = self._legacy_tag_batch_response(messages)
         bucket = int(prompt_hash[:4], 16) % len(_RESPONSE_TEMPLATES)
-        text = _RESPONSE_TEMPLATES[bucket]
+        text = structured_tags if structured_tags is not None else _RESPONSE_TEMPLATES[bucket]
 
         # Approximate token usage
         prompt_tokens = sum(len(m.get("content", "")) for m in messages) // 2
@@ -129,6 +142,48 @@ class MockLLMAdapter:
         )
 
         return response
+
+    def _legacy_tag_batch_response(
+        self,
+        messages: Sequence[dict[str, str]],
+    ) -> str | None:
+        """Return the structured response expected by ``LegacyTagBatcher``."""
+
+        is_batch_prompt = any(
+            message.get("role") == "system" and "门店接待质检分类器" in message.get("content", "")
+            for message in messages
+        )
+        if not is_batch_prompt:
+            return None
+        user_content = next(
+            (message.get("content", "") for message in messages if message.get("role") == "user"),
+            "",
+        )
+        try:
+            payload = json.loads(user_content)
+        except json.JSONDecodeError:
+            return None
+        tag_paths = (
+            payload.get("k", payload.get("tag_paths"))
+            if isinstance(payload, dict)
+            else None
+        )
+        if not isinstance(tag_paths, list) or not all(
+            isinstance(path, str) and path for path in tag_paths
+        ):
+            return None
+        transcript = str(payload.get("t", payload.get("transcript", "")))
+        rows = []
+        for path in tag_paths:
+            digest = hashlib.sha256(f"{self.model}\0{path}\0{transcript}".encode()).digest()
+            rows.append(
+                {
+                    "tag_path": path,
+                    "value": "pass" if digest[0] % 2 == 0 else "fail",
+                    "confidence": 0.95,
+                }
+            )
+        return json.dumps({"tags": rows}, ensure_ascii=False, separators=(",", ":"))
 
     @property
     def call_count(self) -> int:

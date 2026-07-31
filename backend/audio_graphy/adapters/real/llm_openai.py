@@ -2,8 +2,9 @@
 
 API contract: docs/m4-prd.md §4.2 — POST {base_url}/chat/completions.
 Same class, different ``(base_url, model)`` — see ``bundle.build_hybrid_bundle``.
-``cache_key`` is caller-supplied; same key → ``LLMResponse(cached=True)`` (no HTTP).
-``prompt_hash`` = MD5(model, messages), identical to ``MockLLMAdapter.compute_prompt_hash``.
+``cache_key`` remains accepted for protocol compatibility but is intentionally
+ignored: centralized cache ownership belongs to ``LLMGateway``.
+``prompt_hash`` = SHA-256(model, messages).
 """
 
 from __future__ import annotations
@@ -11,7 +12,8 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from typing import Any, Literal
 
 import httpx
 
@@ -20,6 +22,7 @@ from audio_graphy.adapters.exceptions import (
     LLMRateLimitError,
     LLMServerError,
     LLMTimeoutError,
+    LLMTruncatedResponseError,
     _redact,
 )
 from audio_graphy.adapters.protocols import LLMAdapter, LLMResponse
@@ -28,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT = 60.0
 _CHAT_COMPLETIONS_PATH = "/chat/completions"
+StructuredOutputCapability = Literal["strict_json_schema", "json_object", "unsupported"]
 
 
 class LLMOpenAIAdapter:
@@ -46,8 +50,10 @@ class LLMOpenAIAdapter:
         api_key: str,
         model: str,
         *,
+        model_epoch: str | None = None,
         timeout: float = _DEFAULT_TIMEOUT,
         max_connect_sec: float = 5.0,
+        structured_output_capability: StructuredOutputCapability = "strict_json_schema",
     ) -> None:
         """Construct the adapter.
 
@@ -57,15 +63,27 @@ class LLMOpenAIAdapter:
             model: served model name, e.g. ``qwen3.6-27b``.
             timeout: total request timeout (vLLM inference can take >10s). Default 60s.
             max_connect_sec: connect-only timeout.
+            structured_output_capability: Provider's structured-output contract.
+                ``strict_json_schema`` sends the schema as an OpenAI-compatible
+                strict ``json_schema`` response format. ``json_object`` is an
+                explicit compatibility fallback whose output still requires
+                caller-side validation. ``unsupported`` fails before I/O.
         """
+        if structured_output_capability not in {
+            "strict_json_schema",
+            "json_object",
+            "unsupported",
+        }:
+            raise ValueError("unsupported structured_output_capability")
         self.model = model
+        self.model_epoch = model_epoch or model
+        self.provider = "openai-compatible"
+        self.structured_output_capability = structured_output_capability
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._timeout_sec = timeout
         self._max_connect_sec = max_connect_sec
         self._client: httpx.AsyncClient | None = None
-        # In-process cache: cache_key → LLMResponse. NOT shared across instances.
-        self._cache: dict[str, LLMResponse] = {}
 
     async def complete(
         self,
@@ -74,32 +92,36 @@ class LLMOpenAIAdapter:
         temperature: float = 0.0,
         max_tokens: int | None = None,
         cache_key: str | None = None,
+        top_p: float = 1.0,
+        seed: int | None = None,
+        stop: Sequence[str] = (),
+        tools: Sequence[Mapping[str, Any]] = (),
+        response_format: Mapping[str, Any] | None = None,
+        response_schema: Mapping[str, Any] | None = None,
     ) -> LLMResponse:
+        del cache_key
         prompt_hash = self.compute_prompt_hash(self.model, messages)
-
-        if cache_key and cache_key in self._cache:
-            cached = self._cache[cache_key]
-            logger.debug(
-                "LLM cache HIT key=%s model=%s hash=%s",
-                cache_key[:8],
-                self.model,
-                prompt_hash[:8],
-            )
-            return LLMResponse(
-                text=cached.text,
-                model=cached.model,
-                prompt_hash=cached.prompt_hash,
-                cached=True,
-                usage=cached.usage,
-            )
 
         payload: dict[str, object] = {
             "model": self.model,
             "messages": list(messages),
             "temperature": temperature,
+            "top_p": top_p,
         }
         if max_tokens is not None:
             payload["max_tokens"] = max_tokens
+        if seed is not None:
+            payload["seed"] = seed
+        if stop:
+            payload["stop"] = list(stop)
+        if tools:
+            payload["tools"] = list(tools)
+        effective_response_format = self._response_format_payload(
+            response_format=response_format,
+            response_schema=response_schema,
+        )
+        if effective_response_format is not None:
+            payload["response_format"] = effective_response_format
 
         client = self._get_client()
         full_url = f"{self._base_url}{_CHAT_COMPLETIONS_PATH}"
@@ -129,7 +151,7 @@ class LLMOpenAIAdapter:
             ) from exc
 
         self._raise_for_status(resp, full_url)
-        text, usage = self._parse_response(resp)
+        text, usage, provider_request_id = self._parse_response(resp)
 
         response = LLMResponse(
             text=text,
@@ -137,11 +159,8 @@ class LLMOpenAIAdapter:
             prompt_hash=prompt_hash,
             cached=False,
             usage=usage,
+            provider_request_id=provider_request_id,
         )
-
-        if cache_key:
-            self._cache[cache_key] = response
-            logger.debug("LLM cached key=%s model=%s", cache_key[:8], self.model)
 
         logger.debug(
             "LLM OK model=%s hash=%s tokens=%s",
@@ -151,11 +170,71 @@ class LLMOpenAIAdapter:
         )
         return response
 
+    def _response_format_payload(
+        self,
+        *,
+        response_format: Mapping[str, Any] | None,
+        response_schema: Mapping[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        """Resolve the explicit provider structured-output contract.
+
+        A supplied schema is never silently ignored. Strict-capable providers
+        receive the schema itself; explicitly configured JSON-only providers
+        emit a warning and use JSON mode; unsupported providers fail before a
+        network call. Existing ``response_format`` behavior is unchanged when
+        no schema is supplied.
+        """
+
+        if response_schema is None:
+            return dict(response_format) if response_format is not None else None
+        if self.structured_output_capability == "unsupported":
+            raise ValueError(
+                f"provider model={self.model} does not support structured output"
+            )
+        if self.structured_output_capability == "json_object":
+            logger.warning(
+                "Provider strict JSON Schema unavailable; using explicit json_object "
+                "fallback model=%s",
+                self.model,
+            )
+            return {"type": "json_object"}
+
+        format_type = response_format.get("type") if response_format is not None else None
+        if format_type not in {None, "json_object", "json_schema"}:
+            raise ValueError(
+                "response_schema requires response_format type json_object or json_schema"
+            )
+        json_schema_options = (
+            response_format.get("json_schema")
+            if response_format is not None and format_type == "json_schema"
+            else None
+        )
+        if json_schema_options is not None and not isinstance(json_schema_options, Mapping):
+            raise TypeError("response_format.json_schema must be a mapping")
+        name = "audio_graphy_response"
+        description: object | None = None
+        if isinstance(json_schema_options, Mapping):
+            name = str(json_schema_options.get("name") or name)
+            description = json_schema_options.get("description")
+        elif response_format is not None:
+            # Compatibility with the earlier internal shape
+            # {"type": "json_schema", "name": "..."}.
+            name = str(response_format.get("name") or name)
+            description = response_format.get("description")
+        strict_schema: dict[str, Any] = {
+            "name": name,
+            "strict": True,
+            "schema": dict(response_schema),
+        }
+        if description is not None:
+            strict_schema["description"] = description
+        return {"type": "json_schema", "json_schema": strict_schema}
+
     @staticmethod
     def compute_prompt_hash(model: str, messages: Sequence[dict[str, str]]) -> str:
-        """MD5 of (model, messages) — identical to MockLLMAdapter.compute_prompt_hash."""
+        """SHA-256 of ``(model, messages)`` for transport-level correlation."""
         payload = json.dumps({"model": model, "messages": list(messages)}, ensure_ascii=False)
-        return hashlib.md5(payload.encode("utf-8")).hexdigest()
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -175,16 +254,9 @@ class LLMOpenAIAdapter:
     def _raise_for_status(self, resp: httpx.Response, full_url: str) -> None:
         if resp.status_code < 400:
             return
+        status_code = resp.status_code
         body_preview = (resp.text or "")[:200]
-        if resp.status_code == 400:
-            logger.warning("LLM 400 model=%s body=%s", self.model, body_preview)
-            raise LLMBadRequest(
-                f"LLM 400: {body_preview}",
-                url=self._base_url,
-                status_code=400,
-                model=self.model,
-            )
-        if resp.status_code == 429:
+        if status_code == 429:
             logger.warning("LLM 429 model=%s", self.model)
             raise LLMRateLimitError(
                 "LLM 429: rate limited",
@@ -192,43 +264,110 @@ class LLMOpenAIAdapter:
                 status_code=429,
                 model=self.model,
             )
-        logger.warning("LLM %d model=%s body=%s", resp.status_code, self.model, body_preview)
-        raise LLMServerError(
-            f"LLM {resp.status_code}: {body_preview}",
+        if status_code in (408, 425) or 500 <= status_code < 600:
+            logger.warning("LLM %d model=%s body=%s", status_code, self.model, body_preview)
+            raise LLMServerError(
+                f"LLM {status_code}: {body_preview}",
+                url=self._base_url,
+                status_code=status_code,
+                model=self.model,
+            )
+        if 400 <= status_code < 500:
+            logger.warning("LLM %d model=%s body=%s", status_code, self.model, body_preview)
+            raise LLMBadRequest(
+                f"LLM {status_code}: {body_preview}",
+                url=self._base_url,
+                status_code=status_code,
+                model=self.model,
+            )
+        logger.warning("LLM %d model=%s body=%s", status_code, self.model, body_preview)
+        raise LLMBadRequest(
+            f"LLM {status_code}: {body_preview}",
             url=self._base_url,
-            status_code=resp.status_code,
+            status_code=status_code,
             model=self.model,
         )
 
-    def _parse_response(self, resp: httpx.Response) -> tuple[str, dict[str, int]]:
+    def _parse_response(
+        self,
+        resp: httpx.Response,
+    ) -> tuple[str, dict[str, int], str | None]:
         try:
             body = resp.json()
         except ValueError as exc:
             logger.warning("LLM non-JSON response: %s", exc)
-            raise LLMServerError(
+            raise LLMBadRequest(
                 f"LLM non-JSON response: {exc}",
                 url=self._base_url,
                 status_code=resp.status_code,
                 model=self.model,
             ) from exc
 
+        usage = _provider_usage(body)
+        provider_request_id = (
+            resp.headers.get("x-request-id")
+            or resp.headers.get("request-id")
+            or _optional_string(body.get("id"))
+        )
+
         try:
-            text = body["choices"][0]["message"]["content"]
+            choice = body["choices"][0]
+            text = choice["message"]["content"]
+            if not isinstance(text, str):
+                raise TypeError("message content must be a string")
         except (KeyError, IndexError, TypeError) as exc:
-            raise LLMServerError(
+            raise LLMBadRequest(
                 f"LLM JSON missing choices[0].message.content: {str(body)[:200]}",
                 url=self._base_url,
                 status_code=resp.status_code,
                 model=self.model,
             ) from exc
+        finish_reason = choice.get("finish_reason")
+        if finish_reason == "length":
+            raise LLMTruncatedResponseError(
+                f"LLM response is incomplete (finish_reason={finish_reason!r})",
+                url=self._base_url,
+                status_code=resp.status_code,
+                model=self.model,
+                finish_reason=finish_reason,
+                usage=usage,
+                provider_request_id=provider_request_id,
+            )
+        if finish_reason != "stop":
+            raise LLMBadRequest(
+                f"LLM response is incomplete (finish_reason={finish_reason!r})",
+                url=self._base_url,
+                status_code=resp.status_code,
+                model=self.model,
+            )
 
-        usage_raw = body.get("usage") or {}
-        usage = {
-            "prompt_tokens": int(usage_raw.get("prompt_tokens", 0)),
-            "completion_tokens": int(usage_raw.get("completion_tokens", 0)),
-            "total_tokens": int(usage_raw.get("total_tokens", 0)),
-        }
-        return text, usage
+        return (
+            text,
+            usage
+            or {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+            },
+            provider_request_id,
+        )
+
+
+def _provider_usage(body: Mapping[str, Any]) -> dict[str, int] | None:
+    usage_raw = body.get("usage")
+    if not isinstance(usage_raw, Mapping):
+        return None
+    keys = ("prompt_tokens", "completion_tokens", "total_tokens")
+    if not any(key in usage_raw for key in keys):
+        return None
+    try:
+        return {key: max(0, int(usage_raw.get(key, 0))) for key in keys}
+    except (TypeError, ValueError) as exc:
+        raise LLMBadRequest("LLM usage fields must be integers") from exc
+
+
+def _optional_string(value: object) -> str | None:
+    return value if isinstance(value, str) and value else None
 
 
 # Protocol satisfaction check.

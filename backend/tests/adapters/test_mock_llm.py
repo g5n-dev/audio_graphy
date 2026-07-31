@@ -24,6 +24,16 @@ def simple_messages() -> list[dict[str, str]]:
 class TestMockLLMComplete:
     """MockLLMAdapter.complete() behavior."""
 
+    def test_exposes_provider_and_model_epoch(self) -> None:
+        adapter = MockLLMAdapter(
+            model="served-model",
+            model_epoch="fixture-v3",
+            error_rate=0.0,
+            latency_ms=0,
+        )
+        assert adapter.provider == "mock"
+        assert adapter.model_epoch == "fixture-v3"
+
     @pytest.mark.unit
     @pytest.mark.asyncio
     async def test_returns_llm_response(
@@ -47,12 +57,11 @@ class TestMockLLMComplete:
 
     @pytest.mark.unit
     @pytest.mark.asyncio
-    async def test_prompt_hash_is_md5(
+    async def test_prompt_hash_is_sha256(
         self, adapter: MockLLMAdapter, simple_messages: list[dict[str, str]]
     ) -> None:
         result = await adapter.complete(simple_messages)
-        # MD5 hex digest is 32 chars
-        assert len(result.prompt_hash) == 32
+        assert len(result.prompt_hash) == 64
         assert all(c in "0123456789abcdef" for c in result.prompt_hash)
 
     @pytest.mark.unit
@@ -135,5 +144,45 @@ class TestMockLLMComplete:
         h1 = MockLLMAdapter.compute_prompt_hash("model-a", simple_messages)
         h2 = MockLLMAdapter.compute_prompt_hash("model-a", simple_messages)
         h3 = MockLLMAdapter.compute_prompt_hash("model-b", simple_messages)
+        assert len(h1) == 64
         assert h1 == h2
         assert h1 != h3
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_legacy_tag_batch_prompt_returns_complete_structured_json_once(
+        self,
+        adapter: MockLLMAdapter,
+    ) -> None:
+        import json
+
+        tag_paths = [
+            "quality.greeting",
+            "quality.closing",
+            "sales.product_mention",
+        ]
+        messages = [
+            {
+                "role": "system",
+                "content": "你是门店接待质检分类器。必须仅返回 JSON。",
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "recording_id": 7,
+                        "tag_paths": tag_paths,
+                        "transcript": "您好，欢迎光临。",
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        ]
+
+        result = await adapter.complete(messages, temperature=0.0, max_tokens=512)
+        payload = json.loads(result.text)
+
+        assert adapter.call_count == 1
+        assert [row["tag_path"] for row in payload["tags"]] == tag_paths
+        assert {row["value"] for row in payload["tags"]} <= {"pass", "fail"}
+        assert {row["confidence"] for row in payload["tags"]} == {0.95}
