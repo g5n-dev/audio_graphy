@@ -1,191 +1,78 @@
-%% AudioGraphy M3 Class Diagrams
-%% Contains: auth module, tags module, services module
-
-%% ========== 1. auth 模块类图 ==========
 classDiagram
-    direction TB
-
-    class AuthUser {
-        <<frozen dataclass>>
-        +id: int
-        +name: str
-        +email: str
-        +role: str
-        +tenant_id: str
+    class urlParams {
+        <<utility>>
+        +parseFocusParam(raw: string|null) {type, id} | null
+        +parseAtParam(raw: string|null) number | null
+        +parseTimeRangeParams(from, to) {from, to}
+        +buildFocusParam(type, id) string
     }
 
-    class JWTManager {
-        -secret: str
-        -algorithm: str
-        -exp_hours: int
-        -refresh_exp_hours: int
-        +__init__(secret, algorithm, exp_hours, refresh_exp_hours)
-        +create_access_token(user_id, tenant_id, role) str
-        +create_refresh_token(user_id, tenant_id, role) str
-        +decode_token(token) dict
+    class OutLinkCard {
+        <<component>>
+        +icon: ReactNode
+        +title: string
+        +description: string
+        +to: string
+        +buttonLabel?: string
     }
 
-    class PasswordHasher {
-        -skip_in_mock: bool
-        -context: CryptContext
-        +__init__(skip_in_mock)
-        +hash(password) str
-        +verify(password, hashed) bool
+    class NodeRouteEntry {
+        <<interface>>
+        +label: string
+        +to: (id: string) = string
     }
 
-    class RoleGuard {
-        <<module functions>>
-        +require_role(min_role) Callable
-        +ROLE_HIERARCHY: dict
+    class NODE_TYPE_ROUTE_MAP {
+        <<constant>>
+        产品: NodeRouteEntry
+        品牌: NodeRouteEntry
+        竞品: NodeRouteEntry
+        客户: NodeRouteEntry
+        坐席: NodeRouteEntry
+        录音: NodeRouteEntry
+        门店: NodeRouteEntry
     }
 
-    class TenantContext {
-        <<module functions>>
-        +scoped_select(stmt, model, tenant_id) Select
-        +check_tenant_or_404(resource_tid, current_tid) void
+    class GraphExplorerPage {
+        -NODE_TYPE_ROUTE_MAP: Record
+        +consumeFocusParam(): void
+        +consumeFocusCommunityParam(): void
+        +renderJumpButton(type, id): JSX.Element | null
     }
 
-    class AuthMiddleware {
-        <<FastAPI middleware>>
-        +jwt_manager: JWTManager
-        +password_hasher: PasswordHasher
-        +WHITE_LIST: set~str~
+    class EntityRelationshipPanel {
+        -selectedEntity: string
+        -entityDetail: EntityDetail
+        +handleNodeClick(evt): void
+        +renderDetailPanel(): JSX.Element
     }
 
-    AuthUser ..> JWTManager : created by
-    AuthMiddleware --> JWTManager : uses
-    AuthMiddleware --> PasswordHasher : uses
-    RoleGuard ..> AuthUser : checks role
-    TenantContext ..> AuthUser : reads tenant_id
-
-%% ========== 2. tags 模块类图 ==========
-classDiagram
-    direction TB
-
-    class TagFactsService {
-        -session_factory: async_sessionmaker
-        +async append(tenant_id, recording_id, tag_path, tag_value, prompt_version, model_version, source, input_hash, confidence, computed_by) TagFact
-        +async get_history(tenant_id, recording_id, tag_path) list~TagFact~
-        +async get_current_version(tenant_id, recording_id, tag_path) int
+    class TimeTravelPage {
+        -recordingId: number
+        +recordingPicker: AutoComplete
+        +consumeRecordingParam(): void
+        +renderJumpToRecordingLink(edge): JSX.Element
     }
 
-    class TagCurrentService {
-        -session_factory: async_sessionmaker
-        +async upsert(tenant_id, recording_id, tag_path, tag_value, version, prompt_version) void
-        +async get_current_tags(tenant_id, recording_id, tag_path_prefix) list~TagCurrent~
+    class RecordingDetailPage {
+        +renderExportTabs(): TabPane[]
+        +consumeAtParam(): void
+        +highlightSegmentRow(at: number): void
     }
 
-    class TagStatsService {
-        -session_factory: async_sessionmaker
-        +async apply_delta(tenant_id, store_id, agent_name, tag_path, old_value, new_value) void
-        +async get_stats(tenant_id, store_id, agent_name, tag_path_prefix, tag_value, group_by) list~dict~
+    class CommunityExplorerPage {
+        +selectedClusterKey: string
+        +renderJumpToGraphButton(): JSX.Element
     }
 
-    class RecomputeService {
-        -facts_svc: TagFactsService
-        -current_svc: TagCurrentService
-        -stats_svc: TagStatsService
-        -tag_extractor: TagExtractor
-        -session_factory: async_sessionmaker
-        +async create_recompute_task(tenant_id, prompt_version, tag_paths, dry_run, recording_ids) RecomputeResult
-        -async _execute_recompute(task) void
-        +async get_task_status(task_id) RecomputeTask
+    class SpeakerProfileDetailPage {
+        +renderViewInGraphButton(): JSX.Element
     }
 
-    class TagExtractor {
-        <<core/tag_extractor.py>>
-        -bundle: AdapterBundle
-        +async extract_tags(recording_id, tenant_id, chunks, prompt_version, tag_paths) list~TagJudgment~
-        -async _judge_tag(weak_llm, chunk_text, tag_path, prompt) TagJudgment
-    }
-
-    class TagJudgment {
-        <<frozen dataclass>>
-        +tag_path: str
-        +tag_value: str
-        +confidence: float
-        +cached: bool
-        +input_hash: str
-    }
-
-    class RecomputeTask {
-        <<ORM model>>
-        +task_id: str
-        +tenant_id: str
-        +prompt_version: str
-        +status: str
-        +total: int
-        +processed: int
-        +changed: int
-        +cached_hits: int
-        +llm_calls: int
-    }
-
-    RecomputeService --> TagFactsService : uses
-    RecomputeService --> TagCurrentService : uses
-    RecomputeService --> TagStatsService : uses
-    RecomputeService --> TagExtractor : uses
-    TagExtractor ..> TagJudgment : produces
-    RecomputeService ..> RecomputeTask : manages
-
-%% ========== 3. services 模块类图 ==========
-classDiagram
-    direction TB
-
-    class IngestionService {
-        -session_factory: async_sessionmaker
-        -settings: Settings
-        +async register_recording(tenant_id, store_id, path, agent_name, customer_hash, recorded_at, prompt_version) Recording
-        +async list_recordings(tenant_id, page, page_size, store_id, status, agent_name, recorded_from, recorded_to, sort) tuple
-        +async get_recording(tenant_id, recording_id) Recording
-        +async trigger_reindex(tenant_id, recording_id, force) void
-    }
-
-    class IndexingService {
-        -bundle: AdapterBundle
-        -session_factory: async_sessionmaker
-        -vector_store: MySQLVectorStore
-        -settings: Settings
-        -_lock: asyncio.Lock
-        +async process_queued() int
-        -async _run_pipeline(recording) void
-        -async _do_chunking(recording) ChunkerOutput
-        -async _do_embedding(chunks) void
-        -async _do_extraction(chunks) list~ExtractionResult~
-        -async _do_graph_merge(extractions, tenant_id) GraphSnapshot
-        -async _do_tagging(recording, chunks) void
-    }
-
-    class QueryService {
-        -retriever: DualChannelRetriever
-        -reranker: Reranker
-        -session_factory: async_sessionmaker
-        +async query(tenant_id, agent_filter, query, time_range, top_k, store_id) QueryResponse
-        -_build_response(query, retrieval, rerank) QueryResponse
-    }
-
-    class PipelineScheduler {
-        <<scheduler.py>>
-        -indexing_svc: IndexingService
-        -scheduler: AsyncIOScheduler
-        +start() void
-        +shutdown() void
-        -_poll_and_process() void
-    }
-
-    class TagExtractor {
-        <<core/tag_extractor.py>>
-        -bundle: AdapterBundle
-        +async extract_tags(recording_id, tenant_id, chunks, prompt_version, tag_paths) list~TagJudgment~
-    }
-
-    IngestionService ..> Recording : manages
-    IndexingService --> AdapterBundle : uses
-    IndexingService --> MySQLVectorStore : uses
-    IndexingService ..> TagExtractor : uses
-    IndexingService ..> Chunker : calls
-    IndexingService ..> EntityExtractor : calls
-    IndexingService ..> GraphBuilder : calls
-    PipelineScheduler --> IndexingService : polls
-    QueryService --> DualChannelRetriever : uses
-    QueryService --> Reranker : uses
+    GraphExplorerPage --> NODE_TYPE_ROUTE_MAP : defines
+    NODE_TYPE_ROUTE_MAP --> NodeRouteEntry : contains
+    EntityRelationshipPanel --> GraphExplorerPage : reads NODE_TYPE_ROUTE_MAP
+    GraphExplorerPage --> urlParams : uses
+    TimeTravelPage --> urlParams : uses
+    RecordingDetailPage --> urlParams : uses
+    RecordingDetailPage --> OutLinkCard : renders x4

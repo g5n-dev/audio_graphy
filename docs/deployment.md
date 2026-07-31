@@ -1,6 +1,7 @@
 # AudioGraphy 模型部署指南
 
-本指南描述当前 `docker-compose.yml` 的四种互斥拓扑。所有检查都可以通过
+本指南描述当前 `docker-compose.yml` 的四种互斥模型拓扑，以及可叠加的
+Redis 热缓存 Profile。所有检查都可以通过
 `docker compose config` 完成，不需要拉取或启动大模型。
 
 ## 1. Profile 总览
@@ -17,6 +18,9 @@ Profile 是互斥的。不要在同一命令同时启用 `models-cpu` 和 GPU pr
 
 核心服务 `mysql`、`backend`、`frontend` 在所有拓扑中都会启动；
 `adminer` 只属于 `mock` profile。
+
+`cache-redis` 不是模型拓扑，可与上表任一 Profile 组合。MySQL 始终是 LLM
+缓存持久化层；Redis 只承担可丢失的共享热缓存。
 
 ## 2. 固定镜像与安全边界
 
@@ -163,6 +167,34 @@ VLLM_WEAK_GPU_MEMORY_UTILIZATION=0.82
 
 每个 GPU 服务只申请一个明确的 `device_id`，不会再使用 `count: all`。
 
+### 3.5 可选 Redis 热缓存
+
+未设置 `REDIS_URL` 时，LLM 网关使用每进程最多 1024 项 / 32 MiB 的 TTL+LRU
+本地缓存，并由 MySQL 提供重启复用和跨进程 singleflight。需要多进程共享热
+缓存时，可叠加。请求内的 memo 不跨请求存活，且在 Redis 健康时不会再保留
+一份重复的进程级结果缓存：
+
+```bash
+REDIS_URL=redis://redis:6379/0 \
+  docker compose --profile models-multi-gpu --profile cache-redis up -d
+```
+
+Redis 启动探测失败或运行中连续三次操作失败时，网关自动降级到本地缓存；
+30 秒熔断后后台探测，连续两次成功才恢复。缓存错误只产生 miss 和告警。
+Compose 实例使用 128 MiB `allkeys-lru`、192 MiB 容器内存上限，并关闭
+AOF/RDB。外部 Redis 应使用隔离的实例或 DB；应用不会修改全局淘汰策略，也
+不会使用 `KEYS` 或 `FLUSHDB`。原始 prompt 不落 Redis/MySQL；经过结构校验的
+输出先压缩，再以绑定 tenant/namespace/recipe 的 AES-256-GCM 进行认证加密。
+
+发布相关开关位于 `.env.example`。精确 MySQL 缓存默认开启；语义缓存、候选
+批判断、hybrid 规则短路和自适应 gleaning 默认关闭，应在对应金标质量门禁
+通过后逐项启用。
+`ENABLE_LLM_HOT_CACHE` 与 `ENABLE_LLM_PERSISTENT_CACHE` 可独立回退。只关闭
+持久层时，无 provenance 的精确结果继续使用热缓存；带 provenance 的请求
+强制绕过 hot-only 模式，确保不会绕开 DSAR 所需的 MySQL 反向索引。DSAR
+会持久化来源墓碑和待清除 key，Redis 故障时先阻断读取与重建，恢复后后台
+重试物理清除。
+
 ## 4. 端口与服务发现
 
 容器间通信必须使用服务名和容器端口；宿主端口只用于本机诊断。应用端口由
@@ -173,6 +205,7 @@ VLLM_WEAK_GPU_MEMORY_UTILIZATION=0.82
 | 服务 | 容器内地址 | 默认宿主地址 |
 |---|---|---|
 | MySQL | `mysql:3306` | `127.0.0.1:3307` |
+| Redis（可选，无宿主端口） | `redis:6379` | 不发布 |
 | Adminer | `adminer:8080` | `127.0.0.1:8081` |
 | backend | `backend:8000` | `127.0.0.1:8000` |
 | frontend | `frontend:5173` | `127.0.0.1:5173` |
@@ -243,7 +276,7 @@ SILERO_VAD_MODEL_PATH=/models/silero_vad.onnx
 ## 6. 静态验证（不拉模型）
 
 ```bash
-for profile in mock models-cpu models-single-gpu models-multi-gpu; do
+for profile in mock cache-redis models-cpu models-single-gpu models-multi-gpu; do
   docker compose --env-file /dev/null \
     --profile "$profile" config --quiet
 done

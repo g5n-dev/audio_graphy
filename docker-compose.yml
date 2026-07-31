@@ -59,6 +59,43 @@ services:
     networks:
       - audiography_net
 
+  # Optional shared LLM hot cache. MySQL remains the durable cache source;
+  # Redis persistence is deliberately disabled and the app falls back to a
+  # bounded process-local cache whenever this profile is absent/unhealthy.
+  redis:
+    image: redis:8.8.0-alpine
+    container_name: audiography-redis
+    profiles: ["cache-redis"]
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      - --maxmemory
+      - 128mb
+      - --maxmemory-policy
+      - allkeys-lru
+    read_only: true
+    tmpfs:
+      - /data:rw,noexec,nosuid,size=16m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          memory: 192M
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    networks:
+      - audiography_net
+
   adminer:
     image: adminer:5.3.0
     container_name: audiography-adminer
@@ -123,6 +160,8 @@ services:
       HF_TOKEN: ${HF_TOKEN:-}
       MYSQL_HOST: mysql
       MYSQL_PORT: 3306
+      LLM_HOT_CACHE_BACKEND: ${LLM_HOT_CACHE_BACKEND:-auto}
+      REDIS_URL: ${REDIS_URL:-}
       WORKING_DIR: /data/working_dir
     volumes:
       - ./backend:/app
@@ -149,6 +188,46 @@ services:
         alembic upgrade head &&
         uvicorn audio_graphy.main:app --host 0.0.0.0 --port 8000 --reload --reload-delay 1
       "
+
+  tag-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: audiography-tag-worker
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      ADAPTER_MODE: ${ADAPTER_MODE:-mock}
+      ADAPTER_ASR_MODE: ${ADAPTER_ASR_MODE:-mock}
+      ADAPTER_VAD_MODE: ${ADAPTER_VAD_MODE:-mock}
+      ADAPTER_LLM_MODE: ${ADAPTER_LLM_MODE:-mock}
+      ADAPTER_EMBED_MODE: ${ADAPTER_EMBED_MODE:-mock}
+      SILERO_VAD_URL: ${SILERO_VAD_URL:-http://silero-vad.invalid:8000}
+      BGE_M3_URL: ${BGE_M3_URL:-http://bge-m3:80}
+      OPENAI_BASE_URL_STRONG: ${OPENAI_BASE_URL_STRONG:-http://vllm-strong:8000/v1}
+      OPENAI_BASE_URL_WEAK: ${OPENAI_BASE_URL_WEAK:-http://vllm-weak:8000/v1}
+      HF_TOKEN: ${HF_TOKEN:-}
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      LLM_HOT_CACHE_BACKEND: ${LLM_HOT_CACHE_BACKEND:-auto}
+      REDIS_URL: ${REDIS_URL:-}
+      WORKING_DIR: /data/working_dir
+    volumes:
+      - ./backend:/app
+      - working_dir:/data/working_dir
+      - master_key:/run/secrets:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+      master-key-init:
+        condition: service_completed_successfully
+      mysql:
+        condition: service_healthy
+    networks:
+      - audiography_net
+    command: ["python", "-m", "audio_graphy.tag_worker"]
 
   frontend:
     build:
@@ -221,6 +300,7 @@ services:
       --host 0.0.0.0 --port 8000
       --tensor-parallel-size 1
       --gpu-memory-utilization ${VLLM_STRONG_GPU_MEMORY_UTILIZATION:-0.72}
+      --enable-prefix-caching
     networks:
       - audiography_net
 
@@ -260,6 +340,7 @@ services:
       --host 0.0.0.0 --port 8000
       --tensor-parallel-size 1
       --gpu-memory-utilization ${VLLM_WEAK_GPU_MEMORY_UTILIZATION:-0.82}
+      --enable-prefix-caching
     networks:
       - audiography_net
 
