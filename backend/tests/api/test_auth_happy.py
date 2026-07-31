@@ -8,7 +8,11 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from tests.api.conftest import seed_recording  # noqa: F401
+from tests.api.conftest import (  # noqa: F401
+    SEED_USER_PASSWORD,
+    _run_async,
+    seed_recording,
+)
 
 
 @pytest.mark.integration
@@ -19,7 +23,7 @@ class TestAuthHappyPath:
         """POST /auth/login with valid credentials returns 200 + tokens."""
         resp = test_client.post(
             "/api/v1/auth/login",
-            json={"email": "admin@changan.com", "password": "anything"},
+            json={"email": "admin@changan.com", "password": SEED_USER_PASSWORD},
         )
         assert resp.status_code == 200
         body = resp.json()
@@ -31,11 +35,62 @@ class TestAuthHappyPath:
         assert body["user"]["role"] == "admin"
         assert body["user"]["tenant_id"] == "chang_an"
 
+    def test_login_wrong_password_is_rejected(self, test_client: TestClient) -> None:
+        """A known email with the wrong password must not authenticate.
+
+        Regression guard: password verification used to be short-circuited
+        whenever ``ADAPTER_MODE`` was ``mock`` — which is the default — so any
+        password was accepted.
+        """
+        resp = test_client.post(
+            "/api/v1/auth/login",
+            json={"email": "admin@changan.com", "password": "definitely-not-it"},
+        )
+        assert resp.status_code == 401
+        assert resp.json()["error"]["code"] == "INVALID_CREDENTIALS"
+
     def test_login_wrong_email(self, test_client: TestClient) -> None:
         """POST /auth/login with unknown email returns 401."""
         resp = test_client.post(
             "/api/v1/auth/login",
             json={"email": "nobody@nowhere.com", "password": "x"},
+        )
+        assert resp.status_code == 401
+        assert resp.json()["error"]["code"] == "INVALID_CREDENTIALS"
+
+    def test_login_ambiguous_email_across_tenants_is_rejected(
+        self,
+        test_client: TestClient,
+        db_session_factory,
+    ) -> None:
+        """An email present in two tenants must not authenticate into either.
+
+        Users are unique per (tenant_id, email), so the same address can exist
+        in several tenants; LoginRequest carries no tenant, so the only safe
+        resolution is to refuse rather than pick whichever row comes back first.
+        """
+        from audio_graphy.auth.passwords import PasswordHasher
+        from audio_graphy.models import User
+        from audio_graphy.models.enums import UserRole
+
+        async def _add_colliding_user() -> None:
+            async with db_session_factory() as session:
+                session.add(
+                    User(
+                        tenant_id="byd",
+                        name="admin_byd_collision",
+                        email="admin@changan.com",
+                        role=UserRole.ADMIN.value,
+                        password_hash=PasswordHasher(bcrypt_rounds=4).hash(SEED_USER_PASSWORD),
+                    )
+                )
+                await session.commit()
+
+        _run_async(_add_colliding_user())
+
+        resp = test_client.post(
+            "/api/v1/auth/login",
+            json={"email": "admin@changan.com", "password": SEED_USER_PASSWORD},
         )
         assert resp.status_code == 401
         assert resp.json()["error"]["code"] == "INVALID_CREDENTIALS"
@@ -53,7 +108,7 @@ class TestAuthHappyPath:
         # First login to get a refresh token
         login_resp = test_client.post(
             "/api/v1/auth/login",
-            json={"email": "admin@changan.com", "password": "x"},
+            json={"email": "admin@changan.com", "password": SEED_USER_PASSWORD},
         )
         refresh_token = login_resp.json()["refresh_token"]
 

@@ -15,6 +15,8 @@ dependencies = [
     # Database
     "sqlalchemy[asyncio]>=2.0.36",
     "aiomysql>=0.2.0",
+    # Sync driver — Settings.mysql_dsn_sync, used by alembic/env.py
+    "pymysql>=1.1.0",
     "alembic>=1.14.0",
     "greenlet>=3.0.0",
     # Settings / validation
@@ -23,6 +25,7 @@ dependencies = [
     "email-validator>=2.2.0",
     # HTTP client (real adapters)
     "httpx>=0.28.0",
+    "redis>=5.2.0",
     # Auth
     "pyjwt[crypto]>=2.10.0",
     "bcrypt>=4.2.0",
@@ -38,8 +41,8 @@ dependencies = [
     "apscheduler>=3.10.4",
     # Embeddings / numerics
     "numpy>=2.1.0",
-    # Audio metadata
-    "mutagen>=1.47.0",
+    # Eval suite manifests (audio_graphy/eval/runner.py)
+    "pyyaml>=6.0",
     # Logging
     "structlog>=24.4.0",
     # Tokenizer (for chunker token budget)

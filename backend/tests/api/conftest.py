@@ -3,7 +3,8 @@
 Sets up a TestClient with an in-memory SQLite async database (no MySQL needed).
 Uses mock adapter mode and a temporary working directory.
 
-Seed data: 2 tenants × 4 users (admin/inspector/agent/viewer per tenant).
+Seed data: 2 tenants × 4 users (admin/inspector/agent/viewer per tenant),
+plus a second Chang'an inspector for independent blind reviews.
 """
 
 from __future__ import annotations
@@ -31,6 +32,10 @@ os.environ.setdefault("MYSQL_DB", "audiography_test")
 os.environ.setdefault("JWT_SECRET", "test-secret-32-chars-minimum-length!!")
 os.environ.setdefault("WORKING_DIR", "/tmp/audiography_api_test_working_dir")
 os.environ.setdefault("DEFAULT_TENANT_ID", "default")
+
+# Shared plaintext for every seeded user. Password verification has no bypass,
+# so tests that exercise POST /auth/login must send this exact value.
+SEED_USER_PASSWORD = "seed-user-password"
 # M9 R2: enable the advanced graph endpoints for API integration tests.
 # The L9 regression test explicitly skips when this is True.
 # NOTE: tests/core/test_config_m9.py asserts the *default* value is False.
@@ -101,6 +106,7 @@ def test_client(api_settings):
     # Build sync engine to create tables and seed
     from sqlalchemy import create_engine as sync_create_engine
 
+    from audio_graphy.auth.passwords import PasswordHasher
     from audio_graphy.models import (
         Base,
         Prompt,
@@ -108,6 +114,11 @@ def test_client(api_settings):
         User,
     )
     from audio_graphy.models.enums import UserRole
+
+    # Every seeded user shares one password. Hash it once at the lowest cost
+    # factor bcrypt allows — the digest embeds its own rounds, so verification
+    # works regardless of the hasher the application is configured with.
+    seeded_password_hash = PasswordHasher(bcrypt_rounds=4).hash(SEED_USER_PASSWORD)
 
     sync_engine = sync_create_engine(
         f"sqlite:///{db_path}",
@@ -128,7 +139,8 @@ def test_client(api_settings):
             t2 = Tenant(id=2, code="byd", name="比亚迪", brand="BYD", region="华南")
             session.add_all([t1, t2])
 
-            # Users — 4 roles × 2 tenants (IDs 1-8 match JWT user_id)
+            # Users — 4 roles × 2 tenants (IDs 1-8 match JWT user_id), plus
+            # an independent Chang'an inspector for multi-reviewer workflows.
             users = [
                 User(
                     id=1,
@@ -136,7 +148,7 @@ def test_client(api_settings):
                     name="admin_ca",
                     email="admin@changan.com",
                     role=UserRole.ADMIN.value,
-                    password_hash="mock",
+                    password_hash=seeded_password_hash,
                 ),
                 User(
                     id=2,
@@ -144,7 +156,7 @@ def test_client(api_settings):
                     name="inspector_ca",
                     email="inspector@changan.com",
                     role=UserRole.INSPECTOR.value,
-                    password_hash="mock",
+                    password_hash=seeded_password_hash,
                 ),
                 User(
                     id=3,
@@ -152,7 +164,7 @@ def test_client(api_settings):
                     name="agent_ca",
                     email="agent@changan.com",
                     role=UserRole.AGENT.value,
-                    password_hash="mock",
+                    password_hash=seeded_password_hash,
                 ),
                 User(
                     id=4,
@@ -160,7 +172,7 @@ def test_client(api_settings):
                     name="viewer_ca",
                     email="viewer@changan.com",
                     role=UserRole.VIEWER.value,
-                    password_hash="mock",
+                    password_hash=seeded_password_hash,
                 ),
                 User(
                     id=5,
@@ -168,7 +180,7 @@ def test_client(api_settings):
                     name="admin_byd",
                     email="admin@byd.com",
                     role=UserRole.ADMIN.value,
-                    password_hash="mock",
+                    password_hash=seeded_password_hash,
                 ),
                 User(
                     id=6,
@@ -176,7 +188,7 @@ def test_client(api_settings):
                     name="inspector_byd",
                     email="inspector@byd.com",
                     role=UserRole.INSPECTOR.value,
-                    password_hash="mock",
+                    password_hash=seeded_password_hash,
                 ),
                 User(
                     id=7,
@@ -184,7 +196,7 @@ def test_client(api_settings):
                     name="agent_byd",
                     email="agent@byd.com",
                     role=UserRole.AGENT.value,
-                    password_hash="mock",
+                    password_hash=seeded_password_hash,
                 ),
                 User(
                     id=8,
@@ -192,7 +204,15 @@ def test_client(api_settings):
                     name="viewer_byd",
                     email="viewer@byd.com",
                     role=UserRole.VIEWER.value,
-                    password_hash="mock",
+                    password_hash=seeded_password_hash,
+                ),
+                User(
+                    id=10,
+                    tenant_id="chang_an",
+                    name="inspector2_ca",
+                    email="inspector2@changan.com",
+                    role=UserRole.INSPECTOR.value,
+                    password_hash=seeded_password_hash,
                 ),
             ]
             session.add_all(users)
@@ -302,6 +322,8 @@ def auth_headers(jwt_manager):
     for role, uid in [("admin", 1), ("inspector", 2), ("agent", 3), ("viewer", 4)]:
         token = _make_token(jwt_manager, uid, "chang_an", role)
         tokens[f"{role}_t1"] = {"Authorization": f"Bearer {token}"}
+    second_inspector = _make_token(jwt_manager, 10, "chang_an", "inspector")
+    tokens["inspector2_t1"] = {"Authorization": f"Bearer {second_inspector}"}
     # Tenant 2: byd
     for role, uid in [("admin", 5), ("inspector", 6), ("agent", 7), ("viewer", 8)]:
         token = _make_token(jwt_manager, uid, "byd", role)

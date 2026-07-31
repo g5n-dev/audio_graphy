@@ -21,10 +21,10 @@ GRANT ALL PRIVILEGES ON audiography_test.* TO 'audiography'@'%';
 SET GLOBAL time_zone = '+08:00';
 SET SESSION time_zone = '+08:00';
 
-# --- mysql_native_password is set via --default-authentication-plugin ---
-# Make sure the application user uses it explicitly (avoids caching_sha2
-# handshake quirks with older client libs).
-ALTER USER 'audiography'@'%' IDENTIFIED WITH mysql_native_password
-  BY 'change-me';
+# The application user is created by the MySQL image from MYSQL_USER /
+# MYSQL_PASSWORD, using the server-level --default-authentication-plugin
+# (see docker-compose.yml). Do NOT re-declare it here: an ALTER USER with a
+# literal password silently overrides whatever the operator set in .env, which
+# also breaks the healthcheck (it authenticates with $MYSQL_PASSWORD).
 
 FLUSH PRIVILEGES;

@@ -1,85 +1,181 @@
+<div align="center">
+
 # AudioGraphy
 
-> 把散落的门店短录音，还原成一次可调听、可切分、可追溯、可比较的销售接待。
+**场景化对话智能引擎**
 
-AudioGraphy 是面向金店、汽车销售、咨询服务等线下场景的接待对话智能平台。它把一次接待中的多段录音、转写、对话单元、业务状态和标签证据组织成统一时间线，并提供单次接待图谱、跨接待状态图谱与标签洞察图谱。
+*Turn conversations into scene-aware, evidence-grounded business intelligence.*
 
-项目的图谱驱动 RAG 设计来源于 [VideoRAG](https://github.com/HKUDS/VideoRAG)（KDD 2026，HKUDS），并针对音频场景重新实现文件索引、图谱与检索链路：使用 VAD、ASR、音频嵌入和声纹能力替换视觉模态预处理。
+[![CI](https://github.com/g5n-dev/audio_graphy/actions/workflows/ci.yml/badge.svg)](https://github.com/g5n-dev/audio_graphy/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-2f65ff.svg)](./LICENSE)
+[![Python 3.13](https://img.shields.io/badge/Python-3.13-356c9b?logo=python&logoColor=white)](./backend/pyproject.toml)
+[![React + TypeScript](https://img.shields.io/badge/React%20%2B%20TypeScript-18-5b5fc7?logo=react&logoColor=white)](./frontend/package.json)
 
-## 产品能力
+[产品能力](#核心能力) · [快速启动](#快速启动) · [Roadmap](#进度与-roadmap) · [系统架构](#架构与部署) · [专题文档](#文档索引)
 
-| 能力 | AudioGraphy 做什么 | 业务结果 |
+</div>
+
+> [!NOTE]
+> 当前版本已交付完整的**音频处理与语义转译链路**。Hero 中的纯文本直接输入、多语言翻译以及原文—译文—时间码映射属于下一阶段，不作为当前可用能力宣传。
+
+## 产品定位
+
+AudioGraphy 不是只服务某一种销售流程的录音工具，而是一套把非结构化对话还原为**业务过程**的场景化引擎。
+
+它接收一次业务交互中的多段短录音或长录音，完成接待还原、ASR、语义切分、标签派生、关系建图与证据绑定。阶段模型、Prompt、标签体系和证据规则共同定义“怎样切、怎样理解”，因此同一套引擎可以适配汽车销售、零售导购、外贸洽谈、咨询服务等不同过程。
+
+项目的图谱驱动 RAG 设计来源于 [VideoRAG](https://github.com/HKUDS/VideoRAG)，并针对音频场景重新实现索引、图谱与检索链路：使用 VAD、ASR、音频嵌入和声纹能力替换视觉模态预处理。
+
+## 工作方式
+
+一段原始汽车销售对话：
+
+> **客户 · 12:41**　“这款配置可以，但价格还是超预算。如果今天能把金融方案算清楚，我可以先约周末试驾。”
+
+AudioGraphy 不只保存这句话，而是把它转译为可以计算和追溯的业务事实：
+
+| 业务维度 | 结构化结果 | 证据 |
 |---|---|---|
-| 多段短录音合并 | 按租户、门店、销售、时间与客户线索发现候选；服务端重算顺序和时间轴后再接受 | 多个文件被还原为一次完整接待，源录音仍可追溯 |
-| 长录音与对话切分 | 对可信边界进行快照复核；从 ASR Segment 生成对话单元，支持人工拆分与相邻合并 | 复盘粒度从“整段录音”下沉到“业务对话” |
-| 接待调听 | Range 音频回放、多轨时间线、转写窗口、播放头、证据定位与过期凭证刷新 | 从洞察、标签或图谱一键回到原始声音 |
-| 单次接待图谱 | 在同一接待内查看关系、时序差分、业务状态与溯源 DAG | 解释这次接待发生了什么、如何演化、证据来自哪里 |
-| 跨接待状态图谱 | 聚合主路径、回退和异常跳转，并下钻到样本接待 | 识别流程瓶颈、销售差异和异常转移 |
-| 标签矩阵与洞察图谱 | 对多标签组、多版本进行矩阵对齐、合并、冲突、覆盖、趋势和共现分析 | 比较不同标签体系，定位高价值目标对话 |
-| 自动处理与治理 | 按合并、切分、打标阶段持久化检查点；保留版本、审计、失效和重试信息 | 流水线可恢复、结果可解释、变更可审计 |
-
-典型数据链路：
+| 当前阶段 | 报价与异议处理 | `12:41–12:49` 原始录音及转写 |
+| 客户意向 | 中高意向 | 明确提出条件并愿意预约试驾 |
+| 核心异议 | 价格超出预算 | “价格还是超预算” |
+| 下一步行动 | 测算金融方案、预约周末试驾 | “算清楚……先约周末试驾” |
+| 关系图谱 | 客户 → 关注 → 金融方案；试驾 → 前置于 → 成交推进 | 节点、边与证据引用绑定 |
 
 ```mermaid
 flowchart LR
-    A["门店多段录音"] --> B["候选接待发现"]
-    B --> C{"人工接受或复核"}
-    C --> D["重算时间轴与合并"]
-    D --> E["ASR 与对话切分"]
-    E --> F["目标标签派生"]
-    F --> G["单次接待图谱"]
-    F --> H["跨接待状态聚合"]
-    F --> I["标签矩阵与洞察"]
-    G --> J["证据回放"]
-    H --> J
-    I --> J
+    A["多段录音 / 长音频"] --> B["接待发现与时间线还原"]
+    B --> C["VAD / ASR / 说话人"]
+    C --> D["场景化对话切分"]
+    D --> E["阶段 · 意图 · 异议 · 行动 · 风险"]
+    E --> F["标签事实与证据"]
+    E --> G["关系 / 时序 / 状态 / 溯源图谱"]
+    F --> H["单次复盘与跨接待洞察"]
+    G --> H
 ```
 
-业务不变量、接口与验收标准见 [接待对话智能工作台](./docs/reception-intelligence.md)。
+## 一个引擎，多种切分语义
 
-## 信息架构
+| 场景 | 业务过程如何切分 | 典型转译结果 | 状态 |
+|---|---|---|---|
+| 汽车销售 | 迎宾 → 需求 → 车型介绍 → 试驾 → 报价 → 异议 → 跟进 | 车型偏好、预算、竞品、试驾意向、金融方案 | 已交付场景基线 |
+| 零售导购 | 需求识别 → 商品比较 → 价格沟通 → 成交 → 售后 | 商品偏好、价格敏感度、购买信号、复访动作 | 可通过自定义场景扩展 |
+| 外贸洽谈 | 询盘 → 规格 → 报价 → 贸易条款 → 交期 → 议价 → 订单推进 | MOQ、Incoterms、付款条件、交期风险、下一步 | 下一阶段场景包 |
+| 自定义场景 | 自定义阶段、允许跳转与回退 | 自定义标签键、值域、证据要求和质量门禁 | 持续增强 |
 
-界面使用三层导航，避免把平台入口、接待上下文和图谱模式混在同一级：
+场景并不是一组页面文案。它由四类可版本化资产共同决定：
 
-```text
-平台侧栏
-├── 工作总览
-├── 接待作业
-│   ├── 接待中心
-│   └── 录音管理
-├── 对话洞察
-│   ├── 状态路径
-│   └── 标签洞察
-└── 知识与治理
-    ├── 全域知识图谱
-    ├── 智能问答
-    ├── 说话人
-    ├── 社区探索
-    └── 时间演化
+1. **阶段模型**：定义业务过程、跳转、回退与异常路径。
+2. **Prompt**：定义领域实体、关系、摘要和语义边界。
+3. **标签体系**：定义阶段、意图、异议、行动、风险等值域。
+4. **证据规则**：规定结论必须绑定的文本、时间码、来源与置信度。
 
-接待详情 Tab
-├── 调听与切分
-└── 关系与溯源
+## 产品界面
 
-页面内部视图
-├── 单次接待：关系图谱 / 时序差分 / 状态路径 / 溯源 DAG
-├── 跨接待分析：全部路径 / 主路径 / 回退与异常
-└── 标签洞察：关系图谱 / 对比矩阵 / 图表分析
+以下界面来自仓库内置的 Mock 演示数据，不包含真实客户信息。
+
+### 接待时间线：从多段录音回到一次完整业务过程
+
+![AudioGraphy 接待调听工作台，展示四段源录音、说话人、主题、业务阶段、标签轨道和证据列表](./docs/assets/readme/reception-timeline.jpg)
+
+### 关系图谱：让对话单元、标签与证据形成可解释结构
+
+![AudioGraphy 单次接待关系图谱，展示接待、源录音、对话单元、阶段和意向标签之间的关系](./docs/assets/readme/reception-graph.jpg)
+
+### 标签治理：从标签定义、金标评估到发布门禁
+
+![AudioGraphy 标签治理中心的评估实验页，展示 Macro F1、关键标签召回、证据覆盖与质量门禁](./docs/assets/readme/tag-governance.jpg)
+
+## 核心能力
+
+| 能力 | AudioGraphy 做什么 | 业务价值 |
+|---|---|---|
+| **输入与还原** | 发现同一次接待中的多段录音，重算顺序与时间轴；对长音频执行可信边界复核 | 从散落文件还原完整业务过程，源录音仍可追溯 |
+| **场景化切分** | 从 ASR Segment 生成业务对话单元，支持人工拆分、相邻合并与状态链重建 | 分析粒度从“整段录音”下沉到“业务动作” |
+| **双重转译** | 已交付阶段、意图、异议、行动和风险的语义转译；规划多语言翻译 | 将自然对话变为可统计、可比较的业务事实 |
+| **证据化标签** | 标签绑定体系版本、模型版本、置信度、文本和双时间坐标 | 每个结论都能回到原始声音，不产生无来源洞察 |
+| **图谱洞察** | 单次关系/时序/状态/溯源图谱，以及跨接待路径、回退、冲突、趋势和共现 | 解释一次接待，也能比较门店、销售和场景差异 |
+| **治理与部署** | 金标、评估、Shadow/Canary、回滚、审计、隐私擦除及 Mock/CPU/GPU 部署 | 模型结果可验证、可恢复、可治理、可私有化部署 |
+
+### 标签从抽取到优化的闭环
+
+标签能力不是一次性调用模型，而是一条有版本、有证据、有质量门禁的状态链：
+
+```mermaid
+flowchart LR
+    A["标签体系草稿"] --> B["发布不可变 Schema 版本"]
+    B --> C["Tagger 版本与抽取任务"]
+    C --> D["标签事实 + 原文 / 时间码证据"]
+    D --> E{"低置信度、冲突或抽样"}
+    E -->|进入复核| F["人工裁决"]
+    E -->|直接通过| G["当前有效事实"]
+    F --> G
+    F --> H["冻结金标集"]
+    H --> I["隐藏留出集评估"]
+    I --> J{"质量门禁"}
+    J -->|通过| K["Shadow → Canary → Production"]
+    J -->|未通过| L["生成新的优化候选版本"]
+    K --> M["线上审计、漂移与回滚"]
+    M --> L
+    L --> I
 ```
 
-单次接待图谱始终保留接待 ID 与返回调听路径；跨接待状态流和标签洞察属于全局分析，不依赖一个硬编码接待。
+- **构建与分类**：已发布的 Schema 定义标签键、值域、证据要求和规则；Tagger 版本绑定具体 Schema，不能跨版本写入模糊结果。
+- **执行与恢复**：独立 `tag-worker` 使用租约、心跳、断点和超时回收执行抽取与评估任务，失败任务可重试，取消和幂等状态持久化。
+- **复核与学习数据**：低置信度、冲突及抽样结果进入人工复核；关键真值必须经过两轮独立盲审和第三人仲裁，裁决追加不可变事实、反馈、Badcase 与经验，再按血缘冻结为金标版本。
+- **评估与发布**：候选版本只能在隐藏留出集上计算指标，通过门禁后才可进入 Shadow、Canary 和 Production；线上异常可以回滚。
+- **六阶段 Harness**：Context、Tools、Generation、Orchestration、Memory、Output 均随 Tagger 版本冻结；每次执行保存解析配置、场景画像和逐阶段 trace，可按输入快照重放。
+- **真实优化任务**：达到“新增 T2/T3 反馈 ≥ 200、每个受影响标签域 ≥ 30”的覆盖门后，API 才在同一事务创建持久化 `optimize` Job；Worker 执行有界 trial 并保存指标、胜出项和候选 Tagger，基线、金标、cohort 与真值均由服务端冻结，不能由浏览器注入。
+- **优化边界**：优化只创建 `draft` 候选并重新评估，不会在生产版本上原地“自学习”或绕过发布门禁。真实推理质量取决于所配置的模型 Adapter 与金标质量。
+
+> [!IMPORTANT]
+> Sites Worker + D1 提供的是带 `is_demo=true` 标记的确定性交互演示；真实抽取、优化、评估和灰度闭环运行在 Docker Compose 的 API + MySQL + `tag-worker` 上。
+
+### 全域图谱的数据一致性
+
+`/graph` 将“实体关系”和“主题聚类”作为同一工作区的两个真实 Tab。主题聚类查询始终绑定一个已成功的 Leiden 任务和层级；搜索由服务端在该任务的完整摘要集合中执行，而不是只过滤前端已显示的八个社区。
+
+摘要策略将 Level 0 与叶子社区定义为 eager、中间层定义为 lazy。若一个非空任务的目标层级尚无精确任务快照摘要，API 返回 `409 SUMMARY_NOT_READY`，界面展示可重试状态；系统不会拿当前图谱重建旧任务结果，以免发生跨快照数据混用。
+
+`/reception-flow` 保留为“状态路径”而不是重复图谱：它聚合多次接待的阶段转移、完成率、置信度、跳步和异常回退，用于流程挖掘；`/graph` 解释全域实体与主题关系，`/tag-insights` 比较标签版本、冲突和证据。三者的分析主体、问题和交互均不同。
+
+图谱和洞察响应都有显式输出预算。全域图谱边窗口默认受服务端预算控制且硬上限为 5,000，响应返回 `total / returned / truncated / render_budget`；标签矩阵、证据和差异明细同样分页或截断并保留全量 KPI。前端按路由拆分图谱运行时，切换 Tab 时主动释放画布和布局资源，避免把“大结果可查询”误做成“大结果一次性渲染”。
+
+## 进度与 Roadmap
+
+### 能力成熟度
+
+| 能力域 | 已交付 | 持续增强 | 下一阶段 |
+|---|---|---|---|
+| 输入 | 多段/长音频、接待合并、批处理 ASR | Streaming VAD/ASR、真实模型稳定性 | 纯文本直接输入、音频与文本混合接待 |
+| 切分 | ASR Segment、业务单元、人工 split/merge | 自定义阶段模板与切分评估 | 外贸等可安装场景包 |
+| 转译 | 阶段、意图、异议、下一步、合规风险 | Prompt/Tagger 版本优化 | 多语言翻译、原文—译文—时间码映射 |
+| 图谱 | 关系、时序、状态、溯源、Leiden 主题聚类 | 大规模图谱性能与增量聚类 | 跨语言实体与主题对齐 |
+| 治理 | 版本、复核、金标、评估、同输入 JSD 漂移、灰度、审计、回滚 | 大规模窗口性能与阈值调优 | 场景包评测与发布市场 |
+| 部署 | Mock、CPU、单 GPU、多 GPU、Sites 演示 | 真实租户压测与任务队列 | 分布式分析存储 |
+
+### 迭代时间线
+
+| 里程碑 | 关键交付 |
+|---|---|
+| M1–M3 | 多租户基础、索引与图谱 RAG 主链路 |
+| M4 | Real Adapter 契约：VAD、OpenAI 兼容 LLM、BGE-M3 与模型拓扑 |
+| M5 | FunASR、离线评估 CLI、指标与 Markdown/JSON 报告 |
+| M6 | 音频加密、PII 清洗、保留与 DSAR、Eval REST、中文实体归并、Prometheus |
+| M7 | CLAP 音频嵌入、CAM++ 声纹、说话人连接、三通道检索 |
+| M8 | Streaming VAD/ASR、会话状态机、增量切片与增量图更新 |
+| M9 | 双时态边、Leiden 社区、社区摘要、全局搜索、图压缩与说话人复核 |
+| M10 | 接待智能工作台、场景切分、跨接待洞察及标签治理闭环 |
+| Next | 纯文本输入、多语言翻译、外贸场景包与统一多源对话模型 |
+
+> [!TIP]
+> 截至 **2026-07-24** 的 M10 联合验收记录了后端 2251 个测试、90.47% 覆盖率和前端 131 个测试。数字是带日期的验收快照，最新状态以 [CI](https://github.com/g5n-dev/audio_graphy/actions/workflows/ci.yml) 与 [M10 验收报告](./docs/m10-status-report.md) 为准。
 
 ## 快速启动
 
-### 环境要求
-
-- Docker 与 Docker Compose v2
-- 本地开发后端需要 Python 3.13
-- 本地开发前端需要 Node.js 22 与 npm
-
 ### Docker Compose：Mock 全栈
 
-主 Compose 是带源码挂载、自动重载和 Vite 开发服务器的单机开发栈。Mock profile 不下载模型、不要求 GPU，适合功能验证和前后端联调。首次运行且根目录尚无 `.env` 时，先从示例创建：
+Mock profile 不下载模型、不需要 GPU，适合产品体验、功能验证和前后端联调。
 
 ```bash
 cp .env.example .env
@@ -88,38 +184,33 @@ docker compose --profile mock ps
 curl --fail http://127.0.0.1:8000/health
 ```
 
-默认地址：
+| 服务 | 地址 |
+|---|---|
+| Web | `http://127.0.0.1:5173` |
+| API | `http://127.0.0.1:8000/api/v1` |
+| Swagger | `http://127.0.0.1:8000/docs` |
+| Prometheus | `http://127.0.0.1:8000/metrics` |
+| Adminer | `http://127.0.0.1:8081` |
 
-| 服务 | 地址 | 说明 |
-|---|---|---|
-| Web | `http://127.0.0.1:5173` | React + Vite 前端 |
-| API | `http://127.0.0.1:8000/api/v1` | 业务 API 前缀 |
-| Swagger | `http://127.0.0.1:8000/docs` | FastAPI 交互文档 |
-| 健康检查 | `http://127.0.0.1:8000/health` | 进程存活 |
-| 就绪检查 | `http://127.0.0.1:8000/health/readiness` | 数据库与适配器状态 |
-| Prometheus | `http://127.0.0.1:8000/metrics` | 应用指标 |
-| Adminer | `http://127.0.0.1:8081` | 仅 `mock` profile |
-| MySQL | `127.0.0.1:3307` | 宿主端口；容器内为 `mysql:3306` |
+仓库不会写死生产演示账号或密码。首次连接真实环境仍需创建租户和用户、导入录音，并配置所属环境的密钥和模型 Adapter。
 
-仓库不会写死演示账号或演示密码。首次启动会创建数据库结构与服务，但业务界面登录仍需要导入或创建所属环境的租户和用户数据。
-
-常用 Compose 命令：
+常用命令：
 
 ```bash
-# 查看应用日志
-docker compose logs -f backend frontend
+# 查看 API、标签任务 Worker 与前端日志
+docker compose logs -f backend tag-worker frontend
 
 # 重启应用服务
-docker compose restart backend frontend
+docker compose restart backend tag-worker frontend
 
 # 停止并保留数据卷
 docker compose --profile mock down
-
-# 校验配置，不拉取或启动模型
-docker compose --env-file .env.example --profile mock config --quiet
 ```
 
-### 本地运行前后端
+<details>
+<summary><strong>展开：本地运行前后端</strong></summary>
+
+环境要求：Python 3.13、Node.js 22、npm，以及 Docker Compose v2。
 
 先在项目根目录启动 MySQL：
 
@@ -127,9 +218,7 @@ docker compose --env-file .env.example --profile mock config --quiet
 docker compose up -d mysql
 ```
 
-本地后端不会自动读取项目根目录的 `.env`；下面显式导出的数据库端口、工作目录和主密钥路径必须与本机环境一致。
-
-终端一：后端。
+终端一，启动后端：
 
 ```bash
 cd backend
@@ -151,7 +240,7 @@ alembic upgrade head
 uvicorn audio_graphy.main:app --reload --port 8000
 ```
 
-终端二：前端。Vite 默认把 `/api` 代理到 `http://localhost:8000`。
+终端二，启动前端：
 
 ```bash
 cd frontend
@@ -159,197 +248,133 @@ npm ci
 npm run dev
 ```
 
-## 模型部署
+</details>
 
-`docker-compose.yml` 提供四个互斥 profile。不要同时启用 CPU 与 GPU profile，因为 BGE-M3 服务会争用相同的网络别名和宿主端口。
-
-| Profile | 模型服务 | GPU | 适用场景 |
-|---|---|---:|---|
-| `mock` | 无；全部 adapter 保持 mock | 0 | 开发、CI、前端联调 |
-| `models-cpu` | FunASR、BGE-M3 CPU、CAM++ | 0 | CPU 验证与离线小批量处理 |
-| `models-single-gpu` | FunASR、vLLM strong、BGE-M3 GPU、CLAP、CAM++ | 1 | 单卡推理；strong/weak 可共用一个 vLLM |
-| `models-multi-gpu` | 单卡 profile 的服务，加独立 vLLM weak | 2+ | strong/weak 分卡部署 |
-
-选择 profile 前，如果还没有 `.env`，先复制 `.env.example`；随后只把该拓扑实际提供的 adapter 切换为 `real`。Profile 只决定启动哪些容器，旧的 `ADAPTER_MODE=real` 不会启用真实 adapter。
+<details>
+<summary><strong>展开：构建 Sites 交互演示</strong></summary>
 
 ```bash
-cp .env.example .env
-docker compose --profile models-cpu up -d
-docker compose --profile models-cpu ps
+cd frontend
+npm ci
+npm run build:sites
 ```
 
-真实模型的默认宿主诊断端口：
+Sites 使用独立 D1 保存交互演示状态，与生产 MySQL 数据隔离，表结构定义在 `frontend/db/schema.ts`。
 
-| 服务 | 默认地址 |
-|---|---|
-| vLLM strong | `127.0.0.1:18000` |
-| vLLM weak | `127.0.0.1:18001` |
-| BGE-M3 | `127.0.0.1:18080` |
-| FunASR | `127.0.0.1:10095` |
-| CLAP | `127.0.0.1:18006` |
-| CAM++ | `127.0.0.1:18007` |
+托管平台的项目配置（`frontend/.openai/`）绑定特定部署账号，不随开源仓库发布——自行部署时按所用平台生成即可。
 
-模型与应用端口默认只绑定 `127.0.0.1`。生产环境需要替换 JWT、数据库和模型 API 密钥，并备份独立的音频主密钥卷。
+</details>
 
-Batch VAD 没有绑定未经审计的第三方镜像，默认保持 mock；Streaming VAD 使用本地 ONNX adapter 和只读模型挂载：
+完整模型配置与生产检查见 [部署指南](./docs/deployment.md)；接待处理接口和业务不变量见 [接待对话智能工作台](./docs/reception-intelligence.md)。
 
-```bash
-SILERO_VAD_MODEL_FILE=/absolute/path/silero_vad.onnx \
-docker compose \
-  -f docker-compose.yml \
-  -f docker-compose.streaming-vad.yml \
-  --profile mock up -d
-```
-
-该 overlay 只切换 Streaming VAD adapter 并挂载模型；如需开放 `/ws/stream`，还必须在 `.env` 显式设置 `ENABLE_STREAMING=true`。它不会把 batch VAD 的 `ADAPTER_VAD_MODE` 切换为 real。
-
-硬件边界、单卡/多卡变量、模型名映射、安全策略和 VAD 契约见 [模型部署指南](./docs/deployment.md)。
-
-## 系统架构
-
-AudioGraphy 将业务状态、模型能力与图谱检索解耦：
+## 架构与部署
 
 ```mermaid
 flowchart TB
-    UI["React / Arco Design / G6"] --> API["FastAPI API 与接待服务"]
-    API --> PIPE["合并、切分、打标、检索流水线"]
-    PIPE --> ADAPTER["Mock 或 Real Adapters"]
-    ADAPTER --> MODEL["FunASR / vLLM / BGE-M3 / CLAP / CAM++"]
-    PIPE --> MYSQL["MySQL：业务状态、版本、审计与向量"]
-    PIPE --> INDEX["租户工作目录：VideoRAG 风格文件索引与图谱快照"]
+    UI["React / Arco Design / AntV G6"] --> API["FastAPI API"]
+    API --> RECEPTION["接待还原与场景切分"]
+    API --> QUERY["GraphRAG / Local / Global Search"]
+    RECEPTION --> ADAPTER["Mock / Real Adapters"]
+    ADAPTER --> MODEL["FunASR · vLLM · BGE-M3 · CLAP · CAM++"]
+    RECEPTION --> MYSQL["MySQL：业务状态、版本、审计与向量"]
+    RECEPTION --> INDEX["租户文件索引与图谱快照"]
+    WORKER["Tag Worker：抽取、复核、评估、发布"] --> MYSQL
+    WORKER --> ADAPTER
     MYSQL --> API
     INDEX --> API
 ```
 
-核心技术栈：
+### 部署 Profile
+
+| Profile | 模型服务 | GPU | 适用场景 |
+|---|---|---:|---|
+| `mock` | 全部 Adapter 保持 Mock | 0 | 开发、CI、产品演示 |
+| `cache-redis` | 可选 Redis LLM 热缓存（与任一模型 Profile 组合） | 0 | 多进程共享热缓存 |
+| `models-cpu` | FunASR、BGE-M3、CAM++ | 0 | CPU 验证与离线小批量 |
+| `models-single-gpu` | vLLM、BGE-M3、CLAP、CAM++ | 1 | 单卡推理 |
+| `models-multi-gpu` | Strong/Weak LLM 分卡及完整音频模型 | 2+ | 多卡生产拓扑 |
+
+### LLM 多级缓存
+
+MySQL 是 LLM 结果的持久化与跨进程 singleflight 层。未配置 Redis 时使用
+有界进程内 TTL/LRU 热缓存；配置 Redis 且启动探测成功后改用 Redis，运行中
+故障会自动降级，本身不会让业务请求失败。每个 HTTP 请求还带有生命周期内
+memo，先于热缓存消除同一请求中的顺序重复调用，请求结束即释放。
+精确缓存、热缓存和 MySQL 持久层可独立回退；仅关闭持久层时，无来源关联的
+请求仍可使用热缓存，带 provenance 的请求则安全绕过，避免失去 DSAR 反向索引。
+
+```bash
+# 可与 mock 或真实模型 Profile 同时启用
+REDIS_URL=redis://redis:6379/0 \
+  docker compose --profile mock --profile cache-redis up -d
+```
+
+Compose 内置 Redis 限制为 128 MiB、容器上限 192 MiB，使用 LRU 且关闭
+AOF/RDB；需要长期复用的数据只保存在 MySQL。外部 Redis 建议使用独立实例或
+独立 DB，应用只操作自己的命名空间，不会执行 `KEYS`、`FLUSHDB` 或修改全局
+淘汰策略。Redis/MySQL 都不保存原始 prompt；校验后的输出先压缩，再使用
+租户、namespace 和 recipe 绑定的 AES-256-GCM 密文保存。语义缓存、候选批判断、
+hybrid 短路和自适应 gleaning 默认关闭，
+需在金标质量门禁通过后逐项开启。
+来源删除会先写入 MySQL 墓碑，并把 Redis/本地清除意图放入持久队列；即使
+Redis 当时不可用，在途 leader 也不能复活结果，恢复后会自动完成物理清除。
+
+### 默认安全边界
+
+- 所有业务数据按租户隔离，接待授权使用稳定用户 ID，不以销售姓名作为权限主键。
+- PII 在进入标签和图谱前清洗；音频支持分块认证加密、保留期和 DSAR 物理擦除。
+- 生成标签必须绑定版本与证据；人工裁决产生新事实，不静默覆盖历史结果。
+- 应用、数据库和模型诊断端口默认仅绑定 `127.0.0.1`。
+- Mock、真实模型、Streaming 和 Advanced Graph 能力均通过显式 Profile 或开关启用。
+
+模型端口、硬件边界、密钥、VAD 契约和生产检查清单见 [部署指南](./docs/deployment.md)。
+
+## 技术栈
 
 | 层 | 主要技术 |
 |---|---|
-| 后端 | Python 3.13、FastAPI、SQLAlchemy、Alembic、MySQL 8 |
+| 后端 | Python 3.13、FastAPI、SQLAlchemy、Alembic |
+| 数据 | MySQL 8、文件索引、NetworkX 图存储 |
 | 前端 | React 18、TypeScript、Vite、Arco Design、AntV G6 |
-| 图谱与检索 | VideoRAG 思路、NetworkX、BGE-M3、社区摘要与 GraphRAG 检索 |
-| 音频 | VAD、FunASR、CLAP、CAM++、Range 回放 |
-| 治理 | 多租户、JWT/RBAC、标签版本、审计、加密、保留与 DSAR |
-| 部署 | Docker Compose、互斥模型 profile、Prometheus 指标 |
-
-核心设计原则：
-
-- 参考 VideoRAG 的图谱驱动检索思想，按音频场景实现独立工程链路。
-- MySQL 管理流水线状态、版本、权限与审计；租户工作目录承载文件索引和图谱快照。
-- 标签计算、接待合并、人工切分和自动处理均使用幂等或乐观锁边界。
-- 证据同时保留源录音坐标与合并时间线坐标。
-- 图谱变更和标签变更显式失效并留下溯源，不静默覆盖。
-
-## 质量门禁
-
-质量标准以源码配置和 CI 为准：
-
-| 范围 | 门禁 |
-|---|---|
-| 后端 | Ruff 格式检查、Ruff lint、mypy strict、pytest、分支覆盖率门槛 |
-| 性能 | 独立向量热查询性能测试；预算由 CI 环境变量显式给出 |
-| 前端 | ESLint、Vitest/Testing Library、TypeScript 构建、初始包体预算 |
-| 部署 | 四个 Compose profile 与 Streaming VAD overlay 均执行配置解析 |
-
-本地执行与 CI 对齐的主要命令：
-
-```bash
-# 后端
-cd backend
-ruff format --check .
-ruff check .
-mypy audio_graphy
-python -m pytest tests/
-
-# 前端
-cd ../frontend
-npm ci
-npm run lint
-npm test
-npm run build
-
-# Compose 配置
-cd ..
-for profile in mock models-cpu models-single-gpu models-multi-gpu; do
-  docker compose --env-file .env.example --profile "$profile" config --quiet
-done
-docker compose \
-  -f docker-compose.yml \
-  -f docker-compose.streaming-vad.yml \
-  --env-file .env.example \
-  --profile models-single-gpu config --quiet
-```
-
-前端还提供 `npm run test:watch`、`npm run test:ui` 与 `npm run e2e`；E2E 需要先启动目标环境。
-
-## 工程能力与里程碑
-
-| 里程碑 | 已沉淀的工程能力 | 默认安全边界 |
-|---|---|---|
-| M4 | Real adapter 代码与契约；Silero VAD HTTP 适配、OpenAI 兼容 LLM、BGE-M3；模型拓扑 | 未提供或未部署的 adapter 保持 mock |
-| M5 | FunASR 适配；离线评估 CLI、指标与 Markdown/JSON 报告 | 评估可复用现有 strong LLM，不新增隐式模型服务 |
-| M6 | 音频分块认证加密、PII 清洗、保留与 DSAR；Eval REST；中文实体模糊归并；Prometheus | 敏感删除与管理接口受 RBAC 和租户边界约束 |
-| M7 | CLAP 音频嵌入、CAM++ 声纹与说话人连接、文本/图谱/音频三通道检索 | 音频与声纹能力由独立开关控制 |
-| M8 | Streaming VAD/ASR、会话状态机、增量切片与增量图更新 | Streaming 总开关默认关闭 |
-| M9 | 双时态边、Leiden 社区、社区摘要与全局搜索、软删除压缩、说话人模糊复核队列 | Advanced Graph 总开关默认关闭 |
-
-M9 的接口、权限、定时任务与开关见 [Advanced Graph 指南](./docs/advanced-graph.md)。
-
-## 目录结构
-
-```text
-audio_graphy/
-├── backend/
-│   ├── audio_graphy/
-│   │   ├── api/          # FastAPI 路由
-│   │   ├── adapters/     # Mock / Real 模型协议与实现
-│   │   ├── analytics/    # 聚合洞察计算
-│   │   ├── core/         # 切分、图谱、检索、流式与治理算法
-│   │   ├── eval/         # 评估 runner、judge 与指标
-│   │   ├── models/       # SQLAlchemy ORM
-│   │   ├── services/     # 接待、标签、索引与模型服务
-│   │   ├── storage/      # MySQL、文件索引与 NetworkX 存储
-│   │   └── tags/         # 标签事实、当前视图与重算
-│   ├── alembic/          # 数据库迁移
-│   ├── scripts/          # 运维与初始化脚本
-│   └── tests/            # 单元、集成、E2E 与性能测试
-├── frontend/
-│   ├── src/pages/        # 接待、调听、图谱与洞察页面
-│   ├── src/components/   # 对话、证据与导航组件
-│   ├── src/api/          # API client 与类型契约
-│   └── worker/           # Sites/Cloudflare 适配层
-├── docker/               # CLAP、CAM++ 模型服务镜像
-├── mysql/                # MySQL 初始化与配置
-├── examples/eval/        # 评估样例
-├── docs/                 # 设计、部署、里程碑与 QA 文档
-├── docker-compose.yml
-└── docker-compose.streaming-vad.yml
-```
+| 模型 | FunASR、vLLM、BGE-M3、CLAP、CAM++、Silero VAD |
+| 工程 | Docker Compose、GitHub Actions、Ruff、mypy、pytest、Vitest、Playwright |
 
 ## 文档索引
 
-| 文档 | 用途 |
-|---|---|
-| [docs/reception-intelligence.md](./docs/reception-intelligence.md) | 接待合并、对话切分、证据、标签、自动化与工作台不变量 |
-| [docs/m10-status-report.md](./docs/m10-status-report.md) | 接待工作台的产品、数据、安全、性能、部署与自动化验收结论 |
-| [design-qa.md](./design-qa.md) | 三类浅色图谱的参考对照、交互与可访问性验收 |
-| [docs/deployment.md](./docs/deployment.md) | 模型 profile、端口、安全边界、主密钥与 VAD 部署 |
-| [docs/DESIGN.md](./docs/DESIGN.md) | 早期总体设计与路线图；现行行为以源码和专题文档为准 |
-| [docs/advanced-graph.md](./docs/advanced-graph.md) | M9 双时态、Leiden、全局搜索、压缩与说话人复核 |
-| [docs/m5-eval.md](./docs/m5-eval.md) | 离线评估 CLI 与报告 |
-| [docs/m6-eval.md](./docs/m6-eval.md) | Eval REST 与 position de-bias |
-| [docs/m6-pipl.md](./docs/m6-pipl.md) | M6 历史实现指南：音频加密、PII、保留、DSAR 与审计 |
-| [docs/m8-architecture.md](./docs/m8-architecture.md) | Streaming VAD/ASR、会话与增量图谱设计 |
-| [docs/preview.html](./docs/preview.html) | 早期 Arco/G6 交互原型；首次打开依赖 CDN |
-| [docs/assets/](./docs/assets/) | 总体架构、数据流、标签版本与存储分层图 |
+### 产品
 
-## 设计来源
+- [接待对话智能工作台](./docs/reception-intelligence.md)：接待合并、场景切分、证据、标签、自动化与工作台不变量。
+- [标签治理闭环](./docs/tag-governance.md)：标签 Schema、抽取任务、人工复核、金标评估、发布门禁与回滚不变量。
+- [M10 验收报告](./docs/m10-status-report.md)：产品、数据、安全、性能、部署与自动化验收结论。
 
-- [VideoRAG](https://github.com/HKUDS/VideoRAG)：图谱驱动多模态 RAG 的设计来源；当前仓库未直接内置其上游源码。
-- [Graphify](https://github.com/Graphify-Labs/graphify)：工程产物形态与边置信度参考。
-- [Microsoft GraphRAG](https://github.com/microsoft/graphrag)：社区摘要与图谱检索范式参考。
-- `AudioRAG开发方案.docx`：项目上层目录中的原始算法与架构方案，未随本仓库分发；本仓库文档是其工程化落地。
+### 架构
 
-## 参与项目
+- [总体设计](./docs/DESIGN.md)：早期总体设计、核心模型与路线图。
+- [Advanced Graph](./docs/advanced-graph.md)：双时态、Leiden、全局搜索、压缩与说话人复核。
+- [Streaming 架构](./docs/m8-architecture.md)：Streaming VAD/ASR、会话与增量图谱。
+- [架构图资产](./docs/assets/)：索引、查询、存储分层与标签版本图。
 
-开发约定、代码风格与提交流程见 [CONTRIBUTING.md](./CONTRIBUTING.md)，第三方概念与依赖归属见 [NOTICES.md](./NOTICES.md)。项目使用 [MIT License](./LICENSE)。
+### 部署与合规
+
+- [部署指南](./docs/deployment.md)：模型 Profile、端口、密钥、安全边界和 VAD 部署。
+- [PIPL 实现指南](./docs/m6-pipl.md)：音频加密、PII、保留、DSAR 与审计。
+
+### 质量与评估
+
+- [离线评估](./docs/m5-eval.md)：评估 CLI、指标与报告。
+- [Eval REST](./docs/m6-eval.md)：服务化评估与 position de-bias。
+- [M9 QA](./docs/m9-qa-report.md)：Advanced Graph 验收证据。
+
+### 参与项目
+
+- [贡献指南](./CONTRIBUTING.md)
+- [第三方归属](./NOTICES.md)
+- [MIT License](./LICENSE)
+
+---
+
+<div align="center">
+
+**AudioGraphy — 让声音不止被转写，更被理解。**
+
+</div>

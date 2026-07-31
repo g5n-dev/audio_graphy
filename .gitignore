@@ -52,6 +52,8 @@ frontend/dist/
 frontend/build/
 frontend/.vite/
 frontend/.wrangler/
+frontend/playwright-report/
+frontend/test-results/
 *.tsbuildinfo
 *.log
 npm-debug.log*
@@ -75,12 +77,24 @@ pnpm-debug.log*
 .env.local
 .env.*.local
 working_dir/
+runtime_working_dir/
 data/
 .design-audit/
+
+# Secrets — never version key material of any kind
+*.key
+*.pem
+!**/testdata/*.key
+
+# Deployment platform config for the hosted Sites demo (not part of the OSS release)
+frontend/.openai/
 
 # WorkBuddy workspace memory (local dev aid, not versioned)
 .workbuddy/
 !.workbuddy/.gitkeep
+
+# Claude Code local settings (personal perms, not versioned)
+.claude/settings.local.json
 eval/external/alimeeting/*.tar.gz
 eval/external/alimeeting/**/Train_*/
 eval/external/alimeeting/**/Eval_*/

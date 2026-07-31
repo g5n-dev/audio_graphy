@@ -5,6 +5,8 @@ See: docs/m3-prd.md §4.1, API-01.
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -37,26 +39,26 @@ async def login(
 ) -> TokenResponse:
     """Authenticate a user and return JWT tokens.
 
-    In mock adapter mode, password verification is skipped.
-    In real mode, bcrypt verification is enforced.
+    bcrypt verification is always enforced.
     """
     from audio_graphy.auth.passwords import PasswordHasher
 
-    # Look up user by email (no tenant filter — email identifies the user)
-    result = await db.execute(select(User).where(User.email == body.email))
-    user = result.scalars().first()
+    # Users are unique per (tenant_id, email), so an email alone can legitimately
+    # match rows in several tenants. LoginRequest carries no tenant, so there is
+    # no way to pick the right one — resolve fail-closed rather than silently
+    # authenticating against whichever row the database happened to return first.
+    rows = (await db.execute(select(User).where(User.email == body.email))).scalars().all()
 
-    if user is None:
+    if len(rows) != 1:
         raise InvalidCredentialsError(
             detail={"email": body.email},
         )
+    user = rows[0]
 
-    # Password verification
-    hasher = PasswordHasher(
-        adapter_mode=settings.adapter_mode,
-        bcrypt_rounds=settings.bcrypt_rounds,
-    )
-    if not hasher.verify(body.password, user.password_hash):
+    # bcrypt is deliberately expensive (~200-300ms at the default cost factor);
+    # run it off the event loop so concurrent logins do not stall the server.
+    hasher = PasswordHasher(bcrypt_rounds=settings.bcrypt_rounds)
+    if not await asyncio.to_thread(hasher.verify, body.password, user.password_hash):
         raise InvalidCredentialsError(
             detail={"email": body.email},
         )
