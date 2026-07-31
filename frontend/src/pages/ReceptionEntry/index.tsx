@@ -18,9 +18,11 @@ import type {
   ReceptionSplitAcceptanceResponse,
   ReceptionStatus,
 } from "@/types/api";
+import { getErrorMessage } from "@/utils/errors";
 
 const PAGE_SIZE = 20;
 const DISCOVERY_LIMIT = 200;
+const REQUEST_FAILURE_FALLBACK = "服务暂时不可用，请稍后重试。";
 
 const RECEPTION_STATUS_OPTIONS: Array<{
   value: "" | ReceptionStatus;
@@ -96,27 +98,6 @@ function formatDuration(startedAt: string, endedAt: string): string {
   ]
     .filter(Boolean)
     .join("");
-}
-
-function errorMessage(error: unknown): string {
-  if (error instanceof Error && error.message.trim()) return error.message;
-  if (typeof error === "string" && error.trim()) return error;
-  if (typeof error === "object" && error !== null) {
-    const response = Reflect.get(error, "response");
-    if (typeof response === "object" && response !== null) {
-      const data = Reflect.get(response, "data");
-      if (typeof data === "object" && data !== null) {
-        const envelope = Reflect.get(data, "error");
-        if (typeof envelope === "object" && envelope !== null) {
-          const message = Reflect.get(envelope, "message");
-          if (typeof message === "string" && message.trim()) return message;
-        }
-        const detail = Reflect.get(data, "detail");
-        if (typeof detail === "string" && detail.trim()) return detail;
-      }
-    }
-  }
-  return "服务暂时不可用，请稍后重试。";
 }
 
 function proposalKey(proposal: ReceptionAutomaticProposal): string {
@@ -541,7 +522,7 @@ export default function ReceptionEntryPage() {
             ) : queueQuery.isError ? (
               <div className="ag-inline-error" role="alert">
                 <strong>工作队列加载失败</strong>
-                <p>{errorMessage(queueQuery.error)}</p>
+                <p>{getErrorMessage(queueQuery.error, REQUEST_FAILURE_FALLBACK)}</p>
                 <Button
                   size="small"
                   onClick={() => queueQuery.refetch()}
@@ -793,7 +774,7 @@ export default function ReceptionEntryPage() {
           {discoveryMutation.isError && (
             <div className="ag-inline-error" role="alert">
               <strong>候选扫描失败</strong>
-              <p>{errorMessage(discoveryMutation.error)}</p>
+              <p>{getErrorMessage(discoveryMutation.error, REQUEST_FAILURE_FALLBACK)}</p>
               <Button size="small" onClick={() => discoveryMutation.reset()}>
                 关闭错误
               </Button>
@@ -802,7 +783,7 @@ export default function ReceptionEntryPage() {
           {acceptMutation.isError && (
             <div className="ag-inline-error" role="alert">
               <strong>候选接受失败</strong>
-              <p>{errorMessage(acceptMutation.error)}</p>
+              <p>{getErrorMessage(acceptMutation.error, REQUEST_FAILURE_FALLBACK)}</p>
               <p>候选未写入，可刷新扫描结果后重试。</p>
             </div>
           )}

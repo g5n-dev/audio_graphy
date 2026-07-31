@@ -36,6 +36,7 @@ import {
 import { TagFactLineageDrawer } from "@/components/dialogue/TagFactLineageDrawer";
 import { ReceptionContextTabs } from "@/components/navigation/ContextNavigation";
 import { useAuthStore } from "@/stores/auth";
+import { getErrorMessage, getErrorStatus } from "@/utils/errors";
 import type {
   DialogueEvidenceRef,
   DialogueTargetLabel,
@@ -92,22 +93,6 @@ function stableJobKey(parts: string[]): string {
     hash = Math.imul(hash, 0x01000193);
   }
   return `workspace-tag-${(hash >>> 0).toString(16)}`;
-}
-
-function errorMessage(error: unknown): string {
-  if (error instanceof Error && error.message) return error.message;
-  return "接口暂不可用";
-}
-
-function errorStatus(error: unknown): number | null {
-  return typeof error === "object" &&
-    error !== null &&
-    "response" in error &&
-    typeof error.response === "object" &&
-    error.response !== null &&
-    "status" in error.response
-    ? Number(error.response.status)
-    : null;
 }
 
 function recordingId(recording: ReceptionRecordingItem): EntityId {
@@ -167,15 +152,7 @@ function audioOperationKey(
 }
 
 function tagCorrectionErrorMessage(error: unknown): string {
-  const status =
-    typeof error === "object" &&
-    error !== null &&
-    "response" in error &&
-    typeof error.response === "object" &&
-    error.response !== null &&
-    "status" in error.response
-      ? Number(error.response.status)
-      : null;
+  const status = getErrorStatus(error);
   if (status === 409) {
     return "标签已被其他人更新。你的草稿仍保留，请刷新对照最新版本后再次确认。";
   }
@@ -185,7 +162,7 @@ function tagCorrectionErrorMessage(error: unknown): string {
   if (status === 422) {
     return "标签值、原因或证据不符合服务端规则，请检查标记字段。";
   }
-  return `保存失败，草稿未丢失：${errorMessage(error)}`;
+  return `保存失败，草稿未丢失：${getErrorMessage(error)}`;
 }
 
 function idEquals(left: EntityId, right: EntityId): boolean {
@@ -852,7 +829,7 @@ export default function ReceptionWorkspacePage() {
     if (result.isError) {
       playbackGrantRefreshRef.current = false;
       setPendingSeek(null);
-      setOperationStatus(`播放凭证刷新失败：${errorMessage(result.error)}`);
+      setOperationStatus(`播放凭证刷新失败：${getErrorMessage(result.error)}`);
       return;
     }
     const refreshedRecording = result.data?.recordings.find(
@@ -886,14 +863,14 @@ export default function ReceptionWorkspacePage() {
     operation: string,
     error: unknown,
   ) => {
-    if (errorStatus(error) === 409) {
+    if (getErrorStatus(error) === 409) {
       setOperationStatus(
         `${operation}发生版本冲突；源顺序与编辑原因草稿已保留，正在刷新最新版本供你核对后重试。`,
       );
       await workspaceQuery.refetch();
       return;
     }
-    setOperationStatus(`${operation}失败：${errorMessage(error)}`);
+    setOperationStatus(`${operation}失败：${getErrorMessage(error)}`);
   };
 
   const automationMutation = useMutation({
@@ -917,7 +894,7 @@ export default function ReceptionWorkspacePage() {
       ]);
     },
     onError: (error) => {
-      setOperationStatus(`自动处理请求失败：${errorMessage(error)}`);
+      setOperationStatus(`自动处理请求失败：${getErrorMessage(error)}`);
     },
   });
 
@@ -1017,7 +994,7 @@ export default function ReceptionWorkspacePage() {
       );
     },
     onError: (error) => {
-      setOperationStatus(`取消音频任务失败：${errorMessage(error)}`);
+      setOperationStatus(`取消音频任务失败：${getErrorMessage(error)}`);
     },
   });
 
@@ -1133,7 +1110,7 @@ export default function ReceptionWorkspacePage() {
       );
     },
     onError: (error) => {
-      setOperationStatus(`标签重算任务创建失败：${errorMessage(error)}`);
+      setOperationStatus(`标签重算任务创建失败：${getErrorMessage(error)}`);
     },
   });
 
@@ -1167,7 +1144,7 @@ export default function ReceptionWorkspacePage() {
       await refreshWorkspace();
     },
     onError: (error) => {
-      setOperationStatus(`目标标签派生失败：${errorMessage(error)}`);
+      setOperationStatus(`目标标签派生失败：${getErrorMessage(error)}`);
     },
   });
 
@@ -1432,7 +1409,7 @@ export default function ReceptionWorkspacePage() {
         <h1>接待工作台暂不可用</h1>
         <p>
           未获取到真实接待数据：
-          {errorMessage(workspaceQuery.error)}
+          {getErrorMessage(workspaceQuery.error)}
         </p>
         <button type="button" onClick={() => workspaceQuery.refetch()}>
           重新加载

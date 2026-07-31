@@ -11,6 +11,7 @@ import { Form, Input, Button, Card, Typography, Notification } from "@arco-desig
 import { IconLock, IconUser } from "@arco-design/web-react/icon";
 import { login } from "@/api/services";
 import { useAuthStore } from "@/stores/auth";
+import { getErrorMessage } from "@/utils/errors";
 
 const { Title } = Typography;
 const FormItem = Form.Item;
@@ -37,12 +38,10 @@ export default function LoginPage() {
       Notification.success({ title: "登录成功", content: `欢迎, ${resp.user.name}` });
       navigate("/");
     } catch (err: unknown) {
-      const msg =
-        err && typeof err === "object" && "response" in err
-          ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            ((err as any).response?.data?.error?.message ?? "登录失败")
-          : "登录失败";
-      Notification.error({ title: "登录失败", content: msg });
+      Notification.error({
+        title: "登录失败",
+        content: getErrorMessage(err, "登录失败"),
+      });
     } finally {
       setLoading(false);
     }

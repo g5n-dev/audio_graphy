@@ -8,6 +8,7 @@ import { useState } from "react";
 import { Card, Input, Button, Typography, List, Tag, Spin, Statistic, Grid } from "@arco-design/web-react";
 import { query as queryApi } from "@/api/services";
 import type { EdgeConfidence, QueryResponse } from "@/types/api";
+import { getErrorMessage } from "@/utils/errors";
 
 const { Text, Paragraph } = Typography;
 const { Row, Col } = Grid;
@@ -35,12 +36,7 @@ export default function QueryPage() {
       const resp = await queryApi(input.trim());
       setResult(resp);
     } catch (err: unknown) {
-      const msg =
-        err && typeof err === "object" && "response" in err
-          ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            ((err as any).response?.data?.error?.message ?? "查询失败")
-          : "查询失败";
-      setError(msg);
+      setError(getErrorMessage(err, "查询失败"));
     } finally {
       setLoading(false);
     }

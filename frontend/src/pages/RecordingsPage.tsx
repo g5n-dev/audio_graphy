@@ -7,6 +7,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Table, Card, Input, Select, Tag } from "@arco-design/web-react";
 import { useNavigate } from "react-router-dom";
 import { listRecordings } from "@/api/services";
+import { PanelState } from "@/components/PanelState";
 import type { RecordingListItem, RecordingStatus } from "@/types/api";
 
 const statusOptions: RecordingStatus[] = [
@@ -34,7 +35,7 @@ export default function RecordingsPage() {
   const [storeId, setStoreId] = useState<string>("");
   const [status, setStatus] = useState<RecordingStatus | "">("");
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["recordings", page, pageSize, storeId, status],
     queryFn: () =>
       listRecordings({
@@ -61,14 +62,23 @@ export default function RecordingsPage() {
           <Input
             placeholder="门店ID"
             value={storeId}
-            onChange={setStoreId}
+            // Narrowing the result set can leave `page` past the last page of
+            // it, which renders as an empty table the user cannot navigate out
+            // of — so every filter change returns to page 1.
+            onChange={(val) => {
+              setStoreId(val);
+              setPage(1);
+            }}
             style={{ width: 150 }}
             allowClear
           />
           <Select
             placeholder="状态"
             value={status || undefined}
-            onChange={(val) => setStatus((val ?? "") as RecordingStatus | "")}
+            onChange={(val) => {
+              setStatus((val ?? "") as RecordingStatus | "");
+              setPage(1);
+            }}
             style={{ width: 150 }}
             allowClear
           >
@@ -82,49 +92,61 @@ export default function RecordingsPage() {
       </Card>
 
       <Card>
-        <Table
-          data={data?.items ?? []}
-          rowKey="id"
-          loading={isLoading}
-          size="small"
-          pagination={{
-            current: page,
-            pageSize,
-            total: data?.total ?? 0,
-            onChange: (p) => setPage(p),
-            showTotal: true,
-          }}
-          onRow={(record: RecordingListItem) => ({
-            onClick: () => navigate(`/recordings/${record.id}`),
-            style: { cursor: "pointer" },
-          })}
-          columns={[
-            { title: "ID", dataIndex: "id", width: 70 },
-            { title: "门店", dataIndex: "store_id", width: 80 },
-            { title: "坐席", dataIndex: "agent_name", width: 120 },
-            {
-              title: "状态",
-              dataIndex: "status",
-              width: 100,
-              render: (val: string) => <Tag color={statusColorMap[val] ?? "gray"}>{val}</Tag>,
-            },
-            { title: "管线", dataIndex: "pipeline_state", width: 100 },
-            {
-              title: "录制时间",
-              dataIndex: "recorded_at",
-              width: 180,
-              render: (val: string | null) =>
-                val ? new Date(val).toLocaleString("zh-CN") : "-",
-            },
-            {
-              title: "索引时间",
-              dataIndex: "indexed_at",
-              width: 180,
-              render: (val: string | null) =>
-                val ? new Date(val).toLocaleString("zh-CN") : "-",
-            },
-          ]}
-        />
+        <PanelState
+          pending={isLoading}
+          error={error}
+          // Keyed on the total, not on the current page: a page that happens to
+          // be empty while `total` is non-zero must keep rendering the table,
+          // because the pagination control the user needs lives inside it.
+          empty={(data?.total ?? 0) === 0}
+          emptyTitle="暂无录音"
+          emptyDescription="当前门店与状态筛选下没有录音，调整筛选条件后再试。"
+          onRetry={() => void refetch()}
+          pendingLabel="正在加载录音列表…"
+        >
+          <Table
+            data={data?.items ?? []}
+            rowKey="id"
+            size="small"
+            pagination={{
+              current: page,
+              pageSize,
+              total: data?.total ?? 0,
+              onChange: (p) => setPage(p),
+              showTotal: true,
+            }}
+            onRow={(record: RecordingListItem) => ({
+              onClick: () => navigate(`/recordings/${record.id}`),
+              style: { cursor: "pointer" },
+            })}
+            columns={[
+              { title: "ID", dataIndex: "id", width: 70 },
+              { title: "门店", dataIndex: "store_id", width: 80 },
+              { title: "坐席", dataIndex: "agent_name", width: 120 },
+              {
+                title: "状态",
+                dataIndex: "status",
+                width: 100,
+                render: (val: string) => <Tag color={statusColorMap[val] ?? "gray"}>{val}</Tag>,
+              },
+              { title: "管线", dataIndex: "pipeline_state", width: 100 },
+              {
+                title: "录制时间",
+                dataIndex: "recorded_at",
+                width: 180,
+                render: (val: string | null) =>
+                  val ? new Date(val).toLocaleString("zh-CN") : "-",
+              },
+              {
+                title: "索引时间",
+                dataIndex: "indexed_at",
+                width: 180,
+                render: (val: string | null) =>
+                  val ? new Date(val).toLocaleString("zh-CN") : "-",
+              },
+            ]}
+          />
+        </PanelState>
       </Card>
       </div>
     </div>

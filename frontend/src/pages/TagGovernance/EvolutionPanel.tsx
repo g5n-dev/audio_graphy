@@ -22,6 +22,8 @@ import type {
   TagOptimizationRun,
   TagOptimizationSourceCohort,
 } from "@/types/api";
+import { PanelState } from "@/components/PanelState";
+import { getErrorMessage } from "@/utils/errors";
 
 interface EvolutionPanelProps {
   isAdmin: boolean;
@@ -63,10 +65,6 @@ function displayValue(value: unknown): string {
   } catch {
     return String(value);
   }
-}
-
-function errorMessage(error: unknown, fallback: string): string {
-  return error instanceof Error ? error.message : fallback;
 }
 
 function runStatus(status: TagOptimizationRun["status"]): string {
@@ -312,7 +310,7 @@ function OptimizationDialog({
           )}
           {mutationError !== null && mutationError !== undefined ? (
             <p className="ag-inline-feedback is-error" role="alert">
-              {errorMessage(mutationError, "优化运行创建失败，请稍后重试。")}
+              {getErrorMessage(mutationError, "优化运行创建失败，请稍后重试。")}
               <button type="submit" disabled={pending}>
                 重试启动
               </button>
@@ -389,7 +387,7 @@ function CancelOptimizationDialog({
           </p>
           {mutationError !== null && mutationError !== undefined ? (
             <p className="ag-inline-feedback is-error" role="alert">
-              {errorMessage(mutationError, "取消运行失败，请稍后重试。")}
+              {getErrorMessage(mutationError, "取消运行失败，请稍后重试。")}
             </p>
           ) : null}
           <footer>
@@ -883,22 +881,25 @@ export function EvolutionPanel({
       )}
       {panelError && (
         <p className="ag-inline-feedback is-error" role="alert">
-          {panelError instanceof Error
-            ? panelError.message
-            : "自进化数据暂不可用"}
+          {getErrorMessage(panelError, "自进化数据暂不可用")}
         </p>
       )}
-      {overviewQuery.isPending ? (
-        <div className="ag-governance-state" role="status">
-          <span className="ag-governance-spinner" aria-hidden="true" />
-          正在加载自进化质量基线…
-        </div>
-      ) : overviewQuery.data ? (
-        <>
-          <QualityOverview overview={overviewQuery.data} />
-          <ReleaseSupport overview={overviewQuery.data} />
-        </>
-      ) : null}
+      <PanelState
+        pending={overviewQuery.isPending}
+        error={overviewQuery.error}
+        empty={!overviewQuery.data}
+        emptyTitle="暂无质量基线"
+        emptyDescription="完成一次评估后，这里会显示自进化的质量基线与发布支撑材料。"
+        onRetry={() => void overviewQuery.refetch()}
+        pendingLabel="正在加载自进化质量基线…"
+      >
+        {overviewQuery.data && (
+          <>
+            <QualityOverview overview={overviewQuery.data} />
+            <ReleaseSupport overview={overviewQuery.data} />
+          </>
+        )}
+      </PanelState>
       <BadcaseRegistry items={badcasesQuery.data?.items ?? []} />
       <OptimizationRuns
         items={runsQuery.data?.items ?? []}

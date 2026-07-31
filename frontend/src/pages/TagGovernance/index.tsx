@@ -3,7 +3,6 @@ import {
   IconCheck,
   IconCheckCircleFill,
   IconClose,
-  IconEmpty,
   IconEye,
   IconExclamationCircleFill,
   IconHistory,
@@ -14,7 +13,6 @@ import {
 import {
   type FormEvent,
   type KeyboardEvent,
-  type ReactNode,
   useEffect,
   useMemo,
   useRef,
@@ -58,7 +56,9 @@ import type {
   TagSchema,
   TaggerVersion,
 } from "@/types/api";
+import { PanelState } from "@/components/PanelState";
 import { useAuthStore } from "@/stores/auth";
+import { getErrorMessage, getErrorStatus } from "@/utils/errors";
 import { EvolutionPanel } from "./EvolutionPanel";
 import "./tagGovernance.css";
 
@@ -97,6 +97,7 @@ const TABS = [
 
 type TabId = (typeof TABS)[number]["id"];
 
+const GOVERNANCE_PENDING_LABEL = "正在加载治理数据…";
 const TERMINAL_EVALUATION_STATUSES = new Set(["completed", "failed"]);
 const TERMINAL_DEPLOYMENT_STATUSES = new Set([
   "production",
@@ -138,25 +139,6 @@ function formatDate(value?: string | null): string {
   return Number.isFinite(timestamp)
     ? new Date(timestamp).toLocaleString("zh-CN", { hour12: false })
     : value;
-}
-
-function errorMessage(error: unknown, fallback: string): string {
-  return error instanceof Error ? error.message : fallback;
-}
-
-function responseStatus(error: unknown): number | null {
-  if (
-    typeof error !== "object" ||
-    error === null ||
-    !("response" in error) ||
-    typeof error.response !== "object" ||
-    error.response === null ||
-    !("status" in error.response)
-  ) {
-    return null;
-  }
-  const status = Number(error.response.status);
-  return Number.isFinite(status) ? status : null;
 }
 
 function parseOptimizationCohort(
@@ -219,56 +201,6 @@ function StatusChip({ status }: { status: string }) {
       {statusLabel(status)}
     </span>
   );
-}
-
-function PanelState({
-  pending,
-  error,
-  empty,
-  emptyTitle,
-  emptyDescription,
-  onRetry,
-  children,
-}: {
-  pending: boolean;
-  error: unknown;
-  empty: boolean;
-  emptyTitle: string;
-  emptyDescription: string;
-  onRetry: () => void;
-  children: ReactNode;
-}) {
-  if (pending) {
-    return (
-      <div className="ag-governance-state" role="status">
-        <span className="ag-governance-spinner" aria-hidden="true" />
-        正在加载治理数据…
-      </div>
-    );
-  }
-  if (error) {
-    return (
-      <div className="ag-governance-state is-error" role="alert">
-        <strong>数据加载失败</strong>
-        <span>{error instanceof Error ? error.message : "接口暂不可用"}</span>
-        <button type="button" onClick={onRetry}>
-          重新加载
-        </button>
-      </div>
-    );
-  }
-  if (empty) {
-    return (
-      <div className="ag-governance-state is-empty" role="status">
-        <span className="ag-governance-empty-mark" aria-hidden="true">
-          <IconEmpty />
-        </span>
-        <strong>{emptyTitle}</strong>
-        <span>{emptyDescription}</span>
-      </div>
-    );
-  }
-  return children;
 }
 
 function CreateSchemaDialog({
@@ -630,6 +562,7 @@ function TaxonomyPanel({
         emptyTitle="尚未建立标签体系"
         emptyDescription="先定义标签键、值域、适用场景与证据要求，再创建抽取版本。"
         onRetry={onRetry}
+        pendingLabel={GOVERNANCE_PENDING_LABEL}
       >
         <div className="ag-taxonomy-grid">
           {items.map((schema) => {
@@ -727,7 +660,7 @@ function TaxonomyPanel({
         schemaVersionMutation.isError ||
         publishMutation.isError) && (
         <p className="ag-inline-feedback is-error" role="alert">
-          {errorMessage(
+          {getErrorMessage(
             schemaMutation.error ??
               schemaVersionMutation.error ??
               publishMutation.error,
@@ -928,9 +861,7 @@ function TaggersPanel({
       )}
       {mutation.isError && (
         <p className="ag-inline-feedback is-error" role="alert">
-          {mutation.error instanceof Error
-            ? mutation.error.message
-            : "候选版本创建失败"}
+          {getErrorMessage(mutation.error, "候选版本创建失败")}
         </p>
       )}
       <PanelState
@@ -940,6 +871,7 @@ function TaggersPanel({
         emptyTitle="暂无抽取版本"
         emptyDescription="创建第一个候选版本后，即可进入金标评估与灰度发布。"
         onRetry={onRetry}
+        pendingLabel={GOVERNANCE_PENDING_LABEL}
       >
         <div className="ag-version-table-wrap">
           <table className="ag-version-table">
@@ -1530,7 +1462,7 @@ function EvaluationsPanel({
         goldSetMutation.isError ||
         freezeMutation.isError) && (
         <p className="ag-inline-feedback is-error" role="alert">
-          {errorMessage(
+          {getErrorMessage(
             evaluationMutation.error ??
               goldSetMutation.error ??
               freezeMutation.error,
@@ -1553,9 +1485,7 @@ function EvaluationsPanel({
         ) : goldSetsQuery.isError ? (
           <p className="ag-compact-state is-error" role="alert">
             金标集加载失败：
-            {goldSetsQuery.error instanceof Error
-              ? goldSetsQuery.error.message
-              : "接口暂不可用"}
+            {getErrorMessage(goldSetsQuery.error)}
           </p>
         ) : goldSetsQuery.data.items.length === 0 ? (
           <p className="ag-compact-state">
@@ -1589,6 +1519,7 @@ function EvaluationsPanel({
         emptyTitle="暂无评估实验"
         emptyDescription="冻结金标集后运行候选版本评估，系统会执行质量门禁。"
         onRetry={onRetry}
+        pendingLabel={GOVERNANCE_PENDING_LABEL}
       >
         <div className="ag-evaluation-grid">
           {items.map((evaluation) => {
@@ -1985,7 +1916,7 @@ function ResumeDeploymentDialog({
 }) {
   const [reason, setReason] = useState("");
   const [validationError, setValidationError] = useState<string | null>(null);
-  const staleRevision = responseStatus(error) === 409;
+  const staleRevision = getErrorStatus(error) === 409;
   const normalizedReason = reason.trim();
   const reasonLength = Array.from(normalizedReason).length;
   const submit = (event: FormEvent) => {
@@ -2059,7 +1990,7 @@ function ResumeDeploymentDialog({
               {validationError ??
                 (staleRevision
                   ? "部署已被其他操作更新，当前修订号已过期。刷新后再执行，避免覆盖并发变更。"
-                  : errorMessage(error, "恢复自动推进失败"))}
+                  : getErrorMessage(error, "恢复自动推进失败"))}
             </p>
           )}
           <footer>
@@ -2251,7 +2182,7 @@ function DeploymentObservations({
       {query.isError && (
         <div className="ag-observation-error" role="alert">
           <span>
-            {errorMessage(query.error, "发布观测加载失败")}
+            {getErrorMessage(query.error, "发布观测加载失败")}
           </span>
           <button type="button" onClick={() => void query.refetch()}>
             重新加载观测
@@ -2435,7 +2366,7 @@ function DeploymentsPanel({
     createMutation.error ??
     approveMutation.error ??
     rollbackMutation.error;
-  const staleRevision = responseStatus(operationError) === 409;
+  const staleRevision = getErrorStatus(operationError) === 409;
   const refreshStaleDeployment = () => {
     approveMutation.reset();
     rollbackMutation.reset();
@@ -2471,7 +2402,7 @@ function DeploymentsPanel({
         <p className="ag-inline-feedback is-error" role="alert">
           {staleRevision
             ? "部署已被其他操作更新，当前修订号已过期。刷新后再执行，避免覆盖并发变更。"
-            : errorMessage(operationError, "部署操作失败")}
+            : getErrorMessage(operationError, "部署操作失败")}
           {staleRevision && (
             <button type="button" onClick={refreshStaleDeployment}>
               刷新部署状态
@@ -2486,6 +2417,7 @@ function DeploymentsPanel({
         emptyTitle="暂无发布记录"
         emptyDescription="只有通过质量门禁的候选版本才可以创建部署。"
         onRetry={onRetry}
+        pendingLabel={GOVERNANCE_PENDING_LABEL}
       >
         <div className="ag-deployment-list">
           {items.map((deployment) => {
@@ -2706,6 +2638,7 @@ function AuditsPanel({
       emptyTitle="暂无审计事件"
       emptyDescription="体系、版本、评估、部署和人工复核动作会记录在这里。"
       onRetry={onRetry}
+      pendingLabel={GOVERNANCE_PENDING_LABEL}
     >
       <ol className="ag-audit-timeline">
         {items.map((event) => (

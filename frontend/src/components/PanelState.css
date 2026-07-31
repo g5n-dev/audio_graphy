@@ -1,0 +1,74 @@
+/* Styles for the shared PanelState guard.
+ *
+ * Co-located and imported by the component rather than living in a page's
+ * stylesheet: PanelState is used from pages that do not import
+ * tagGovernance.css, and depending on that file left the spinner rendering as
+ * an unstyled, invisible <span> on those pages.
+ *
+ * Visually matches the .ag-governance-state block it was extracted from, so
+ * the governance pages look unchanged.
+ */
+
+.ag-panel-state {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 7px;
+  min-height: 360px;
+  color: #67758d;
+  text-align: center;
+}
+
+.ag-panel-state strong {
+  color: #273654;
+  font-size: 17px;
+}
+
+.ag-panel-state button {
+  min-height: 34px;
+  padding: 6px 13px;
+  color: #fff;
+  background: #2f6bff;
+  border: 1px solid #2f6bff;
+  border-radius: 7px;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.ag-panel-state button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.ag-panel-state-spinner {
+  width: 26px;
+  height: 26px;
+  border: 3px solid #dae5fb;
+  border-top-color: #2f6bff;
+  border-radius: 50%;
+  animation: ag-panel-state-spin 700ms linear infinite;
+}
+
+@keyframes ag-panel-state-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Respect users who have asked the OS to reduce motion. */
+@media (prefers-reduced-motion: reduce) {
+  .ag-panel-state-spinner {
+    animation: none;
+  }
+}
+
+.ag-panel-state-empty-mark {
+  display: grid;
+  width: 48px;
+  height: 48px;
+  place-items: center;
+  color: #4775e8;
+  background: #eff4ff;
+  border: 1px solid #d1deff;
+  border-radius: 50%;
+}
