@@ -12,7 +12,16 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import BigInteger, CheckConstraint, DateTime, ForeignKey, Index, String
+from sqlalchemy import (
+    BigInteger,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    text,
+)
 from sqlalchemy.dialects.mysql import JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -70,6 +79,30 @@ class Recording(TenantScopedBase):
     prompt_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     indexed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # Immutable source facts. Speech coverage (for example max segment end)
+    # must never be substituted for these media-level facts.
+    audio_duration_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    audio_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    audio_size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    audio_sample_rate: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    audio_channels: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source_revision: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=1,
+        server_default=text("1"),
+    )
+    active_pipeline_run_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey(
+            "recording_pipeline_runs.id",
+            name="fk_recordings_active_pipeline_run_id",
+            ondelete="SET NULL",
+            use_alter=True,
+        ),
+        nullable=True,
+    )
+
     # M6 PIPL §14.3 — audio envelope encryption at rest.
     # When audio_encrypted_path is NULL, the recording reverts to plaintext
     # behaviour (read `path` directly, e.g. legacy M5 rows).
@@ -92,7 +125,8 @@ class Recording(TenantScopedBase):
 
     __table_args__ = (
         CheckConstraint(
-            "status IN ('queued', 'processing', 'indexed', 'failed', 'archived')",
+            "status IN ('queued', 'processing', 'indexed', 'ready_no_speech', "
+            "'failed', 'archived')",
             name="ck_recordings_status",
         ),
         CheckConstraint(
@@ -100,8 +134,27 @@ class Recording(TenantScopedBase):
             "'embedding', 'extraction', 'graph_merge', 'tagging', 'done', 'error')",
             name="ck_recordings_pipeline_state",
         ),
+        CheckConstraint(
+            "audio_duration_ms IS NULL OR audio_duration_ms >= 0",
+            name="ck_recordings_audio_duration_ms",
+        ),
+        CheckConstraint(
+            "audio_size_bytes IS NULL OR audio_size_bytes > 0",
+            name="ck_recordings_audio_size_bytes",
+        ),
+        CheckConstraint(
+            "audio_sample_rate IS NULL OR audio_sample_rate > 0",
+            name="ck_recordings_audio_sample_rate",
+        ),
+        CheckConstraint(
+            "audio_channels IS NULL OR audio_channels > 0",
+            name="ck_recordings_audio_channels",
+        ),
+        CheckConstraint("source_revision >= 1", name="ck_recordings_source_revision"),
         Index("ix_recordings_tenant_store", "tenant_id", "store_id"),
         Index("ix_recordings_tenant_status", "tenant_id", "status"),
+        Index("ix_recordings_active_pipeline_run", "active_pipeline_run_id"),
+        Index("ix_recordings_tenant_audio_sha256", "tenant_id", "audio_sha256"),
         Index(
             "ix_recordings_tenant_store_status_recorded_id",
             "tenant_id",

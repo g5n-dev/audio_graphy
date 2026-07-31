@@ -46,7 +46,26 @@ class StreamingSession(TenantScopedBase):
 
     __tablename__ = "streaming_sessions"
 
-    session_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    session_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    epoch: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="RESERVING")
+    generation: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    pipeline_run_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("recording_pipeline_runs.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    ack_seq_high_watermark: Mapped[int] = mapped_column(Integer, nullable=False, default=-1)
+    durable_segment_high_watermark: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+        default=0,
+    )
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    lease_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
     recording_id: Mapped[int] = mapped_column(
         BigInteger,
         ForeignKey("recordings.id", ondelete="CASCADE"),
@@ -70,10 +89,27 @@ class StreamingSession(TenantScopedBase):
 
     __table_args__ = (
         CheckConstraint(
+            "status IN ('RESERVING', 'ACTIVE', 'DRAINING', 'COMMITTING', "
+            "'CLOSED', 'INCOMPLETE', 'FAILED')",
+            name="ck_streaming_sessions_status",
+        ),
+        CheckConstraint(
+            "epoch >= 1 AND generation >= 0 AND ack_seq_high_watermark >= -1",
+            name="ck_streaming_sessions_watermarks",
+        ),
+        CheckConstraint(
             "end_reason IS NULL OR end_reason IN "
             "('normal', 'client_disconnect', 'server_shutdown', 'error', 'backpressure', 'timeout')",
             name="ck_streaming_sessions_end_reason",
         ),
         Index("ix_streaming_sessions_tenant_started", "tenant_id", "started_at"),
         Index("ix_streaming_sessions_recording", "recording_id"),
+        Index("ix_streaming_sessions_pipeline_run", "pipeline_run_id"),
+        Index(
+            "ux_streaming_sessions_tenant_session_epoch",
+            "tenant_id",
+            "session_id",
+            "epoch",
+            unique=True,
+        ),
     )

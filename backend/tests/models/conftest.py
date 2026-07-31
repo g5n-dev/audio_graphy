@@ -20,6 +20,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import QueuePool
+from sqlalchemy.schema import AddConstraint
 
 # Import all models to ensure they register on Base.metadata
 import audio_graphy.models  # noqa: F401
@@ -100,6 +101,20 @@ def db_engine(mysql_container: Any) -> Iterator[Engine]:
                 conn.commit()
         except OperationalError as e:
             failed_tables.append(f"{table.name}: {e}")
+
+    # ``Table.create()`` intentionally skips use_alter foreign keys. Add those
+    # after every table exists so the fixture mirrors metadata.create_all()
+    # while retaining its per-table recovery for unrelated oversized indexes.
+    for table in Base.metadata.tables.values():
+        for constraint in table.foreign_key_constraints:
+            if not constraint.use_alter:
+                continue
+            try:
+                with engine.connect() as conn:
+                    conn.execute(AddConstraint(constraint))
+                    conn.commit()
+            except OperationalError as e:
+                failed_tables.append(f"{table.name}.{constraint.name}: {e}")
 
     if failed_tables:
         # Log table/index creation failures but don't fail — tests that depend

@@ -31,6 +31,7 @@ class RecordingStatus(enum.Enum):
     QUEUED = "queued"
     PROCESSING = "processing"
     INDEXED = "indexed"
+    READY_NO_SPEECH = "ready_no_speech"
     FAILED = "failed"
     ARCHIVED = "archived"
 

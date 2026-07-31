@@ -47,6 +47,16 @@ class Reception(TenantScopedBase):
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     ended_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     merged_audio_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    active_timeline_revision_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey(
+            "reception_timeline_revisions.id",
+            ondelete="SET NULL",
+            use_alter=True,
+            name="fk_receptions_active_timeline_revision_id",
+        ),
+        nullable=True,
+    )
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
     recordings: Mapped[list[ReceptionRecording]] = relationship(
@@ -215,11 +225,21 @@ class ReceptionRecording(TenantScopedBase):
         ForeignKey("recordings.id", ondelete="CASCADE"),
         nullable=False,
     )
+    timeline_revision_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("reception_timeline_revisions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     sequence_no: Mapped[int] = mapped_column(Integer, nullable=False)
     timeline_start_sec: Mapped[float] = mapped_column(Float, nullable=False)
     timeline_end_sec: Mapped[float] = mapped_column(Float, nullable=False)
     source_start_sec: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     source_end_sec: Mapped[float | None] = mapped_column(Float, nullable=True)
+    source_start_ms: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    source_end_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    timeline_start_ms: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    timeline_end_ms: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    gap_before_ms: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     gap_before_sec: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     decision_source: Mapped[str] = mapped_column(String(16), nullable=False)
     merge_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -237,6 +257,12 @@ class ReceptionRecording(TenantScopedBase):
             name="ck_reception_recordings_source_time",
         ),
         CheckConstraint("sequence_no >= 0", name="ck_reception_recordings_sequence"),
+        CheckConstraint(
+            "source_start_ms >= 0 AND timeline_start_ms >= 0 AND "
+            "timeline_end_ms >= timeline_start_ms AND gap_before_ms >= 0 AND "
+            "(source_end_ms IS NULL OR source_end_ms > source_start_ms)",
+            name="ck_reception_recordings_integer_timeline",
+        ),
         CheckConstraint(
             "decision_source IN ('explicit', 'auto', 'manual')",
             name="ck_reception_recordings_decision_source",
@@ -288,6 +314,12 @@ class DialogueUnit(TenantScopedBase):
     business_stage: Mapped[str | None] = mapped_column(String(64), nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     boundary_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    stage_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    timeline_revision_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("reception_timeline_revisions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     boundary_reasons: Mapped[list[Any]] = mapped_column(JSON, nullable=False, default=list)
     segment_refs: Mapped[list[Any]] = mapped_column(JSON, nullable=False, default=list)
     speaker_refs: Mapped[list[Any]] = mapped_column(JSON, nullable=False, default=list)
@@ -307,6 +339,11 @@ class DialogueUnit(TenantScopedBase):
             "boundary_confidence IS NULL OR "
             "(boundary_confidence >= 0 AND boundary_confidence <= 1)",
             name="ck_dialogue_units_boundary_confidence",
+        ),
+        CheckConstraint(
+            "stage_confidence IS NULL OR "
+            "(stage_confidence >= 0 AND stage_confidence <= 1)",
+            name="ck_dialogue_units_stage_confidence",
         ),
         CheckConstraint(
             "edit_status IN ('auto', 'manual_edited', 'locked')",
@@ -355,6 +392,11 @@ class DialogueStateTransition(TenantScopedBase):
     confidence: Mapped[float] = mapped_column(Float, nullable=False)
     evidence_refs: Mapped[list[Any]] = mapped_column(JSON, nullable=False, default=list)
     algorithm_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    timeline_revision_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("reception_timeline_revisions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
 
     reception: Mapped[Reception] = relationship(back_populates="state_transitions")
 
@@ -404,6 +446,11 @@ class DialogueTagAssignment(TenantScopedBase):
     model_run_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     is_current: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     assigned_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    timeline_revision_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("reception_timeline_revisions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
 
     dialogue_unit: Mapped[DialogueUnit] = relationship(back_populates="tag_assignments")
 

@@ -41,6 +41,14 @@ class Segment(TenantScopedBase):
         ForeignKey("recordings.id", ondelete="CASCADE"),
         nullable=False,
     )
+    # Nullable only for bootstrap/legacy rows created before pipeline
+    # generations existed. Every new pipeline write supplies this FK.
+    pipeline_run_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("recording_pipeline_runs.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    generation: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     idx: Mapped[int] = mapped_column(Integer, nullable=False)
     start_sec: Mapped[float] = mapped_column(Float, nullable=False)
     end_sec: Mapped[float] = mapped_column(Float, nullable=False)
@@ -55,6 +63,14 @@ class Segment(TenantScopedBase):
 
     __table_args__ = (
         CheckConstraint("end_sec > start_sec", name="ck_segments_time_order"),
-        Index("ux_segments_recording_idx", "recording_id", "idx", unique=True),
+        CheckConstraint("generation >= 0", name="ck_segments_generation"),
+        Index(
+            "ux_segments_recording_generation_idx",
+            "recording_id",
+            "generation",
+            "idx",
+            unique=True,
+        ),
+        Index("ix_segments_pipeline_run_id", "pipeline_run_id"),
         Index("ix_segments_recording_id", "recording_id"),
     )

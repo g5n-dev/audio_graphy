@@ -43,6 +43,17 @@ class Chunk(TenantScopedBase):
         ForeignKey("recordings.id", ondelete="CASCADE"),
         nullable=False,
     )
+    # Nullable only for bootstrap/legacy rows. New pipeline and streaming
+    # writes always bind a chunk to its immutable processing generation.
+    pipeline_run_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("recording_pipeline_runs.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    generation: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Legacy rows may be NULL until the resumable backfill assigns a stable
+    # per-generation ordering.
+    ordinal: Mapped[int | None] = mapped_column(Integer, nullable=True)
     segment_ids: Mapped[list[int]] = mapped_column(JSON, nullable=False)
     text: Mapped[str] = mapped_column(Text, nullable=False)
     token_n: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -55,6 +66,71 @@ class Chunk(TenantScopedBase):
 
     __table_args__ = (
         CheckConstraint("token_n > 0", name="ck_chunks_token_n"),
-        Index("ux_chunks_content_hash", "tenant_id", "content_hash", unique=True),
+        CheckConstraint("generation >= 0", name="ck_chunks_generation"),
+        CheckConstraint("ordinal IS NULL OR ordinal >= 0", name="ck_chunks_ordinal"),
+        Index(
+            "ux_chunks_recording_generation_ordinal",
+            "recording_id",
+            "generation",
+            "ordinal",
+            unique=True,
+        ),
+        # A content hash is a cache hint, never the identity of a provenance
+        # row: equal text in two recordings must coexist.
+        Index("ix_chunks_content_hash", "tenant_id", "content_hash"),
+        Index("ix_chunks_pipeline_run_id", "pipeline_run_id"),
         Index("ix_chunks_recording_id", "recording_id"),
+    )
+
+
+class ChunkSegment(TenantScopedBase):
+    """Normalized, generation-safe provenance between chunks and segments."""
+
+    __tablename__ = "chunk_segments"
+
+    recording_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("recordings.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    pipeline_run_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("recording_pipeline_runs.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    generation: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    chunk_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("chunks.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    segment_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("segments.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("generation >= 0", name="ck_chunk_segments_generation"),
+        CheckConstraint("ordinal >= 0", name="ck_chunk_segments_ordinal"),
+        Index(
+            "ux_chunk_segments_chunk_ordinal",
+            "chunk_id",
+            "ordinal",
+            unique=True,
+        ),
+        Index(
+            "ux_chunk_segments_chunk_segment",
+            "chunk_id",
+            "segment_id",
+            unique=True,
+        ),
+        Index(
+            "ix_chunk_segments_recording_generation",
+            "recording_id",
+            "generation",
+        ),
+        Index("ix_chunk_segments_segment_id", "segment_id"),
+        Index("ix_chunk_segments_pipeline_run_id", "pipeline_run_id"),
     )

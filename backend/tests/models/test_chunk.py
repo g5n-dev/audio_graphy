@@ -114,8 +114,11 @@ class TestChunkConstraints:
             db_session.commit()
         db_session.rollback()
 
-    def test_unique_content_hash_per_tenant(self, db_session: pytest.fixture) -> None:
+    def test_equal_content_hash_across_recordings_keeps_provenance(
+        self, db_session: pytest.fixture
+    ) -> None:
         rec = _create_recording(db_session)
+        other = _create_recording(db_session)
         c1 = Chunk(
             tenant_id="default",
             recording_id=rec.id,
@@ -129,16 +132,23 @@ class TestChunkConstraints:
 
         c2 = Chunk(
             tenant_id="default",
-            recording_id=rec.id,
+            recording_id=other.id,
             segment_ids=[2],
             text="B",
             token_n=6,
             content_hash="samehash",
         )
         db_session.add(c2)
-        with pytest.raises((IntegrityError, OperationalError)):
-            db_session.commit()
-        db_session.rollback()
+        db_session.commit()
+
+        rows = list(
+            db_session.scalars(
+                select(Chunk)
+                .where(Chunk.content_hash == "samehash")
+                .order_by(Chunk.recording_id)
+            )
+        )
+        assert [row.recording_id for row in rows] == [rec.id, other.id]
 
     def test_check_token_n_positive(self, db_session: pytest.fixture) -> None:
         rec = _create_recording(db_session)

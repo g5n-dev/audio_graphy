@@ -136,6 +136,104 @@ class TestLLMCallLogConstraints:
         assert log.tokens_out == 0
         assert log.cached is False
         assert log.latency_ms == 0
+        assert log.event_kind == "logical_request"
+        assert log.outcome == "success"
+        assert log.attempt is None
+        assert log.error_type is None
+        assert log.model_tier == "other"
+        assert log.requested_max_tokens is None
+        assert log.cached_prefill_tokens == 0
+        assert log.counterfactual_saved_input_tokens == 0
+        assert log.counterfactual_saved_output_tokens == 0
+        assert log.counterfactual_saved_tokens == 0
+        assert log.cost_microunits == 0
+        assert log.price_version is None
+        assert log.finish_reason is None
+        assert log.provider_request_id is None
+        assert log.retry_class is None
+        assert log.cache_lookup_reason is None
+        assert log.cache_miss_reason is None
+        assert log.unknown_billed is False
+
+    def test_provider_attempt_must_be_positive(self, db_session: pytest.fixture) -> None:
+        log = LLMCallLog(
+            tenant_id="default",
+            model="qwen3.6-27b",
+            event_kind="provider_attempt",
+            outcome="error",
+            attempt=0,
+            error_type="LLMRateLimitError",
+            prompt_hash="invalid_attempt",
+            logged_at=datetime.now(UTC),
+        )
+        db_session.add(log)
+        with pytest.raises((IntegrityError, OperationalError)):
+            db_session.commit()
+        db_session.rollback()
+
+    def test_provider_attempt_id_is_unique_per_tenant(
+        self, db_session: pytest.fixture
+    ) -> None:
+        first = LLMCallLog(
+            tenant_id="default",
+            model="qwen3.6-27b",
+            event_kind="provider_attempt",
+            outcome="success",
+            attempt=1,
+            provider_attempt_id="provider-attempt-1",
+            prompt_hash="attempt-1",
+            logged_at=datetime.now(UTC),
+        )
+        duplicate = LLMCallLog(
+            tenant_id="default",
+            model="qwen3.6-27b",
+            event_kind="provider_attempt",
+            outcome="error",
+            attempt=1,
+            provider_attempt_id="provider-attempt-1",
+            prompt_hash="attempt-1-duplicate",
+            logged_at=datetime.now(UTC),
+        )
+        db_session.add(first)
+        db_session.commit()
+        db_session.add(duplicate)
+        with pytest.raises((IntegrityError, OperationalError)):
+            db_session.commit()
+        db_session.rollback()
+
+    def test_distinct_retry_attempt_ids_are_allowed(
+        self, db_session: pytest.fixture
+    ) -> None:
+        db_session.add_all(
+            [
+                LLMCallLog(
+                    tenant_id="default",
+                    model="qwen3.6-27b",
+                    event_kind="provider_attempt",
+                    outcome="error",
+                    attempt=1,
+                    provider_attempt_id="retry-attempt-1",
+                    prompt_hash="retry",
+                    logged_at=datetime.now(UTC),
+                ),
+                LLMCallLog(
+                    tenant_id="default",
+                    model="qwen3.6-27b",
+                    event_kind="provider_attempt",
+                    outcome="success",
+                    attempt=2,
+                    provider_attempt_id="retry-attempt-2",
+                    prompt_hash="retry",
+                    logged_at=datetime.now(UTC),
+                ),
+            ]
+        )
+        db_session.commit()
+
+        rows = db_session.scalars(
+            select(LLMCallLog).where(LLMCallLog.prompt_hash == "retry")
+        ).all()
+        assert len(rows) == 2
 
 
 @pytest.mark.integration

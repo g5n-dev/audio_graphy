@@ -13,11 +13,15 @@ from __future__ import annotations
 from datetime import datetime
 
 from sqlalchemy import (
+    JSON,
     BigInteger,
     CheckConstraint,
     DateTime,
+    Float,
     ForeignKey,
     Index,
+    Integer,
+    LargeBinary,
     Numeric,
     String,
     Text,
@@ -60,6 +64,29 @@ class SpeakerMergePending(TenantScopedBase):
     fuzzy_score: Mapped[float] = mapped_column(Numeric(5, 4), nullable=False)
     status: Mapped[str] = mapped_column(String(24), nullable=False, default="pending")
     voiceprint_score: Mapped[float | None] = mapped_column(Numeric(5, 4), nullable=True)
+    observation_state: Mapped[str] = mapped_column(
+        String(24),
+        nullable=False,
+        default="PENDING_REVIEW",
+    )
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    candidate_speaker_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    candidate_voiceprint_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    candidate_vector_encrypted: Mapped[bytes | None] = mapped_column(
+        LargeBinary(length=8192),
+        nullable=True,
+    )
+    candidate_encryption_meta: Mapped[dict[str, object] | None] = mapped_column(
+        JSON,
+        nullable=True,
+    )
+    candidate_speech_sec: Mapped[float | None] = mapped_column(Float, nullable=True)
+    candidate_first_seen: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    candidate_role_hint: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     resolved_by: Mapped[str | None] = mapped_column(String(24), nullable=True)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -73,5 +100,21 @@ class SpeakerMergePending(TenantScopedBase):
             "resolved_by IS NULL OR resolved_by IN ('voiceprint', 'human', 'timeout')",
             name="ck_speaker_merge_pending_resolved_by",
         ),
+        CheckConstraint(
+            "observation_state IN ('OBSERVED', 'PENDING_REVIEW', 'APPLIED', 'REJECTED')",
+            name="ck_speaker_merge_pending_observation_state",
+        ),
+        CheckConstraint(
+            "state_version >= 1 AND generation >= 0",
+            name="ck_speaker_merge_pending_version_generation",
+        ),
         Index("ix_speaker_merge_pending_tenant_status", "tenant_id", "status"),
+        Index(
+            "ux_speaker_merge_pending_observation",
+            "tenant_id",
+            "recording_id",
+            "candidate_speaker_id",
+            "matched_speaker_node_id",
+            unique=True,
+        ),
     )
