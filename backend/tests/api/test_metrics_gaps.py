@@ -70,8 +70,13 @@ def test_register_metrics_idempotent_when_metrics_route_exists() -> None:
     assert client.get("/metrics").status_code == 200
 
 
-def test_health_and_readyz_skipped() -> None:
-    """/health and /readyz are in the skip list (no counter increment)."""
+def test_probe_paths_skipped() -> None:
+    """The real probe paths are excluded from the request counter.
+
+    The skip list used to name ``/readyz``, which no router ever served — the
+    readiness route is mounted at ``/health/readiness``. Probe traffic was
+    therefore counted while the assertion guarding it passed vacuously.
+    """
     app = FastAPI()
     register_metrics(app)
 
@@ -79,16 +84,54 @@ def test_health_and_readyz_skipped() -> None:
     def _h() -> dict[str, str]:
         return {"ok": "1"}
 
-    @app.get("/readyz")
+    @app.get("/health/readiness")
     def _r() -> dict[str, str]:
+        return {"ok": "1"}
+
+    @app.get("/readyz")
+    def _legacy() -> dict[str, str]:
         return {"ok": "1"}
 
     client = TestClient(app)
     for _ in range(2):
         client.get("/health")
+        client.get("/health/readiness")
         client.get("/readyz")
 
     body = client.get("/metrics").text
-    # Neither /health nor /readyz should appear as an endpoint label.
     assert 'endpoint="/health"' not in body
-    assert 'endpoint="/readyz"' not in body
+    assert 'endpoint="/health/readiness"' not in body
+    # Not a probe path the app actually serves, so it is counted like any other.
+    assert 'endpoint="/readyz"' in body
+
+
+def test_endpoint_label_uses_route_template_not_concrete_path() -> None:
+    """Path parameters must not mint one time series per value."""
+    app = FastAPI()
+    register_metrics(app)
+
+    @app.get("/recordings/{recording_id}/segments")
+    def _segments(recording_id: int) -> dict[str, int]:
+        return {"id": recording_id}
+
+    client = TestClient(app)
+    for recording_id in (1, 2, 3):
+        client.get(f"/recordings/{recording_id}/segments")
+
+    body = client.get("/metrics").text
+    assert 'endpoint="/recordings/{recording_id}/segments"' in body
+    assert 'endpoint="/recordings/1/segments"' not in body
+
+
+def test_unmatched_requests_collapse_into_one_series() -> None:
+    """404s must not let a scanner inflate label cardinality."""
+    app = FastAPI()
+    register_metrics(app)
+
+    client = TestClient(app)
+    for path in ("/nope-a", "/nope-b", "/nope-c"):
+        client.get(path)
+
+    body = client.get("/metrics").text
+    assert 'endpoint="__unmatched__"' in body
+    assert 'endpoint="/nope-a"' not in body

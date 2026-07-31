@@ -13,6 +13,12 @@ interface AuthState {
   user: UserInfo | null;
   isAuthenticated: boolean;
   setAuth: (token: string, refreshToken: string, user: UserInfo) => void;
+  /** Replace only the access token, keeping the refresh token and user.
+   *
+   * `POST /auth/refresh` returns a new access token and nothing else, so
+   * `setAuth` cannot express the result of a refresh.
+   */
+  setAccessToken: (token: string) => void;
   clearAuth: () => void;
   loadFromStorage: () => void;
 }
@@ -28,6 +34,11 @@ export const useAuthStore = create<AuthState>((set) => ({
     localStorage.setItem("ag_refresh_token", refreshToken);
     localStorage.setItem("ag_user_info", JSON.stringify(user));
     set({ token, refreshToken, user, isAuthenticated: true });
+  },
+
+  setAccessToken: (token: string) => {
+    localStorage.setItem("ag_access_token", token);
+    set({ token });
   },
 
   clearAuth: () => {

@@ -208,6 +208,177 @@ def test_optimizer_objectives_have_distinct_deterministic_ordering() -> None:
     assert balanced.winner.config["generation"]["max_tokens"] == 512
 
 
+def _compiled_candidate(baseline: Mapping[str, Any], *, prompt: str, patch_id: str) -> Any:
+    from audio_graphy.services.tag_governance import InjectedCandidate
+    from audio_graphy.services.tag_harness_runtime import materialize_trial_candidate
+
+    return InjectedCandidate(
+        mutation=f"generation.prompt_template=builtin#{patch_id}",
+        config=materialize_trial_candidate(
+            dict(baseline),
+            prompt_mode="replace",
+            prompt_template=prompt,
+        ),
+        provenance={"prompt_artifact_id": 7, "patch_ids": [patch_id]},
+    )
+
+
+def test_injected_candidates_survive_the_max_candidates_ceiling() -> None:
+    """The sweep must be truncated before the compiled prompts a run exists to test."""
+
+    from audio_graphy.services.tag_governance import _bounded_candidate_configs
+
+    baseline = {
+        "generation": {"max_tokens": 2048, "prompt_template": "基线规则"},
+        "output": {"review_threshold": 0.7, "thresholds": {"intent": 0.7}},
+    }
+    injected = [
+        _compiled_candidate(baseline, prompt="编译产物 A", patch_id="a1"),
+        _compiled_candidate(baseline, prompt="编译产物 B", patch_id="b2"),
+    ]
+
+    unbounded = _bounded_candidate_configs(baseline, extra_candidates=injected)
+    assert len(unbounded) > 3, "the mechanical sweep should still dominate the envelope"
+
+    truncated = _bounded_candidate_configs(baseline, extra_candidates=injected)[:3]
+    mutations = [mutation for mutation, _config in truncated]
+    assert mutations[0] == "baseline"
+    assert mutations[1:] == [
+        "generation.prompt_template=builtin#a1",
+        "generation.prompt_template=builtin#b2",
+    ]
+    prompts = [config["generation"]["prompt_template"] for _mutation, config in truncated]
+    assert prompts == ["基线规则", "编译产物 A", "编译产物 B"]
+
+
+def test_injected_candidate_order_is_independent_of_caller_ordering() -> None:
+    from audio_graphy.services.tag_governance import _bounded_candidate_configs
+
+    baseline = {"generation": {"max_tokens": 2048, "prompt_template": "基线规则"}}
+    first = _compiled_candidate(baseline, prompt="编译产物 A", patch_id="a1")
+    second = _compiled_candidate(baseline, prompt="编译产物 B", patch_id="b2")
+
+    forward = _bounded_candidate_configs(baseline, extra_candidates=[first, second])
+    reverse = _bounded_candidate_configs(baseline, extra_candidates=[second, first])
+
+    assert forward == reverse
+
+
+def test_injected_candidates_respect_materialized_dimensions() -> None:
+    """An executor that cannot materialize generation must not be handed prompt work."""
+
+    from audio_graphy.services.tag_governance import _bounded_candidate_configs
+
+    baseline = {"generation": {"max_tokens": 2048, "prompt_template": "基线规则"}}
+    injected = [_compiled_candidate(baseline, prompt="编译产物", patch_id="a1")]
+
+    configs = _bounded_candidate_configs(
+        baseline,
+        materialized_dimensions=frozenset({"output"}),
+        extra_candidates=injected,
+    )
+
+    assert all("prompt_template" not in mutation for mutation, _config in configs)
+
+
+def _manifest_kwargs() -> dict[str, Any]:
+    return {
+        "dataset_snapshot_hash": "8" * 64,
+        "baseline_tagger_version_id": 12,
+        "baseline_config_checksum": "c" * 64,
+        "schema_checksum": "d" * 64,
+        "candidate_checksums": ["e" * 64],
+        "gold_inputs": [{"gold_label_id": 1, "input_hash": "f" * 64}],
+    }
+
+
+def test_search_manifest_is_unchanged_without_injection() -> None:
+    """A run admitted before the prompt compiler must resume against the same checksum."""
+
+    from audio_graphy.services.tag_governance import _search_manifest_payload
+
+    payload = _search_manifest_payload(**_manifest_kwargs())
+
+    assert "injected_candidates" not in payload
+    assert set(payload) == {
+        "dataset_snapshot_hash",
+        "baseline_tagger_version_id",
+        "baseline_config_checksum",
+        "schema_checksum",
+        "candidate_checksums",
+        "gold_inputs",
+        "parser_version",
+        "postprocessor_version",
+        "cache_recipe_version",
+    }
+
+
+def test_search_manifest_records_injection_provenance() -> None:
+    from audio_graphy.services.tag_governance import (
+        _search_manifest_payload,
+        canonical_checksum,
+    )
+
+    baseline = {"generation": {"max_tokens": 2048, "prompt_template": "基线规则"}}
+    first = _compiled_candidate(baseline, prompt="编译产物 A", patch_id="a1")
+    second = _compiled_candidate(baseline, prompt="编译产物 B", patch_id="b2")
+
+    forward = _search_manifest_payload(
+        **_manifest_kwargs(),
+        extra_candidates=[first, second],
+    )
+    reverse = _search_manifest_payload(
+        **_manifest_kwargs(),
+        extra_candidates=[second, first],
+    )
+
+    assert forward == reverse, "manifest must not depend on caller ordering"
+    assert [item["mutation"] for item in forward["injected_candidates"]] == [
+        "generation.prompt_template=builtin#a1",
+        "generation.prompt_template=builtin#b2",
+    ]
+    assert forward["injected_candidates"][0]["provenance"] == {
+        "prompt_artifact_id": 7,
+        "patch_ids": ["a1"],
+    }
+    assert canonical_checksum(forward) != canonical_checksum(
+        _search_manifest_payload(**_manifest_kwargs())
+    )
+
+
+def test_bounded_search_evaluates_injected_candidates() -> None:
+    from audio_graphy.services.tag_governance import bounded_harness_search
+
+    baseline = {"generation": {"max_tokens": 2048, "prompt_template": "基线规则"}}
+    compiled_prompt = "编译产物：仅在出现明确金额时输出价格标签"
+
+    def evaluator(
+        candidate: dict[str, Any],
+        _samples: list[dict[str, Any]],
+    ) -> dict[str, float | bool]:
+        is_compiled = candidate["generation"]["prompt_template"] == compiled_prompt
+        return {
+            "feasible": True,
+            "quality_delta": 0.5 if is_compiled else 0.0,
+            "review_rate_delta": 0.0,
+            "p95_latency_delta": 0.0,
+            "cost_delta": 0.0,
+        }
+
+    result = bounded_harness_search(
+        baseline_config=baseline,
+        feedback_samples=[],
+        evaluator=evaluator,
+        objective_policy="quality_first",
+        extra_candidates=[
+            _compiled_candidate(baseline, prompt=compiled_prompt, patch_id="a1")
+        ],
+    )
+
+    assert result.winner.mutation == "generation.prompt_template=builtin#a1"
+    assert result.winner.config["generation"]["prompt_template"] == compiled_prompt
+
+
 @pytest.mark.asyncio
 async def test_async_trial_executor_receives_only_materialized_dimensions_and_real_usage() -> None:
     from audio_graphy.services.tag_governance import execute_harness_trials
@@ -429,6 +600,217 @@ async def test_tag_extractor_trial_executor_replays_frozen_subjects_with_real_us
     assert metrics["critical_recall"] == 1.0
     assert metrics["critical_recall_lcb"] < 0.95
     assert metrics["feasible"] is False
+    assert metrics["efficiency_envelope"] == "token_reduction_v1"
+
+
+def _grown_prompt_predictor(*, provider_calls: int) -> Any:
+    """A candidate that spends more tokens than the baseline, as a longer prompt does."""
+
+    from types import SimpleNamespace
+
+    class Predictor:
+        async def predict_materialized_frozen_input(self, **kwargs: Any) -> Any:
+            del kwargs
+            return SimpleNamespace(
+                assignments=(
+                    {
+                        "tag_key": "intent",
+                        "tag_value": "purchase",
+                        "confidence": 0.9,
+                        "evidence_refs": [{"segment_id": 1}],
+                    },
+                ),
+                review_items=(),
+                latency_ms=25,
+                provider_input_tokens=130,
+                provider_output_tokens=20,
+                reused_input_tokens=0,
+                reused_output_tokens=0,
+                provider_calls=provider_calls,
+                cache_hits=0,
+                strong_escalations=0,
+                cost_microunits=22,
+            )
+
+    return Predictor()
+
+
+def _grown_prompt_sample() -> dict[str, Any]:
+    return {
+        "tenant_id": "chang_an",
+        "baseline_tagger_version_id": 40,
+        "subject_type": "dialogue_unit",
+        "subject_id": 10,
+        "tag_key": "intent",
+        "gold_value": "purchase",
+        "truth_state": "present",
+        "split": "validation",
+        "is_critical": True,
+        "baseline_predicted_value": "browse",
+        "baseline_is_correct": False,
+        "input_snapshot": {
+            "subject_type": "dialogue_unit",
+            "dialogue_unit_id": 10,
+            "reception_id": 20,
+            "schema_version_id": 30,
+            "schema_checksum": "a" * 64,
+            "scenario": "automotive",
+            "transcript": "客户决定购买",
+            "dialogue_unit_version": 1,
+            "segments": [],
+        },
+        "harness_execution_id": 50,
+        "provider_tokens": 140,
+        "provider_cost_microunits": 20,
+        "provider_cold_cost_microunits": 20,
+        "provider_input_tokens": 110,
+        "provider_output_tokens": 30,
+        "reused_input_tokens": 0,
+        "reused_output_tokens": 0,
+        "provider_calls": 1,
+        "cache_hits": 0,
+        "unknown_billed_tokens": 0,
+        "review_item_count": 0,
+        "baseline_reviewed": False,
+        "provider_latency_ms": 30,
+    }
+
+
+@pytest.mark.asyncio
+async def test_trial_reports_per_label_metrics_and_flipped_subjects() -> None:
+    """The replay comparison view needs to name what regressed, not just an F1 delta."""
+
+    from types import SimpleNamespace
+
+    from audio_graphy.services.tag_extractor import TagExtractorHarnessTrialExecutor
+
+    class Predictor:
+        async def predict_materialized_frozen_input(self, **kwargs: Any) -> Any:
+            subject_id = int(kwargs["input_snapshot"]["dialogue_unit_id"])
+            # Subject 10 gets fixed, subject 11 gets broken by the candidate.
+            tag_value = "purchase" if subject_id == 10 else "browse"
+            return SimpleNamespace(
+                assignments=(
+                    {
+                        "tag_key": "intent",
+                        "tag_value": tag_value,
+                        "confidence": 0.9,
+                        "evidence_refs": [{"segment_id": 1}],
+                    },
+                ),
+                review_items=(),
+                latency_ms=25,
+                provider_input_tokens=80,
+                provider_output_tokens=20,
+                reused_input_tokens=0,
+                reused_output_tokens=0,
+                provider_calls=1,
+                cache_hits=0,
+                strong_escalations=0,
+                cost_microunits=15,
+            )
+
+    def sample(*, subject_id: int, baseline_value: str, baseline_correct: bool) -> dict[str, Any]:
+        payload = _grown_prompt_sample()
+        payload["subject_id"] = subject_id
+        payload["input_snapshot"] = {
+            **payload["input_snapshot"],
+            "dialogue_unit_id": subject_id,
+        }
+        payload["baseline_predicted_value"] = baseline_value
+        payload["baseline_is_correct"] = baseline_correct
+        return payload
+
+    executor = TagExtractorHarnessTrialExecutor(Predictor())  # type: ignore[arg-type]
+    metrics = await executor.execute_trial(
+        {"generation": {"prompt_template": "候选提示词", "max_tokens": 256}},
+        [
+            sample(subject_id=10, baseline_value="browse", baseline_correct=False),
+            sample(subject_id=11, baseline_value="purchase", baseline_correct=True),
+        ],
+    )
+
+    assert "intent" in metrics["label_metrics"]
+    assert "intent" in metrics["baseline_label_metrics"]
+    assert metrics["flip_total"] == 2
+    flips = metrics["flips"]
+    assert [flip["direction"] for flip in flips] == ["broken", "fixed"]
+    assert flips[0]["subject_id"] == 11
+    assert flips[0]["gold_value"] == "purchase"
+    assert flips[0]["candidate_value"] == "browse"
+    assert flips[1]["subject_id"] == 10
+    assert flips[1]["candidate_value"] == "purchase"
+    assert all("transcript" not in flip for flip in flips)
+
+
+@pytest.mark.asyncio
+async def test_default_envelope_rejects_a_prompt_that_grew() -> None:
+    """The historical thresholds veto any candidate that spends more, however good."""
+
+    from audio_graphy.services.tag_extractor import TagExtractorHarnessTrialExecutor
+
+    executor = TagExtractorHarnessTrialExecutor(
+        _grown_prompt_predictor(provider_calls=1),  # type: ignore[arg-type]
+    )
+
+    metrics = await executor.execute_trial(
+        {"generation": {"prompt_template": "长得多的候选提示词", "max_tokens": 256}},
+        [_grown_prompt_sample()],
+    )
+
+    assert metrics["cold_token_reduction"] < 0
+    assert metrics["efficiency_gate_results"]["cold_token_reduction"] is False
+    assert metrics["efficiency_gate_results"]["cold_cost_reduction"] is False
+    assert metrics["efficiency_gate_passed"] is False
+    assert metrics["efficiency_envelope"] == "token_reduction_v1"
+
+
+@pytest.mark.asyncio
+async def test_quality_uplift_envelope_admits_a_prompt_that_grew() -> None:
+    """Opting into the uplift envelope lets a longer prompt be measured on quality."""
+
+    from audio_graphy.services.tag_extractor import (
+        QUALITY_UPLIFT_V1,
+        TagExtractorHarnessTrialExecutor,
+    )
+
+    executor = TagExtractorHarnessTrialExecutor(
+        _grown_prompt_predictor(provider_calls=1),  # type: ignore[arg-type]
+        efficiency_envelope=QUALITY_UPLIFT_V1,
+    )
+
+    metrics = await executor.execute_trial(
+        {"generation": {"prompt_template": "长得多的候选提示词", "max_tokens": 256}},
+        [_grown_prompt_sample()],
+    )
+
+    assert metrics["cold_token_reduction"] < 0
+    assert metrics["efficiency_gate_passed"] is True
+    assert metrics["efficiency_envelope"] == "quality_uplift_v1"
+
+
+@pytest.mark.asyncio
+async def test_quality_uplift_envelope_still_refuses_extra_provider_calls() -> None:
+    """Relaxing cost must not let a prompt grow until the input budget splits batches."""
+
+    from audio_graphy.services.tag_extractor import (
+        QUALITY_UPLIFT_V1,
+        TagExtractorHarnessTrialExecutor,
+    )
+
+    executor = TagExtractorHarnessTrialExecutor(
+        _grown_prompt_predictor(provider_calls=2),  # type: ignore[arg-type]
+        efficiency_envelope=QUALITY_UPLIFT_V1,
+    )
+
+    metrics = await executor.execute_trial(
+        {"generation": {"prompt_template": "长得多的候选提示词", "max_tokens": 256}},
+        [_grown_prompt_sample()],
+    )
+
+    assert metrics["provider_call_delta"] > 0
+    assert metrics["efficiency_gate_results"]["provider_calls_nonincrease"] is False
+    assert metrics["efficiency_gate_passed"] is False
 
 
 @pytest.mark.asyncio

@@ -138,6 +138,16 @@ export default defineConfig(async ({ mode }) => {
                 target: resolveApiProxyTarget(environment),
                 changeOrigin: true,
               },
+              // The backend hands out ws_url as "/ws/stream?ticket=..." with no
+              // /api prefix, and the client resolves it against window.origin —
+              // so under `npm run dev` it lands on the Vite server. Without this
+              // entry (and ws: true, which opts the upgrade handshake in) live
+              // capture can never connect locally.
+              "/ws": {
+                target: resolveApiProxyTarget(environment),
+                changeOrigin: true,
+                ws: true,
+              },
             },
     },
     css: {

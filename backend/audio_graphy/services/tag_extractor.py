@@ -10,7 +10,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from random import Random
 from time import perf_counter
-from typing import Any, ClassVar, cast
+from typing import Any, ClassVar, Literal, cast
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -70,6 +70,54 @@ _MIN_COLD_COST_REDUCTION = 0.15
 _MAX_P95_LATENCY_REGRESSION = 0.05
 _MAX_REVIEW_RATE_INCREASE = 0.01
 _EFFICIENCY_BOOTSTRAP_ITERATIONS = 2_000
+_MAX_REPORTED_FLIPS = 200
+
+
+@dataclass(frozen=True, slots=True)
+class EfficiencyEnvelope:
+    """Bounds the efficiency half of trial feasibility.
+
+    The quality gate is deliberately not part of this envelope: relaxing cost never
+    relaxes correctness. Only the cost-shaped thresholds move, so a candidate that
+    trades tokens for accuracy can still be measured instead of being rejected before
+    its quality is ever compared against the baseline.
+    """
+
+    key: Literal["token_reduction_v1", "quality_uplift_v1"]
+    min_cold_token_reduction: float
+    min_paired_token_reduction_lcb: float
+    min_cold_cost_reduction: float
+    max_p95_latency_regression: float
+    max_review_rate_increase: float
+    require_provider_calls_nonincrease: bool
+
+
+TOKEN_REDUCTION_V1 = EfficiencyEnvelope(
+    key="token_reduction_v1",
+    min_cold_token_reduction=_MIN_COLD_TOKEN_REDUCTION,
+    min_paired_token_reduction_lcb=_MIN_PAIRED_TOKEN_REDUCTION_LCB,
+    min_cold_cost_reduction=_MIN_COLD_COST_REDUCTION,
+    max_p95_latency_regression=_MAX_P95_LATENCY_REGRESSION,
+    max_review_rate_increase=_MAX_REVIEW_RATE_INCREASE,
+    require_provider_calls_nonincrease=True,
+)
+"""The historical envelope: a candidate must pay for itself in tokens and cost."""
+
+QUALITY_UPLIFT_V1 = EfficiencyEnvelope(
+    key="quality_uplift_v1",
+    min_cold_token_reduction=-0.15,
+    min_paired_token_reduction_lcb=-0.25,
+    min_cold_cost_reduction=-0.15,
+    max_p95_latency_regression=_MAX_P95_LATENCY_REGRESSION,
+    max_review_rate_increase=_MAX_REVIEW_RATE_INCREASE,
+    require_provider_calls_nonincrease=True,
+)
+"""Allows a prompt to grow by up to 15%, still refusing extra provider round-trips."""
+
+EFFICIENCY_ENVELOPES: dict[str, EfficiencyEnvelope] = {
+    TOKEN_REDUCTION_V1.key: TOKEN_REDUCTION_V1,
+    QUALITY_UPLIFT_V1.key: QUALITY_UPLIFT_V1,
+}
 
 
 class _TagOutputFormatError(AssignmentValidationError):
@@ -4292,6 +4340,7 @@ class TagExtractorHarnessTrialExecutor:
     """Execute optimizer candidates against immutable gold input snapshots."""
 
     extractor: TagExtractor
+    efficiency_envelope: EfficiencyEnvelope = TOKEN_REDUCTION_V1
     materialized_dimensions: ClassVar[frozenset[str]] = frozenset(
         {"generation", "orchestration", "output"}
     )
@@ -4615,6 +4664,7 @@ class TagExtractorHarnessTrialExecutor:
 
         validation_rows: list[tuple[str, Any, Any]] = []
         baseline_rows: list[tuple[str, Any, Any]] = []
+        flips: list[dict[str, Any]] = []
         critical_total = 0
         critical_correct = 0
         evidence_required_total = 0
@@ -4695,6 +4745,30 @@ class TagExtractorHarnessTrialExecutor:
                 )
                 validation_rows.append((tag_key, actual, predicted))
                 baseline_rows.append((tag_key, actual, baseline_predicted))
+                truth_identity = self._value_identity(actual)
+                candidate_correct = truth_identity == self._value_identity(predicted)
+                baseline_correct = (
+                    truth_identity == self._value_identity(baseline_predicted)
+                )
+                if candidate_correct != baseline_correct:
+                    flips.append(
+                        {
+                            "subject_type": identity[2],
+                            "subject_id": identity[3],
+                            "tag_key": tag_key,
+                            "gold_value": deepcopy(sample.get("gold_value")),
+                            "baseline_value": deepcopy(
+                                sample.get("baseline_predicted_value")
+                            ),
+                            "candidate_value": deepcopy(
+                                None
+                                if isinstance(predicted, Mapping)
+                                and "__truth_state__" in predicted
+                                else predicted
+                            ),
+                            "direction": "fixed" if candidate_correct else "broken",
+                        }
+                    )
                 validation_count += 1
                 gold_labels.append(
                     {
@@ -4986,25 +5060,30 @@ class TagExtractorHarnessTrialExecutor:
             baseline_review_count / validation_count if validation_count else 0.0
         )
         review_rate_delta = review_rate - baseline_review_rate
+        envelope = self.efficiency_envelope
         efficiency_gate_results = {
             "measurement_complete": measurement_complete,
             "cold_token_reduction": (
-                cold_token_reduction >= _MIN_COLD_TOKEN_REDUCTION
+                cold_token_reduction >= envelope.min_cold_token_reduction
             ),
             "paired_token_reduction_lcb": (
                 paired_token_reduction_lcb
-                >= _MIN_PAIRED_TOKEN_REDUCTION_LCB
+                >= envelope.min_paired_token_reduction_lcb
             ),
             "cold_cost_reduction": (
-                cold_cost_reduction >= _MIN_COLD_COST_REDUCTION
+                cold_cost_reduction >= envelope.min_cold_cost_reduction
             ),
             "p95_latency_regression": (
-                p95_latency_regression_rate <= _MAX_P95_LATENCY_REGRESSION
+                p95_latency_regression_rate <= envelope.max_p95_latency_regression
             ),
             "review_rate_increase": (
-                review_rate_delta <= _MAX_REVIEW_RATE_INCREASE
+                review_rate_delta <= envelope.max_review_rate_increase
             ),
-            "provider_calls_nonincrease": provider_call_delta <= 0,
+            "provider_calls_nonincrease": (
+                provider_call_delta <= 0
+                if envelope.require_provider_calls_nonincrease
+                else True
+            ),
         }
         efficiency_gate_passed = all(efficiency_gate_results.values())
         quality_gate_passed = (
@@ -5053,6 +5132,20 @@ class TagExtractorHarnessTrialExecutor:
             "macro_f1": candidate_macro_f1,
             "baseline_macro_f1": baseline_macro_f1,
             "quality_delta": candidate_macro_f1 - baseline_macro_f1,
+            "label_metrics": deepcopy(candidate_summary.label_metrics),
+            "baseline_label_metrics": deepcopy(baseline_summary.label_metrics),
+            # Regressions first: a reviewer needs to see what the candidate broke
+            # before being told what it fixed.
+            "flips": sorted(
+                flips,
+                key=lambda item: (
+                    item["direction"] != "broken",
+                    str(item["subject_type"]),
+                    int(item["subject_id"]),
+                    str(item["tag_key"]),
+                ),
+            )[:_MAX_REPORTED_FLIPS],
+            "flip_total": len(flips),
             "critical_recall": critical_recall,
             "critical_recall_lcb": critical_recall_lcb,
             "evidence_coverage": evidence_coverage,
@@ -5073,6 +5166,7 @@ class TagExtractorHarnessTrialExecutor:
                 batch.strong_escalations for batch in batches
             ),
             "unknown_billed_tokens": unknown_billed_tokens,
+            "efficiency_envelope": envelope.key,
             "quality_gate_passed": quality_gate_passed,
             "efficiency_gate_results": efficiency_gate_results,
             "efficiency_gate_passed": efficiency_gate_passed,

@@ -64,6 +64,12 @@ _REGISTERED_TOOLS = ("rule_engine", "weak_llm", "strong_llm")
 _SOURCE_PRIORITY = {"rule": 0, "critic": 1, "weak": 2}
 _OUTPUT_TOKEN_BUCKETS = (256, 512, 1024, 2048)
 _PROMPT_DELTA_TOKEN_BUDGET = 512
+_PROMPT_TEMPLATE_TOKEN_CEILING = 3_072
+_PROMPT_TEMPLATE_CHARACTER_CEILING = 64_000
+_MAX_INPUT_TOKENS = 12_000
+
+PromptMode = Literal["append", "replace"]
+_PROMPT_MODES = frozenset({"append", "replace"})
 _BUDGET_POLICY_FIELDS = frozenset(
     {
         "max_provider_tokens",
@@ -431,14 +437,63 @@ def estimate_prompt_tokens(value: str) -> int:
     return max(character_proxy, byte_proxy)
 
 
+def _normalized_replacement_template(
+    *,
+    prompt_mode: PromptMode,
+    prompt_delta: str,
+    prompt_template: str | None,
+    max_prompt_template_tokens: int,
+) -> str | None:
+    """Validate the replace-mode prompt and return it, or None for append mode."""
+
+    if prompt_mode == "append":
+        if prompt_template is not None:
+            raise HarnessSpecError("prompt template is only accepted in replace mode")
+        return None
+    if prompt_delta:
+        raise HarnessSpecError("prompt delta cannot be combined with replace mode")
+    if prompt_template is None:
+        raise HarnessSpecError("replace mode requires a prompt template")
+    if not isinstance(prompt_template, str):
+        raise HarnessSpecError("generation.prompt_template must be a string")
+    if (
+        isinstance(max_prompt_template_tokens, bool)
+        or not isinstance(max_prompt_template_tokens, int)
+        or not 1 <= max_prompt_template_tokens <= _MAX_INPUT_TOKENS
+    ):
+        raise HarnessSpecError(
+            f"prompt template budget must be between 1 and {_MAX_INPUT_TOKENS} tokens"
+        )
+    normalized = prompt_template.strip()
+    if not normalized:
+        raise HarnessSpecError("replace mode requires a non-empty prompt template")
+    if len(normalized) > _PROMPT_TEMPLATE_CHARACTER_CEILING:
+        raise HarnessSpecError(
+            f"prompt template exceeds {_PROMPT_TEMPLATE_CHARACTER_CEILING} characters"
+        )
+    if estimate_prompt_tokens(normalized) > max_prompt_template_tokens:
+        raise HarnessSpecError(
+            f"prompt template exceeds the {max_prompt_template_tokens}-token proxy budget"
+        )
+    return normalized
+
+
 def materialize_trial_candidate(
     baseline_config: Mapping[str, Any],
     *,
     prompt_delta: str = "",
     rule_bundle: Mapping[str, Any] | None = None,
     max_prompt_delta_tokens: int = _PROMPT_DELTA_TOKEN_BUDGET,
+    prompt_mode: PromptMode = "append",
+    prompt_template: str | None = None,
+    max_prompt_template_tokens: int = _PROMPT_TEMPLATE_TOKEN_CEILING,
 ) -> dict[str, Any]:
-    """Freeze prompt/rule changes into the exact config evaluated by a trial."""
+    """Freeze prompt/rule changes into the exact config evaluated by a trial.
+
+    ``append`` keeps the historical bounded-delta behaviour. ``replace`` swaps the
+    whole policy section so a compiled prompt (rewritten instruction plus inlined
+    demonstrations) can be evaluated without being squeezed into a 512-token delta.
+    """
 
     if (
         isinstance(max_prompt_delta_tokens, bool)
@@ -446,9 +501,17 @@ def materialize_trial_candidate(
         or not 1 <= max_prompt_delta_tokens <= _PROMPT_DELTA_TOKEN_BUDGET
     ):
         raise HarnessSpecError("prompt delta budget must be between 1 and 512 tokens")
+    if prompt_mode not in _PROMPT_MODES:
+        raise HarnessSpecError("prompt mode must be append or replace")
     if not isinstance(prompt_delta, str):
         raise HarnessSpecError("prompt delta must be a string")
     normalized_delta = prompt_delta.strip()
+    normalized_template = _normalized_replacement_template(
+        prompt_mode=prompt_mode,
+        prompt_delta=normalized_delta,
+        prompt_template=prompt_template,
+        max_prompt_template_tokens=max_prompt_template_tokens,
+    )
     token_estimate = estimate_prompt_tokens(normalized_delta)
     if token_estimate > max_prompt_delta_tokens:
         raise HarnessSpecError(
@@ -461,7 +524,9 @@ def materialize_trial_candidate(
     current_prompt = generation.get("prompt_template", "")
     if not isinstance(current_prompt, str):
         raise HarnessSpecError("generation.prompt_template must be a string")
-    if normalized_delta:
+    if normalized_template is not None:
+        generation["prompt_template"] = normalized_template
+    elif normalized_delta:
         generation["prompt_template"] = (
             f"{current_prompt.rstrip()}\n\n{normalized_delta}"
             if current_prompt.strip()

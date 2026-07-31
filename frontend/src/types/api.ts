@@ -65,7 +65,8 @@ export type RecordingStatus =
 export interface RecordingListItem {
   id: number;
   store_id: string;
-  agent_name: string;
+  /** Null until the agent has been resolved for the recording. */
+  agent_name: string | null;
   status: RecordingStatus;
   pipeline_state: string;
   recorded_at: string | null;
@@ -84,7 +85,8 @@ export interface RecordingResponse {
   id: number;
   tenant_id: string;
   store_id: string;
-  agent_name: string;
+  /** Null until the agent has been resolved for the recording. */
+  agent_name: string | null;
   customer_hash: string | null;
   status: RecordingStatus;
   pipeline_state: string;
@@ -134,10 +136,12 @@ export interface GraphNodeResponse {
   id: string;
   label: string;
   type: string;
-  description: string;
+  description: string | null;
   degree: number;
   source_ids: string[];
   recording_ids: number[];
+  /** [earliest, latest] as ISO 8601, or null when no recording carries a timestamp. */
+  recorded_at_range: string[] | null;
 }
 
 export interface GraphEdgeResponse {
@@ -145,7 +149,7 @@ export interface GraphEdgeResponse {
   target: string;
   relation: string;
   weight: number;
-  confidence: string;
+  confidence: EdgeConfidence;
   confidence_score: number | null;
   source_ids: string[];
 }
@@ -227,14 +231,21 @@ export interface PromptResponse extends PromptListItem {
 // Query
 // ============================================================
 
+/** Provenance strength of the edge a citation came from.
+ *
+ * Mirrors `EdgeConfidence` in backend/audio_graphy/adapters/protocols.py.
+ * DEPRECATED is reachable: graph compression downgrades AMBIGUOUS edges to it.
+ */
+export type EdgeConfidence = "EXTRACTED" | "INFERRED" | "AMBIGUOUS" | "DEPRECATED";
+
 export interface Citation {
   entity: string;
-  chunk_id: string | null;
+  chunk_id: number;
   segment_ids: number[];
-  recording_id: number | null;
+  recording_id: number;
   recorded_at: string | null;
-  transcript_snippet: string | null;
-  confidence: number;
+  transcript_snippet: string;
+  confidence: EdgeConfidence;
 }
 
 export interface RetrievalStats {

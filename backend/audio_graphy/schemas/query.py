@@ -9,6 +9,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field, model_validator
 
+from audio_graphy.adapters.protocols import EdgeConfidence
+
 
 class TimeRange(BaseModel):
     """Time range filter for queries."""
@@ -41,7 +43,12 @@ class Citation(BaseModel):
     recording_id: int
     recorded_at: datetime | None = None
     transcript_snippet: str
-    confidence: str = Field(description="EXTRACTED / INFERRED / AMBIGUOUS")
+    confidence: EdgeConfidence = Field(
+        description=(
+            "Provenance strength of the edge this citation came from. "
+            "DEPRECATED is reachable: graph compression downgrades AMBIGUOUS edges to it."
+        )
+    )
 
 
 class RetrievalStats(BaseModel):

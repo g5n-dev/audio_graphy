@@ -1511,10 +1511,71 @@ def enforce_sealed_holdout_access(
         )
 
 
+@dataclass(frozen=True, slots=True)
+class InjectedCandidate:
+    """A candidate authored outside the mechanical sweep, e.g. by a prompt compiler.
+
+    The sweep in :func:`_bounded_candidate_configs` stays a pure function of the
+    baseline: injected configs arrive already materialized, carry their own mutation
+    label, and record where they came from so a search manifest remains reproducible.
+    """
+
+    mutation: str
+    config: Mapping[str, Any]
+    provenance: Mapping[str, Any]
+
+
+def _search_manifest_payload(
+    *,
+    dataset_snapshot_hash: str,
+    baseline_tagger_version_id: int,
+    baseline_config_checksum: str,
+    schema_checksum: str,
+    candidate_checksums: Sequence[str],
+    gold_inputs: Sequence[Mapping[str, Any]],
+    extra_candidates: Sequence[InjectedCandidate] = (),
+) -> dict[str, Any]:
+    """Describe everything a search replay must reproduce, byte for byte.
+
+    ``injected_candidates`` is recorded only when injection is actually used, so a
+    run created before the prompt compiler existed keeps the manifest checksum it was
+    already admitted and resumed against.
+    """
+
+    payload: dict[str, Any] = {
+        "dataset_snapshot_hash": dataset_snapshot_hash,
+        "baseline_tagger_version_id": baseline_tagger_version_id,
+        "baseline_config_checksum": baseline_config_checksum,
+        "schema_checksum": schema_checksum,
+        "candidate_checksums": list(candidate_checksums),
+        "gold_inputs": [dict(item) for item in gold_inputs],
+        "parser_version": "tag-assignment-parser-v2",
+        "postprocessor_version": "tag-policy-v2",
+        "cache_recipe_version": "llm-recipe-v2",
+    }
+    if extra_candidates:
+        payload["injected_candidates"] = [
+            {
+                "mutation": injected.mutation,
+                "checksum": canonical_checksum(dict(injected.config)),
+                "provenance": dict(injected.provenance),
+            }
+            for injected in sorted(
+                extra_candidates,
+                key=lambda item: (
+                    item.mutation,
+                    canonical_checksum(dict(item.config)),
+                ),
+            )
+        ]
+    return payload
+
+
 def _bounded_candidate_configs(
     baseline_config: Mapping[str, Any],
     *,
     materialized_dimensions: frozenset[str] | None = None,
+    extra_candidates: Sequence[InjectedCandidate] = (),
 ) -> list[tuple[str, dict[str, Any]]]:
     raw = deepcopy(dict(baseline_config))
     defaults: dict[str, dict[str, Any]] = {
@@ -1609,6 +1670,16 @@ def _bounded_candidate_configs(
         if checksum not in seen:
             seen.add(checksum)
             candidates.append((mutation, materialize_trial_candidate(candidate)))
+
+    # Injected candidates are enumerated immediately after the baseline so the
+    # max_candidates ceiling truncates the mechanical sweep rather than the compiled
+    # prompts that a run was started to evaluate. Sorting keeps the order deterministic
+    # regardless of how the caller assembled the list.
+    for injected in sorted(
+        extra_candidates,
+        key=lambda item: (item.mutation, canonical_checksum(dict(item.config))),
+    ):
+        add(injected.mutation, deepcopy(dict(injected.config)))
 
     # Context examples/neighbours and semantic memory are intentionally absent:
     # the serving path records those sections but does not materialize retrieval.
@@ -1966,6 +2037,7 @@ def bounded_harness_search(
     ],
     max_candidates: int = 32,
     objective_policy: str = "balanced",
+    extra_candidates: Sequence[InjectedCandidate] = (),
 ) -> HarnessSearchResult:
     """Run a deterministic, one-dimension-at-a-time search with a hard 32-trial cap."""
 
@@ -1974,7 +2046,10 @@ def bounded_harness_search(
     eligible, excluded_count = _eligible_harness_samples(feedback_samples)
     trials: list[HarnessOptimizationTrial] = []
     for index, (mutation, config) in enumerate(
-        _bounded_candidate_configs(baseline_config)[:max_candidates]
+        _bounded_candidate_configs(
+            baseline_config,
+            extra_candidates=extra_candidates,
+        )[:max_candidates]
     ):
         raw_metrics = dict(evaluator(deepcopy(config), deepcopy(eligible)))
         reward = OptimizationReward(
@@ -2017,6 +2092,7 @@ async def execute_harness_trials(
     settle_budget: TrialBudgetSettle | None = None,
     optimization_run_id: int | None = None,
     optimization_trial_ids: Sequence[int] | None = None,
+    extra_candidates: Sequence[InjectedCandidate] = (),
 ) -> HarnessSearchResult:
     """Execute materialized candidates through the worker's real trial boundary."""
 
@@ -2027,6 +2103,7 @@ async def execute_harness_trials(
     configs = _bounded_candidate_configs(
         baseline_config,
         materialized_dimensions=trial_executor.materialized_dimensions,
+        extra_candidates=extra_candidates,
     )[:max_candidates]
     budget_limits = dict(budget or {})
     max_provider_tokens = budget_limits.get("max_provider_tokens")
@@ -8976,6 +9053,7 @@ class TagGovernanceService:
         optimization_run_id: int | None = None,
         worker_id: str | None = None,
         error_samples: Sequence[Mapping[str, Any]] | None = None,
+        extra_candidates: Sequence[InjectedCandidate] = (),
     ) -> tuple[TaggerVersion, dict[str, Any]]:
         """Create a deterministic draft from train errors and validation scores.
 
@@ -9577,6 +9655,7 @@ class TagGovernanceService:
             candidate_envelope = _bounded_candidate_configs(
                 existing_harness_spec,
                 materialized_dimensions=trial_executor.materialized_dimensions,
+                extra_candidates=extra_candidates,
             )[:max_search_candidates]
             if optimization_run is not None:
                 phase_a_trials = list(
@@ -9628,18 +9707,18 @@ class TagGovernanceService:
                         "candidate envelope exceeds the persisted bounded trials"
                     )
                 search_manifest_checksum = canonical_checksum(
-                    {
-                        "dataset_snapshot_hash": str(
+                    _search_manifest_payload(
+                        dataset_snapshot_hash=str(
                             snapshot.dataset_snapshot_hash or snapshot.checksum or ""
                         ),
-                        "baseline_tagger_version_id": int(production.id),
-                        "baseline_config_checksum": str(production.config_checksum),
-                        "schema_checksum": str(schema_version.checksum),
-                        "candidate_checksums": [
+                        baseline_tagger_version_id=int(production.id),
+                        baseline_config_checksum=str(production.config_checksum),
+                        schema_checksum=str(schema_version.checksum),
+                        candidate_checksums=[
                             canonical_checksum(candidate)
                             for _mutation, candidate in candidate_envelope
                         ],
-                        "gold_inputs": [
+                        gold_inputs=[
                             {
                                 "gold_label_id": int(sample["gold_label_id"]),
                                 "input_hash": str(
@@ -9654,10 +9733,8 @@ class TagGovernanceService:
                             }
                             for sample in eligible_feedback_samples
                         ],
-                        "parser_version": "tag-assignment-parser-v2",
-                        "postprocessor_version": "tag-policy-v2",
-                        "cache_recipe_version": "llm-recipe-v2",
-                    }
+                        extra_candidates=extra_candidates,
+                    )
                 )
                 optimization_run.summary = {
                     **dict(optimization_run.summary),

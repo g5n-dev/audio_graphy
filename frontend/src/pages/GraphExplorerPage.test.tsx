@@ -97,6 +97,7 @@ function largeGraph(nodeCount: number): ExploreResponse {
       degree: index % 8,
       source_ids: [],
       recording_ids: [],
+      recorded_at_range: null,
     })),
     edges: [],
     total_nodes: nodeCount,
@@ -411,10 +412,11 @@ describe("GraphExplorerPage performance lifecycle", () => {
         target: "node-1",
         relation: `关系-${index}`,
         weight: 1,
-        confidence: "high",
+        confidence: "EXTRACTED",
         confidence_score: 0.99,
         source_ids: [],
         recording_ids: [],
+        recorded_at_range: null,
       }),
     );
     denseGraph.total_edges = denseGraph.edges.length;
@@ -449,7 +451,7 @@ describe("GraphExplorerPage performance lifecycle", () => {
         target: "node-1",
         relation: "关系-0",
         weight: 1,
-        confidence: "high",
+        confidence: "EXTRACTED",
         confidence_score: 0.99,
         source_ids: [],
       },
@@ -522,6 +524,7 @@ describe("GraphExplorerPage performance lifecycle", () => {
       degree: 3,
       source_ids: [],
       recording_ids: [],
+      recorded_at_range: null,
     };
     const graphData: ExploreResponse = {
       nodes: [entityNode],
@@ -572,6 +575,7 @@ describe("GraphExplorerPage performance lifecycle", () => {
       degree: 1,
       source_ids: [],
       recording_ids: [],
+      recorded_at_range: null,
     };
     const graphData: ExploreResponse = {
       nodes: [entityNode],
@@ -621,6 +625,7 @@ describe("GraphExplorerPage performance lifecycle", () => {
       degree: 2,
       source_ids: [],
       recording_ids: [],
+      recorded_at_range: null,
     };
     const graphData: ExploreResponse = {
       nodes: [entityNode],
@@ -654,6 +659,7 @@ describe("GraphExplorerPage performance lifecycle", () => {
           degree: 1,
           source_ids: [],
           recording_ids: [],
+          recorded_at_range: null,
         },
       ],
       edges: [],

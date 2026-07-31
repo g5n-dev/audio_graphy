@@ -175,6 +175,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
     Public paths (no auth required) are exact allow-list entries:
         - ``/api/v1/auth/login`` and ``/api/v1/auth/refresh``
         - ``/health/readiness`` and ``/health``
+        - ``/metrics`` (Prometheus scrapes without credentials)
         - ``/docs``, ``/openapi.json``, ``/redoc`` and the root page
 
     For all other paths, the middleware:
@@ -196,6 +197,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
             "/api/v1/auth/refresh",
             "/health",
             "/health/readiness",
+            # Prometheus scrapes without credentials. Keep this endpoint off any
+            # public listener — bind it internally or restrict it at the ingress.
+            "/metrics",
             "/docs",
             "/openapi.json",
             "/redoc",

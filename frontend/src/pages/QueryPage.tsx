@@ -7,10 +7,18 @@
 import { useState } from "react";
 import { Card, Input, Button, Typography, List, Tag, Spin, Statistic, Grid } from "@arco-design/web-react";
 import { query as queryApi } from "@/api/services";
-import type { QueryResponse } from "@/types/api";
+import type { EdgeConfidence, QueryResponse } from "@/types/api";
 
 const { Text, Paragraph } = Typography;
 const { Row, Col } = Grid;
+
+/** Citation confidence is a provenance grade, not a probability. */
+const CONFIDENCE_LABEL: Record<EdgeConfidence, { text: string; color: string }> = {
+  EXTRACTED: { text: "原文抽取", color: "green" },
+  INFERRED: { text: "推断", color: "blue" },
+  AMBIGUOUS: { text: "存疑", color: "orange" },
+  DEPRECATED: { text: "已降级", color: "gray" },
+};
 
 export default function QueryPage() {
   const [input, setInput] = useState("");
@@ -111,14 +119,12 @@ export default function QueryPage() {
                     <div style={{ width: "100%" }}>
                       <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 4 }}>
                         <Tag color="blue">{cite.entity}</Tag>
-                        {cite.recording_id && (
-                          <Text style={{ fontSize: 14, color: "#86909c" }}>
-                            录音 #{cite.recording_id}
-                          </Text>
-                        )}
                         <Text style={{ fontSize: 14, color: "#86909c" }}>
-                          置信度: {(cite.confidence * 100).toFixed(1)}%
+                          录音 #{cite.recording_id}
                         </Text>
+                        <Tag color={CONFIDENCE_LABEL[cite.confidence]?.color ?? "gray"}>
+                          {CONFIDENCE_LABEL[cite.confidence]?.text ?? cite.confidence}
+                        </Tag>
                       </div>
                       {cite.transcript_snippet && (
                         <Paragraph style={{ margin: 0, color: "#4e5969", fontSize: 14 }}>

@@ -367,15 +367,29 @@ EVAL_EXAMPLE_DURATION = Histogram(
 
 # Paths that should NOT increment the HTTP_REQUESTS counter. /metrics itself
 # is excluded to avoid recursive growth on every scrape.
-_SKIP_PATHS: frozenset[str] = frozenset({"/metrics", "/health", "/readyz"})
+_SKIP_PATHS: frozenset[str] = frozenset({"/metrics", "/health", "/health/readiness"})
+
+
+def _endpoint_label(request: Request) -> str:
+    """Return a bounded label for the request's endpoint.
+
+    Uses the matched route's template (``/recordings/{recording_id}``) rather
+    than the concrete URL. Labelling by concrete path mints a fresh time series
+    per id, which is how a Prometheus instance runs out of memory.
+
+    Unmatched requests (404s, including scanner traffic) collapse into a single
+    series so they cannot be used to inflate cardinality either.
+    """
+    route = request.scope.get("route")
+    template = getattr(route, "path_format", None) or getattr(route, "path", None)
+    return str(template) if template else "__unmatched__"
 
 
 class MetricsMiddleware(BaseHTTPMiddleware):
-    """Count every HTTP request with method / path / status labels.
+    """Count every HTTP request with method / route-template / status labels.
 
-    Skips ``/metrics`` to avoid inflating its own counter on every scrape,
-    and ``/health`` / ``/readyz`` to keep health-check traffic out of the
-    signal.
+    Skips ``/metrics`` to avoid inflating its own counter on every scrape, and
+    ``/health`` / ``/health/readiness`` to keep probe traffic out of the signal.
     """
 
     async def dispatch(
@@ -387,8 +401,8 @@ class MetricsMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
         duration = time.perf_counter() - start
 
-        path = request.url.path
-        if path not in _SKIP_PATHS:
+        if request.url.path not in _SKIP_PATHS:
+            path = _endpoint_label(request)
             try:
                 HTTP_REQUESTS.labels(
                     request.method,

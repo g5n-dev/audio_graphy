@@ -288,6 +288,68 @@ def test_trial_prompt_delta_rejects_more_than_512_proxy_tokens() -> None:
         )
 
 
+def test_replace_mode_swaps_the_whole_policy_section() -> None:
+    baseline = resolve_harness_spec(_legacy_tagger())
+    compiled = "判定规则：仅在转写中出现明确金额时输出价格标签。\n\n示例：……"
+
+    candidate = materialize_trial_candidate(
+        baseline,
+        prompt_mode="replace",
+        prompt_template=compiled,
+    )
+
+    assert candidate["generation"]["prompt_template"] == compiled
+    assert baseline["generation"]["prompt_template"] == "Return strict JSON."
+
+
+def test_replace_mode_accepts_prompts_beyond_the_append_delta_budget() -> None:
+    """A compiled prompt with inlined demos cannot fit the 512-token delta budget."""
+
+    compiled = "规则。" * 400
+    assert estimate_prompt_tokens(compiled) > 512
+
+    candidate = materialize_trial_candidate(
+        resolve_harness_spec(_legacy_tagger()),
+        prompt_mode="replace",
+        prompt_template=compiled,
+    )
+
+    assert candidate["generation"]["prompt_template"] == compiled
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"prompt_mode": "replace"}, "requires a prompt template"),
+        ({"prompt_mode": "replace", "prompt_template": "   "}, "non-empty"),
+        (
+            {"prompt_mode": "replace", "prompt_template": "x", "prompt_delta": "y"},
+            "cannot be combined",
+        ),
+        ({"prompt_template": "x"}, "only accepted in replace mode"),
+        ({"prompt_mode": "rewrite"}, "append or replace"),
+        (
+            {"prompt_mode": "replace", "prompt_template": "超" * 4_000},
+            "proxy budget",
+        ),
+        (
+            {
+                "prompt_mode": "replace",
+                "prompt_template": "ok",
+                "max_prompt_template_tokens": 12_001,
+            },
+            "must be between 1 and 12000",
+        ),
+    ],
+)
+def test_replace_mode_rejects_unsafe_combinations(
+    kwargs: dict[str, Any],
+    match: str,
+) -> None:
+    with pytest.raises(HarnessSpecError, match=match):
+        materialize_trial_candidate(resolve_harness_spec(_legacy_tagger()), **kwargs)
+
+
 def test_malformed_registered_tools_raises_harness_error() -> None:
     with pytest.raises(HarnessSpecError, match="registered_tools"):
         resolve_harness_spec(

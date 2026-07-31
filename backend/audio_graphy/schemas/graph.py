@@ -9,6 +9,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
+from audio_graphy.adapters.protocols import EdgeConfidence
+
 
 class GraphNodeResponse(BaseModel):
     """A graph node."""
@@ -30,7 +32,12 @@ class GraphEdgeResponse(BaseModel):
     target: str
     relation: str
     weight: float = 1.0
-    confidence: str = Field(description="EXTRACTED / INFERRED / AMBIGUOUS")
+    confidence: EdgeConfidence = Field(
+        description=(
+            "Provenance strength. DEPRECATED is reachable: graph compression "
+            "downgrades AMBIGUOUS edges to it."
+        )
+    )
     confidence_score: float | None = None
     source_ids: list[str] = Field(default_factory=list)
 
