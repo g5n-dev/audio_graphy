@@ -18,8 +18,15 @@ import logging
 import os
 import tempfile
 import threading
+import time
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, cast
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows has no advisory file locking
+    fcntl = None  # type: ignore[assignment]
 
 import networkx as nx
 
@@ -35,6 +42,20 @@ from audio_graphy.core.types import (
 logger = logging.getLogger(__name__)
 
 GRAPHML_FILENAME = "graph_chunk_entity_relation.graphml"
+
+
+class GraphStoreCorruptError(RuntimeError):
+    """The tenant's GraphML file could not be parsed.
+
+    Raised instead of substituting an empty graph, which would be written back
+    over the only copy on the next save.
+    """
+
+    def __init__(self, path: Path, quarantined: Path | None) -> None:
+        self.path = path
+        self.quarantined = quarantined
+        location = f" (moved to {quarantined})" if quarantined else ""
+        super().__init__(f"Corrupt graph store at {path}{location}")
 
 
 def cast_edge_confidence(value: str) -> EdgeConfidence:
@@ -71,6 +92,54 @@ class NetworkXGraphStore:
         # request/pipeline saves run on the application loop. A threading lock
         # therefore protects the publish step across both execution contexts.
         self._save_lock = threading.Lock()
+        # Identity of the bytes this instance last read or wrote, so a save can
+        # tell whether another process published in the meantime.
+        self._file_identity: tuple[int, int] | None = None
+
+    @property
+    def lock_path(self) -> Path:
+        """Advisory lock file guarding cross-process publishes."""
+        return self.graphml_path.with_name(f".{GRAPHML_FILENAME}.lock")
+
+    def _current_file_identity(self) -> tuple[int, int] | None:
+        """(mtime_ns, size) of the published GraphML, or None when absent."""
+        try:
+            stat = self.graphml_path.stat()
+        except OSError:
+            return None
+        return (stat.st_mtime_ns, stat.st_size)
+
+    @contextlib.contextmanager
+    def _cross_process_lock(self) -> Iterator[None]:
+        """Serialise publishes against other processes sharing the working_dir.
+
+        Publishing is already atomic — the tmp-file + ``os.replace`` below means
+        a reader never sees a half-written file, with or without this lock. What
+        the lock adds is that the check-then-write in ``_sync_save`` runs as a
+        unit, so the supersede detection cannot itself race and miss an
+        overwrite it was meant to report.
+
+        ``_save_lock`` only covers threads inside one interpreter, but the
+        pipeline worker, the retention scheduler and every API replica write the
+        same file, and the working_dir is a shared volume in the Compose
+        topology — so the lock has to live on the filesystem.
+
+        Degrades to a no-op where fcntl is unavailable (Windows); the in-process
+        lock still applies there.
+        """
+        if fcntl is None:
+            yield
+            return
+        self.graphml_path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor = os.open(self.lock_path, os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
 
     @property
     def graphml_path(self) -> Path:
@@ -392,8 +461,35 @@ class NetworkXGraphStore:
 
     def _sync_save(self) -> None:
         """Crash-safe GraphML write — called via ``asyncio.to_thread``."""
-        with self._save_lock:
+        with self._save_lock, self._cross_process_lock():
+            self._warn_if_superseded()
             self._sync_save_locked()
+            self._file_identity = self._current_file_identity()
+
+    def _warn_if_superseded(self) -> None:
+        """Report that this save is about to discard another writer's version.
+
+        Each writer rewrites the whole graph, so whoever publishes last wins.
+        The lock above makes writes atomic with respect to each other, but it
+        cannot reconcile two divergent in-memory graphs — a merge would have to
+        choose between resurrecting nodes one side deleted and dropping nodes
+        the other side added, and neither is safe to guess.
+
+        Detecting it is still worth doing: silent divergence is how a graph
+        quietly loses a day of ingestion, whereas this leaves a trail naming the
+        process that overwrote what.
+        """
+        if self._file_identity is None:
+            return
+        current = self._current_file_identity()
+        if current is not None and current != self._file_identity:
+            logger.error(
+                "GraphML %s changed under us (pid=%s); this save overwrites the "
+                "other writer's version. Run one writer per tenant, or accept "
+                "last-write-wins.",
+                self.graphml_path,
+                os.getpid(),
+            )
 
     def _sync_save_locked(self) -> None:
         """Write one temporary GraphML and atomically publish it."""
@@ -436,17 +532,25 @@ class NetworkXGraphStore:
             os.close(directory_fd)
 
     async def load(self) -> None:
-        """Load the graph from GraphML file into memory.
+        """Load the graph from the GraphML file into memory.
 
-        If the file doesn't exist or is corrupted, initialises an empty graph
-        (per PRD §4.7 error handling).
+        A missing file yields an empty graph. A corrupt one raises — see
+        ``_sync_load``.
         """
         await asyncio.to_thread(self._sync_load)
         self._loaded = True
         self.invalidate_path_projection()
 
     def _sync_load(self) -> None:
-        """Synchronous GraphML read — called via asyncio.to_thread."""
+        """Synchronous GraphML read — called via asyncio.to_thread.
+
+        A corrupt file used to degrade to an empty graph. That is the worst
+        possible response here: the caller continues against an empty graph and
+        the next ``save`` writes those zero nodes back over the only copy, so a
+        recoverable parse error becomes permanent data loss. The bad file is now
+        moved aside and the error propagates.
+        """
+        self._file_identity = self._current_file_identity()
         if not self.graphml_path.exists():
             self._graph = nx.MultiDiGraph()
             return
@@ -464,10 +568,24 @@ class NetworkXGraphStore:
             else:
                 self._graph = loaded
         except Exception as exc:
-            logger.warning(
-                "Corrupted GraphML %s, initialising empty graph: %s", self.graphml_path, exc
+            quarantined = self._quarantine_corrupt_file()
+            logger.error(
+                "Corrupted GraphML %s moved aside to %s: %s",
+                self.graphml_path,
+                quarantined,
+                exc,
             )
-            self._graph = nx.MultiDiGraph()
+            raise GraphStoreCorruptError(self.graphml_path, quarantined) from exc
+
+    def _quarantine_corrupt_file(self) -> Path | None:
+        """Rename an unreadable GraphML aside so its bytes stay recoverable."""
+        target = self.graphml_path.with_name(f"{GRAPHML_FILENAME}.corrupt.{time.time_ns()}")
+        try:
+            os.replace(self.graphml_path, target)
+        except OSError as exc:
+            logger.error("Could not quarantine %s: %s", self.graphml_path, exc)
+            return None
+        return target
 
     async def has_graph(self) -> bool:
         """Check whether the GraphML file exists and is non-empty.
@@ -541,4 +659,4 @@ class NetworkXGraphStore:
             await self.load()
 
 
-__all__ = ["NetworkXGraphStore"]
+__all__ = ["GraphStoreCorruptError", "NetworkXGraphStore"]
