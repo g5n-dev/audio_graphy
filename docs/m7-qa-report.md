@@ -29,7 +29,7 @@ M7 Phase 2 (CLAP audio embedding + CAM++ voiceprint + diarization + speaker-grap
 
 ## 2. 验证矩阵 Verification Matrix (1.1 – 1.10)
 
-All commands run from `/Users/frank/WorkPlace/audio_graphy` against venv `.venv`.
+All commands run from `<repo>/` against venv `.venv`.
 
 | # | Check | Method | Result | Notes |
 |---|---|---|---|---|
@@ -163,7 +163,7 @@ No item above blocks M7 release.
 ## 8. Final regression command & output
 
 ```bash
-$ cd /Users/frank/WorkPlace/audio_graphy/backend
+$ cd <repo>/backend
 $ python -m pytest tests/ --cov=audio_graphy --cov-report=term-missing -q
 
 1267 passed, 1 skipped in 102.97s

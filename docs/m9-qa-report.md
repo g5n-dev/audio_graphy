@@ -49,7 +49,7 @@ M9 (5 advanced graph features: bi-temporal edges, Leiden incremental, community 
 ## 3. Test Suite Verification (Check 3.1)
 
 ```bash
-$ cd /Users/frank/WorkPlace/audio_graphy/backend
+$ cd <repo>/backend
 $ python -m pytest -p no:cacheprovider --tb=short 2>&1 | tail -5
 SKIPPED [1] tests/regression/test_m1_m8_unchanged.py:75: enable_advanced_graph=True; L9-disabled test is N/A
 SKIPPED [1] tests/services/test_clap_service.py:111: could not import 'librosa': No module named 'librosa'

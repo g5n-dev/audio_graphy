@@ -154,7 +154,7 @@ per-file-ignores 显式声明了 **非加密用途的 md5 用例**（LLM cache-k
 ## 八、复现命令
 
 ```bash
-cd /Users/frank/WorkPlace/audio_graphy/backend
+cd <repo>/backend
 
 # Lint
 ruff check audio_graphy/         # 期望：All checks passed!

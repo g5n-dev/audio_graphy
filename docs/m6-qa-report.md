@@ -186,7 +186,7 @@ No item above blocks M6 release.
 ## 6. Final regression command & output
 
 ```bash
-$ cd /Users/frank/WorkPlace/audio_graphy/backend
+$ cd <repo>/backend
 $ pytest tests --cov=audio_graphy --cov-report=term-missing -q
 
 932 passed in 93.41s

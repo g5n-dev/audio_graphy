@@ -142,7 +142,7 @@ Eval complete: 10/10 ok → /tmp/m5-qa-eval/eval-6d6104bbd4c3.md
 ```markdown
 # Eval Report — Run `6d6104bbd4c3`
 
-- **Gold set**: `/Users/frank/WorkPlace/audio_graphy/examples/eval/smoke.yaml`
+- **Gold set**: `<repo>/examples/eval/smoke.yaml`
 - **Started**: 2026-07-21T07:09:03.970023+00:00
 - **Finished**: 2026-07-21T07:09:03.975767+00:00
 - **Examples**: 10 total / 10 ok / 0 errors

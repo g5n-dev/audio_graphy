@@ -30,7 +30,7 @@ M8 Phase 4 (streaming `/ws/stream` endpoint, dual-state confirmed/realtime text,
 
 ## 2. 验证矩阵 Verification Matrix (1.1 – 1.12)
 
-All commands run from `/Users/frank/WorkPlace/audio_graphy/backend` against venv `.venv`.
+All commands run from `<repo>/backend` against venv `.venv`.
 
 | # | Check | Method | Result | Notes |
 |---|---|---|---|---|
@@ -163,7 +163,7 @@ No item above blocks M8 release.
 ## 8. Final regression command & output
 
 ```bash
-$ cd /Users/frank/WorkPlace/audio_graphy/backend
+$ cd <repo>/backend
 $ python -m pytest tests/ --cov=audio_graphy --cov-report=term-missing -q -p no:cacheprovider
 
 1573 passed, 1 skipped in 161s
