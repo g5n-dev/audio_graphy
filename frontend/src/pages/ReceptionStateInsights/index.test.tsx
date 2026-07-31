@@ -149,7 +149,9 @@ describe("ReceptionStateInsightsPage", () => {
       name: "节点证据",
     });
     expect(nodeEvidence).toHaveTextContent("接待覆盖");
-    expect(nodeEvidence).toHaveTextContent("预算多少");
+    // Only aggregates the API actually returns. This used to assert a
+    // hardcoded sales phrase, which pinned invented content in place.
+    expect(nodeEvidence).toHaveTextContent("平均置信度");
 
     await user.click(
       screen.getByRole("button", { name: "初次接触 → 需求发现" }),
@@ -237,7 +239,7 @@ describe("ReceptionStateInsightsPage", () => {
     expect(screen.getByText("聚合结果已按预算截断")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "返回路径" })).toBeInTheDocument();
     expect(screen.getByText("可见关键路径占比")).toBeInTheDocument();
-    expect(screen.getAllByText("场景参考话句").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("阶段规模").length).toBeGreaterThan(0);
     expect(screen.queryByText("完成率", { exact: false })).not.toBeInTheDocument();
   });
 

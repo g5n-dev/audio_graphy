@@ -40,12 +40,6 @@ type GraphSelection =
   | { kind: "transition"; transition: ReceptionStateTransitionInsight }
   | { kind: "stage"; stage: ReceptionStateStageInsight };
 
-interface StageContent {
-  phrases: string[];
-  actions: string[];
-  tags: string[];
-}
-
 interface PathGeometry {
   d: string;
   labelX: number;
@@ -78,75 +72,6 @@ const MAX_VISUAL_STAGES = 6;
 const MIN_STAGE_GAP = 158;
 const STAGE_START_X = 104;
 const CORE_Y = 360;
-
-const STAGE_COPY: Record<string, StageContent> = {
-  初次接触: {
-    phrases: ["想看看", "最近有活动吗", "朋友推荐过来"],
-    actions: ["主动问候", "介绍品牌", "说明门店活动"],
-    tags: ["新客", "随逛", "价格敏感"],
-  },
-  迎宾接待: {
-    phrases: ["想看看", "最近有活动吗", "朋友推荐过来"],
-    actions: ["主动问候", "介绍品牌", "说明门店活动"],
-    tags: ["新客", "随逛", "价格敏感"],
-  },
-  需求发现: {
-    phrases: ["预算多少", "日常佩戴", "想要简约款"],
-    actions: ["询问预算", "了解用途", "确认风格"],
-    tags: ["预算区间", "日常佩戴", "款式偏好"],
-  },
-  方案推荐: {
-    phrases: ["这款多少钱", "有其他颜色吗", "想比较一下"],
-    actions: ["推荐匹配款", "对比展示", "讲解工艺"],
-    tags: ["对比", "材质关注", "高匹配"],
-  },
-  产品体验: {
-    phrases: ["可以试一下吗", "佩戴舒服吗", "还有其他款吗"],
-    actions: ["邀请体验", "观察反馈", "补充方案"],
-    tags: ["试戴", "体验充分", "款式比较"],
-  },
-  试戴体验: {
-    phrases: ["可以试一下吗", "佩戴舒服吗", "还有其他款吗"],
-    actions: ["邀请体验", "观察反馈", "补充方案"],
-    tags: ["试戴", "体验充分", "款式比较"],
-  },
-  价格沟通: {
-    phrases: ["还能优惠吗", "工费怎么算", "活动到哪天"],
-    actions: ["解释价格", "说明优惠", "核对预算"],
-    tags: ["价格敏感", "优惠敏感", "预算明确"],
-  },
-  异议处理: {
-    phrases: ["有点贵", "再考虑一下", "售后怎么样"],
-    actions: ["异议倾听", "价值强化", "说明保障"],
-    tags: ["价格异议", "犹豫", "售后关注"],
-  },
-  成交确认: {
-    phrases: ["就选这款", "什么时候取", "可以刷卡吗"],
-    actions: ["确认订单", "核对信息", "交付说明"],
-    tags: ["成交意向", "确定购买", "交付关注"],
-  },
-  成交意向: {
-    phrases: ["就选这款", "什么时候取", "可以刷卡吗"],
-    actions: ["确认订单", "核对信息", "交付说明"],
-    tags: ["成交意向", "确定购买", "交付关注"],
-  },
-  后续跟进: {
-    phrases: ["回头再看", "微信联系", "到货提醒"],
-    actions: ["建立联系", "预约回访", "记录待办"],
-    tags: ["跟进", "回访", "时间约定"],
-  },
-  离店跟进: {
-    phrases: ["回头再看", "微信联系", "到货提醒"],
-    actions: ["建立联系", "预约回访", "记录待办"],
-    tags: ["跟进", "回访", "时间约定"],
-  },
-};
-
-const FALLBACK_STAGE_CONTENT: StageContent = {
-  phrases: ["客户表达关注", "询问方案细节", "确认关键信息"],
-  actions: ["识别信号", "推进对话", "记录反馈"],
-  tags: ["高频阶段", "有效互动", "可追溯"],
-};
 
 function splitCsv(value: string): string[] | undefined {
   const values = value
@@ -248,10 +173,6 @@ function keyboardActivate(
     event.preventDefault();
     action();
   }
-}
-
-function stageContent(state: string): StageContent {
-  return STAGE_COPY[state] ?? FALLBACK_STAGE_CONTENT;
 }
 
 function averageOutgoingEvents(stage: ReceptionStateStageInsight): number {
@@ -738,7 +659,6 @@ export default function ReceptionStateInsightsPage() {
                 {visualStages.map((stage, index) => {
                   const x = STAGE_START_X + index * stageGap;
                   const tone = STAGE_COLORS[index % STAGE_COLORS.length];
-                  const content = stageContent(stage.state);
                   const isSelected =
                     selectedStage?.state === stage.state;
                   return (
@@ -804,15 +724,15 @@ export default function ReceptionStateInsightsPage() {
                         textAnchor="start"
                         className="ag-topology-section-label"
                       >
-                        场景参考话句
+                        阶段规模
                       </text>
                       <StagePill
-                        label={content.phrases[0]}
+                        label={`${stage.reception_count} 次接待`}
                         y={-118}
                         tone="neutral"
                       />
                       <StagePill
-                        label={content.phrases[1]}
+                        label={`${stage.count} 条状态记录`}
                         y={-89}
                         tone="neutral"
                       />
@@ -823,15 +743,15 @@ export default function ReceptionStateInsightsPage() {
                         textAnchor="start"
                         className="ag-topology-section-label"
                       >
-                        建议销售动作
+                        流转
                       </text>
                       <StagePill
-                        label={content.actions[0]}
+                        label={`流入 ${stage.incoming_count}`}
                         y={-29}
                         tone="neutral"
                       />
                       <StagePill
-                        label={content.actions[1]}
+                        label={`流出 ${stage.outgoing_count}`}
                         y={0}
                         tone="neutral"
                       />
@@ -855,15 +775,15 @@ export default function ReceptionStateInsightsPage() {
                         textAnchor="start"
                         className="ag-topology-section-label"
                       >
-                        关联标签示例
+                        判定置信度
                       </text>
                       <StagePill
-                        label={content.tags[0]}
+                        label={`置信度 ${formatPercent(stage.average_confidence)}`}
                         y={70}
                         tone="accent"
                       />
                       <StagePill
-                        label={content.tags[1]}
+                        label={`人均流出 ${averageOutgoingEvents(stage).toFixed(1)}`}
                         y={98}
                         tone="accent"
                       />
@@ -872,7 +792,7 @@ export default function ReceptionStateInsightsPage() {
                         textAnchor="middle"
                         className="ag-topology-sample-count"
                       >
-                        关联样本 {stage.count} · 模板非聚合统计
+                        关联样本 {stage.count}
                       </text>
                     </g>
                   );
@@ -1023,20 +943,10 @@ export default function ReceptionStateInsightsPage() {
                 <dd>{formatPercent(selectedStage.average_confidence)}</dd>
               </div>
             </dl>
-            <section>
-              <h3>高频话句与动作</h3>
-              <ol>
-                {[
-                  ...stageContent(selectedStage.state).phrases.slice(0, 2),
-                  ...stageContent(selectedStage.state).actions.slice(0, 2),
-                ].map((item, index) => (
-                  <li key={item}>
-                    <span>{item}</span>
-                    <strong>{index < 2 ? "客户" : "销售"}</strong>
-                  </li>
-                ))}
-              </ol>
-            </section>
+            {/* A "frequent phrases and actions" section used to sit here, built
+                from a hardcoded script rather than from the API — which returns
+                only counts and confidence for a stage. Restore it when the
+                backend can aggregate real utterances. */}
             <section>
               <h3>关联路径</h3>
               <ol>

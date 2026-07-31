@@ -820,7 +820,7 @@ export function EvolutionPanel({
         run.summary.coverage_gate_passed === false
           ? `优化运行 #${run.id} 未启动：可信反馈覆盖不足`
           : run.status === "completed"
-          ? `优化运行 #${run.id} 已完成（演示数据）`
+          ? `优化运行 #${run.id} 已完成`
           : `优化运行 #${run.id} 已进入队列`,
       );
       queryClient.invalidateQueries({
