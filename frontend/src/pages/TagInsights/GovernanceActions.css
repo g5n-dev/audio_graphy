@@ -1,0 +1,314 @@
+.ag-insight-action-bridge {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.9fr) minmax(0, 2.7fr);
+  align-items: stretch;
+  margin: 10px 18px;
+  overflow: hidden;
+  background:
+    linear-gradient(135deg, rgb(47 107 255 / 5%), transparent 45%),
+    #fff;
+  border: 1px solid #dbe5f2;
+  border-radius: 12px;
+  box-shadow: 0 10px 28px rgb(28 52 91 / 5%);
+}
+
+.ag-insight-action-bridge > header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 11px 14px;
+  border-right: 1px solid #e7edf4;
+}
+
+.ag-insight-action-bridge h2,
+.ag-insight-action-bridge p {
+  margin: 0;
+}
+
+.ag-insight-action-bridge h2 {
+  margin-top: 1px;
+  color: #21304d;
+  font-size: 15px;
+}
+
+.ag-insight-action-bridge > header p {
+  margin-top: 1px;
+  color: #738198;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.ag-insight-action-bridge > header > span {
+  flex: 0 0 auto;
+  padding: 3px 7px;
+  color: #4568ad;
+  background: #f1f5fc;
+  border-radius: 999px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.ag-insight-action-bridge__actions {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  align-items: center;
+  gap: 7px;
+  padding: 9px 11px;
+}
+
+.ag-insight-action-bridge__actions > :is(button, a) {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  min-height: 52px;
+  padding: 8px 9px;
+  color: #33435f;
+  text-decoration: none;
+  text-align: left;
+  background: #fbfcfe;
+  border: 1px solid #dfe7f1;
+  border-radius: 9px;
+  cursor: pointer;
+  transition:
+    transform 130ms ease,
+    border-color 130ms ease,
+    box-shadow 130ms ease;
+}
+
+.ag-insight-action-bridge__actions > :is(button, a):hover:not(:disabled) {
+  border-color: #9db9f6;
+  box-shadow: 0 7px 18px rgb(47 107 255 / 9%);
+  transform: translateY(-1px);
+}
+
+.ag-insight-action-bridge__actions > button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.ag-insight-action-icon {
+  display: grid;
+  width: 27px;
+  height: 27px;
+  flex: 0 0 27px;
+  place-items: center;
+  color: #2f6bff;
+  background: #edf4ff;
+  border: 1px solid #d2e0ff;
+  border-radius: 8px;
+  font-size: 14px;
+  font-style: normal;
+}
+
+.ag-insight-action-note {
+  margin: -7px 16px 15px !important;
+  color: #9a6b1a;
+  font-size: 13px;
+}
+
+.ag-insight-action-bridge__actions strong,
+.ag-insight-action-bridge__actions small {
+  display: block;
+}
+
+.ag-insight-action-bridge__actions strong {
+  color: #2d3c58;
+  font-size: 13px;
+}
+
+.ag-insight-action-bridge__actions small {
+  margin-top: 1px;
+  overflow: hidden;
+  color: #8290a4;
+  font-size: 13px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ag-insight-action-feedback {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin: 0 16px 15px;
+  padding: 9px 11px;
+  border: 1px solid;
+  border-radius: 7px;
+  font-size: 14px;
+}
+
+.ag-insight-action-feedback.is-success {
+  color: #08785a;
+  background: #ecfbf5;
+  border-color: #c8eee0;
+}
+
+.ag-insight-action-feedback.is-error {
+  color: #b53844;
+  background: #fff2f3;
+  border-color: #f0ccd1;
+}
+
+.ag-insight-action-feedback a {
+  flex: 0 0 auto;
+  font-weight: 700;
+}
+
+.ag-insight-dialog-backdrop {
+  position: fixed;
+  z-index: 1100;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgb(22 33 56 / 28%);
+  backdrop-filter: blur(4px);
+}
+
+.ag-insight-action-dialog {
+  width: min(500px, 100%);
+  overflow: hidden;
+  background: #fff;
+  border: 1px solid #dbe4ef;
+  border-radius: 13px;
+  box-shadow: 0 24px 72px rgb(25 45 78 / 20%);
+}
+
+.ag-insight-action-dialog > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 17px 19px;
+  border-bottom: 1px solid #e7edf4;
+}
+
+.ag-insight-action-dialog h2 {
+  margin: 2px 0 0;
+  color: #253451;
+  font-size: 17px;
+}
+
+.ag-insight-action-dialog button {
+  min-height: 34px;
+  padding: 6px 13px;
+  color: #fff;
+  background: #2f6bff;
+  border: 1px solid #2f6bff;
+  border-radius: 7px;
+  cursor: pointer;
+  font-weight: 650;
+}
+
+.ag-insight-action-dialog > header > button {
+  min-width: 32px;
+  padding: 0;
+  color: #66748b;
+  background: transparent;
+  border-color: transparent;
+  font-size: 22px;
+}
+
+.ag-insight-action-dialog button.is-secondary {
+  color: #42516b;
+  background: #fff;
+  border-color: #ced8e5;
+}
+
+.ag-insight-action-dialog form {
+  display: grid;
+  gap: 12px;
+  padding: 17px 19px 19px;
+}
+
+.ag-insight-action-dialog label {
+  display: grid;
+  gap: 4px;
+  color: #586983;
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.ag-insight-action-dialog input {
+  width: 100%;
+  min-height: 36px;
+  padding: 7px 10px;
+  color: #293955;
+  background: #fff;
+  border: 1px solid #ced8e5;
+  border-radius: 7px;
+}
+
+.ag-insight-action-dialog form footer,
+.ag-insight-compare-dialog footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 4px;
+}
+
+.ag-insight-action-dialog .ag-insight-action-feedback {
+  margin: 0;
+}
+
+.ag-insight-compare-dialog {
+  padding: 17px 19px 19px;
+}
+
+.ag-insight-compare-dialog p {
+  margin: 0;
+  color: #6f7e94;
+  font-size: 14px;
+}
+
+.ag-insight-compare-dialog ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin: 13px 0 17px;
+  padding: 0;
+  list-style: none;
+}
+
+.ag-insight-compare-dialog li {
+  padding: 5px 8px;
+  color: #2757bf;
+  background: #edf4ff;
+  border: 1px solid #d1e0ff;
+  border-radius: 7px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+}
+
+@media (max-width: 900px) {
+  .ag-insight-action-bridge {
+    display: block;
+  }
+
+  .ag-insight-action-bridge > header {
+    border-right: 0;
+    border-bottom: 1px solid #e7edf4;
+  }
+
+  .ag-insight-action-bridge__actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 540px) {
+  .ag-insight-action-bridge {
+    margin-inline: 12px;
+  }
+
+  .ag-insight-action-bridge > header {
+    display: grid;
+  }
+
+  .ag-insight-action-bridge__actions {
+    grid-template-columns: 1fr;
+  }
+}

@@ -1,0 +1,61 @@
+/* ── OutLinkCard — entry card for graph drilldown export tabs ── */
+
+.ag-outlink-card {
+  max-width: 480px;
+  border: 1px solid rgba(207, 220, 240, 0.6);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.78);
+  backdrop-filter: blur(14px);
+  box-shadow: 0 8px 24px rgba(41, 72, 124, 0.05);
+}
+
+.ag-outlink-card .arco-card-body {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 20px 22px;
+}
+
+.ag-outlink-card__icon {
+  display: flex;
+  width: 40px;
+  height: 40px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: #eef5ff;
+  color: #4274d5;
+  font-size: 20px;
+}
+
+.ag-outlink-card__title {
+  margin: 0;
+  color: #1d3f80;
+  font-size: 17px;
+  font-weight: 650;
+  line-height: 1.3;
+}
+
+.ag-outlink-card__desc {
+  color: #6b7892;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.ag-outlink-card__link {
+  margin-top: 4px;
+  text-decoration: none;
+}
+
+.ag-outlink-card__button {
+  color: #326ad6 !important;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 0;
+}
+
+.ag-outlink-card__button:hover {
+  color: #1f4db1 !important;
+  background: transparent !important;
+}

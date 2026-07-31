@@ -14,14 +14,12 @@ vi.mock("@/api/services", () => ({
   acceptReceptionProposal: vi.fn(),
   discoverReceptionProposals: vi.fn(),
   listReceptions: vi.fn(),
-  runReceptionAutomation: vi.fn(),
 }));
 
 import {
   acceptReceptionProposal,
   discoverReceptionProposals,
   listReceptions,
-  runReceptionAutomation,
 } from "@/api/services";
 
 const mockedAccept =
@@ -29,8 +27,6 @@ const mockedAccept =
 const mockedDiscover =
   discoverReceptionProposals as unknown as ReturnType<typeof vi.fn>;
 const mockedList = listReceptions as unknown as ReturnType<typeof vi.fn>;
-const mockedRunAutomation =
-  runReceptionAutomation as unknown as ReturnType<typeof vi.fn>;
 
 const RECEPTION = {
   id: 42,
@@ -46,6 +42,7 @@ const RECEPTION = {
   started_at: "2026-07-23T01:00:00Z",
   ended_at: "2026-07-23T01:12:00Z",
   audio_url: null,
+  playback_expires_at: null,
   version: 1,
   created_at: "2026-07-23T01:12:00Z",
   updated_at: "2026-07-23T01:12:00Z",
@@ -185,32 +182,7 @@ describe("ReceptionEntryPage", () => {
     mockedAccept.mockReset();
     mockedDiscover.mockReset();
     mockedList.mockReset();
-    mockedRunAutomation.mockReset();
     mockedList.mockResolvedValue(QUEUE);
-    mockedRunAutomation.mockResolvedValue({
-      id: 9,
-      reception_id: 88,
-      status: "ready",
-      stage: "ready",
-      attempt_count: 1,
-      checkpoints: {},
-      segmentation_algorithm: "dialogue-hybrid-v1",
-      tag_group_key: "reception-rules",
-      tag_group_version: "rules-v1",
-      target_labels: [
-        "stage",
-        "intent",
-        "objection",
-        "next_step",
-        "compliance_risk",
-      ],
-      tag_priority: 0,
-      last_error_code: null,
-      last_error_message: null,
-      created_at: "2026-07-23T01:12:00Z",
-      updated_at: "2026-07-23T01:13:00Z",
-      finished_at: "2026-07-23T01:13:00Z",
-    });
   });
 
   it("keeps direct positive-id navigation as a fast path", async () => {
@@ -352,7 +324,7 @@ describe("ReceptionEntryPage", () => {
     });
   });
 
-  it("accepts a merge candidate then enters the created workspace", async () => {
+  it("accepts a merge candidate and relies on the transactional background jobs", async () => {
     const user = userEvent.setup();
     mockedDiscover.mockResolvedValueOnce(DISCOVERY);
     mockedAccept.mockResolvedValueOnce({
@@ -384,11 +356,10 @@ describe("ReceptionEntryPage", () => {
       recording_ids: [101, 102],
       merge_mode: "logical",
     });
-    expect(mockedRunAutomation).toHaveBeenCalledWith(88);
     expect(await screen.findByText("已进入接待工作台")).toBeInTheDocument();
   });
 
-  it("atomically accepts a signed long-recording split and automates both children", async () => {
+  it("atomically accepts a signed split without browser-triggered duplicate analysis", async () => {
     const user = userEvent.setup();
     mockedDiscover.mockResolvedValueOnce(DISCOVERY);
     mockedAccept.mockResolvedValueOnce({
@@ -413,31 +384,6 @@ describe("ReceptionEntryPage", () => {
       ],
       provenance_event_ids: [501, 502, 503],
     });
-    mockedRunAutomation.mockReset();
-    mockedRunAutomation.mockImplementation(async (receptionId: number) => ({
-      id: receptionId + 100,
-      reception_id: receptionId,
-      status: "ready",
-      stage: "ready",
-      attempt_count: 1,
-      checkpoints: {},
-      segmentation_algorithm: "dialogue-hybrid-v1",
-      tag_group_key: "reception-rules",
-      tag_group_version: "rules-v1",
-      target_labels: [
-        "stage",
-        "intent",
-        "objection",
-        "next_step",
-        "compliance_risk",
-      ],
-      tag_priority: 0,
-      last_error_code: null,
-      last_error_message: null,
-      created_at: "2026-07-23T01:12:00Z",
-      updated_at: "2026-07-23T01:13:00Z",
-      finished_at: "2026-07-23T01:13:00Z",
-    }));
     renderEntry();
 
     await user.type(screen.getByLabelText("候选门店"), "store-1");
@@ -467,8 +413,6 @@ describe("ReceptionEntryPage", () => {
       at_segment_id: 777,
       proposal_token: "signed-split-proposal-token-00000000000000000000",
     });
-    expect(mockedRunAutomation).toHaveBeenCalledWith(91);
-    expect(mockedRunAutomation).toHaveBeenCalledWith(92);
     expect(await screen.findByText("已进入接待工作台")).toBeInTheDocument();
   });
 

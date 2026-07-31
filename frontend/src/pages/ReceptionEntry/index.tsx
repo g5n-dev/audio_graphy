@@ -6,7 +6,6 @@ import {
   acceptReceptionProposal,
   discoverReceptionProposals,
   listReceptions,
-  runReceptionAutomation,
 } from "@/api/services";
 import type {
   ReceptionAutomaticProposal,
@@ -363,44 +362,24 @@ export default function ReceptionEntryPage() {
       const receptions: ReceptionResponseApi[] = splitAcceptance
         ? [...accepted.receptions]
         : [accepted];
-      const automationResults = await Promise.allSettled(
-        receptions.map((reception) => runReceptionAutomation(reception.id)),
-      );
       return splitAcceptance
         ? {
             kind: "split" as const,
             accepted,
             receptions,
-            automationResults,
           }
         : {
             kind: "merge" as const,
             accepted,
             receptions,
-            automationResults,
           };
     },
     onSuccess: (result) => {
-      const { receptions, automationResults } = result;
-      const readyCount = automationResults.filter(
-        (item) => item.status === "fulfilled" && item.value.status === "ready",
-      ).length;
-      const failed = automationResults.find(
-        (item) =>
-          item.status === "rejected" ||
-          (item.status === "fulfilled" && item.value.status === "failed"),
-      );
-      const failureDetail =
-        failed?.status === "rejected"
-          ? errorMessage(failed.reason)
-          : failed?.status === "fulfilled"
-            ? failed.value.last_error_message
-            : null;
-      const automationMessage = failureDetail
-        ? `${result.kind === "split" ? "长录音已原子拆为两个接待；" : "接待已创建；"}自动处理部分失败：${failureDetail}。可从检查点重试。`
-        : result.kind === "split"
-          ? `长录音已在 ${result.accepted.split_at_sec.toFixed(1)} 秒处原子拆为接待 #${receptions[0]?.id}、#${receptions[1]?.id}，${readyCount}/2 个已完成自动切分与五维标签。`
-          : "接待已自动完成录音合并、对话切分与五维目标标签派生。";
+      const { receptions } = result;
+      const automationMessage =
+        result.kind === "split"
+          ? `长录音已在 ${result.accepted.split_at_sec.toFixed(1)} 秒处原子拆为接待 #${receptions[0]?.id}、#${receptions[1]?.id}；后台自动化与标签抽取任务已事务入队。`
+          : "接待已创建；后台自动化与标签抽取任务已事务入队，工作台将持续刷新进度。";
       const primaryReception = receptions[0];
       if (!primaryReception) return;
       navigate(`/receptions/${primaryReception.id}/workspace`, {

@@ -12,6 +12,9 @@ import type {
 
 vi.mock("@/api/services", () => ({
   analyzeTagInsights: vi.fn(),
+  createTagJob: vi.fn(),
+  createTagReviewBatch: vi.fn(),
+  createTaggerVersion: vi.fn(),
   getReceptionTagInsights: vi.fn(),
 }));
 

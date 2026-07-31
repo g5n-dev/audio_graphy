@@ -17,15 +17,12 @@ import {
   Card,
   Select,
   Table,
-  Typography,
 } from "@arco-design/web-react";
 import { useNavigate } from "react-router-dom";
 import dayjs from "dayjs";
 import { listSpeakers } from "@/api/speakers";
 import { SpeakerBadge } from "@/components/SpeakerBadge";
 import type { SpeakerListItem } from "@/types/api";
-
-const { Title } = Typography;
 
 const ROLE_ALL_SENTINEL = "";
 const roleOptions: Array<{ label: string; value: string }> = [
@@ -84,11 +81,16 @@ export default function SpeakerProfileListPage(): JSX.Element {
   });
 
   return (
-    <div style={{ padding: 24 }}>
-      <Title heading={4} style={{ marginBottom: 16 }}>
-        说话人管理
-      </Title>
+    <div>
+      <header className="ag-feature-header">
+        <div>
+          <span className="ag-eyebrow">SPEAKER PROFILES · 说话人画像</span>
+          <h1>说话人管理</h1>
+          <p>按角色与合并状态筛选说话人，查看声纹信息与跨录音关系。</p>
+        </div>
+      </header>
 
+      <div style={{ padding: 24 }}>
       <Card style={{ marginBottom: 16 }}>
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
           <Select
@@ -157,7 +159,7 @@ export default function SpeakerProfileListPage(): JSX.Element {
               dataIndex: "voiceprint_hash",
               width: 120,
               render: (val: string) => (
-                <code style={{ fontSize: 12, color: "#86909c" }}>{val}</code>
+                <code style={{ fontSize: 14, color: "#86909c" }}>{val}</code>
               ),
             },
             {
@@ -170,7 +172,7 @@ export default function SpeakerProfileListPage(): JSX.Element {
               dataIndex: "merge_strategy",
               width: 130,
               render: (val: string) => (
-                <span style={{ fontSize: 12 }}>{val}</span>
+                <span style={{ fontSize: 14 }}>{val}</span>
               ),
             },
             {
@@ -195,6 +197,7 @@ export default function SpeakerProfileListPage(): JSX.Element {
           ]}
         />
       </Card>
+      </div>
     </div>
   );
 }

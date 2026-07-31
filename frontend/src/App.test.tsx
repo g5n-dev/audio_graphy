@@ -66,6 +66,18 @@ vi.mock("@/pages/TagInsights", () => ({
   default: () => <div>tag-insights-route</div>,
 }));
 
+vi.mock("@/pages/TagGovernance", () => ({
+  default: () => <div>tag-governance-route</div>,
+}));
+
+vi.mock("@/pages/TagReview", () => ({
+  default: () => <div>tag-review-route</div>,
+}));
+
+vi.mock("@/pages/TagRunDetail", () => ({
+  default: () => <div>tag-run-detail-route</div>,
+}));
+
 vi.mock("@/pages/ReceptionStateInsights", () => ({
   default: () => <div>reception-state-insights-route</div>,
 }));
@@ -125,6 +137,9 @@ describe("App route loading", () => {
     ["/receptions/reception-42/graph", "reception-graph-route"],
     ["/reception-flow", "reception-state-insights-route"],
     ["/tag-insights", "tag-insights-route"],
+    ["/tag-governance", "tag-governance-route"],
+    ["/tag-review", "tag-review-route"],
+    ["/tag-runs/42", "tag-run-detail-route"],
   ])("routes %s to its lazy feature page", async (path, expectedText) => {
     useAuthStore.setState({
       token: "test-token",
@@ -224,6 +239,47 @@ describe("App route loading", () => {
     ).toBeInTheDocument();
   });
 
+  it("opens and dismisses the platform navigation as a mobile drawer", async () => {
+    useAuthStore.setState({
+      token: "test-token",
+      refreshToken: "test-refresh-token",
+      user: {
+        id: 1,
+        name: "Test User",
+        email: "test@example.com",
+        role: "admin",
+        tenant_id: "tenant-test",
+      },
+      isAuthenticated: true,
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/receptions/reception-42/workspace"]}>
+        <App />
+      </MemoryRouter>,
+    );
+
+    expect(
+      await screen.findByText("reception-workspace-route"),
+    ).toBeInTheDocument();
+    const toggle = screen.getByRole("button", { name: "打开平台导航" });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAccessibleName("关闭平台导航");
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(document.querySelector(".ag-platform-sider")).toHaveClass(
+      "is-mobile-open",
+    );
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: "打开平台导航" }),
+      ).toHaveAttribute("aria-expanded", "false");
+    });
+  });
+
   it("groups the platform sidebar around reception work, dialogue insights, and knowledge governance", async () => {
     useAuthStore.setState({
       token: "test-token",
@@ -266,8 +322,91 @@ describe("App route loading", () => {
     expect(
       within(toolGroup).getByText("全域知识图谱"),
     ).toBeInTheDocument();
+    expect(within(toolGroup).queryByText("社区探索")).not.toBeInTheDocument();
     expect(within(toolGroup).getByText("智能问答")).toBeInTheDocument();
+    expect(within(toolGroup).getByText("标签治理")).toBeInTheDocument();
+    expect(within(toolGroup).getByText("人工复核")).toBeInTheDocument();
     expect(within(toolGroup).getByText("说话人")).toBeInTheDocument();
+  });
+
+  it("hides privileged tag-governance navigation from agents", async () => {
+    useAuthStore.setState({
+      token: "test-token",
+      refreshToken: "test-refresh-token",
+      user: {
+        id: 2,
+        name: "Agent User",
+        email: "agent@example.com",
+        role: "agent",
+        tenant_id: "tenant-test",
+      },
+      isAuthenticated: true,
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/"]}>
+        <App />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText("dashboard-route")).toBeInTheDocument();
+    const sidebar = screen.getByRole("navigation", {
+      name: "平台功能导航",
+    });
+    expect(within(sidebar).queryByText("标签治理")).not.toBeInTheDocument();
+    expect(within(sidebar).queryByText("人工复核")).not.toBeInTheDocument();
+  });
+
+  it.each(["/tag-governance", "/tag-review", "/tag-runs/42"])(
+    "blocks direct privileged route access for agents: %s",
+    async (path) => {
+      useAuthStore.setState({
+        token: "agent-token",
+        refreshToken: "agent-refresh-token",
+        user: {
+          id: 2,
+          name: "Agent User",
+          email: "agent@example.com",
+          role: "agent",
+          tenant_id: "tenant-test",
+        },
+        isAuthenticated: true,
+      });
+
+      render(
+        <MemoryRouter initialEntries={[path]}>
+          <App />
+        </MemoryRouter>,
+      );
+
+      expect(await screen.findByText("dashboard-route")).toBeInTheDocument();
+      expect(screen.queryByText("tag-governance-route")).not.toBeInTheDocument();
+      expect(screen.queryByText("tag-review-route")).not.toBeInTheDocument();
+      expect(screen.queryByText("tag-run-detail-route")).not.toBeInTheDocument();
+    },
+  );
+
+  it("redirects the retired communities route to the graph workspace", async () => {
+    useAuthStore.setState({
+      token: "test-token",
+      refreshToken: "test-refresh-token",
+      user: {
+        id: 1,
+        name: "Test User",
+        email: "test@example.com",
+        role: "admin",
+        tenant_id: "tenant-test",
+      },
+      isAuthenticated: true,
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/communities"]}>
+        <App />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText("graph-route")).toBeInTheDocument();
   });
 
   it("hydrates persisted authentication before resolving a deep route", async () => {

@@ -1081,7 +1081,7 @@ export function TagInsightGraph({
             <rect
               width={GRAPH_WIDTH}
               height={layout.height}
-              fill="#FCFDFE"
+              fill="transparent"
             />
             <rect
               width={GRAPH_WIDTH}

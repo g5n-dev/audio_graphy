@@ -285,7 +285,7 @@ export const demoWorkspace = {
     merge_confidence: 0.94,
     started_at: "2026-07-24T01:00:00Z",
     ended_at: "2026-07-24T01:07:00Z",
-    audio_url: null,
+    audio_url: null as string | null,
     version: 4,
     created_at: "2026-07-24T01:08:00Z",
     updated_at: generatedAt,
@@ -307,7 +307,7 @@ export const demoWorkspace = {
       speaker_continuity: 0.93,
     },
     source_recorded_at: `2026-07-24T01:0${index}:00Z`,
-    audio_url: "",
+    audio_url: `/api/v1/receptions/101/recordings/${5001 + index}/audio?grant=demo-source-${5001 + index}`,
   })),
   dialogue_units: dialogueUnits,
   state_transitions: workspaceTransitions,
@@ -357,6 +357,17 @@ export const demoWorkspace = {
       truncated: false,
     },
   },
+  capabilities: {
+    can_manage_audio: true,
+    can_run_segmentation: true,
+    can_edit_dialogue: true,
+    can_edit_tags: true,
+    supports_audio_plans: true,
+    supports_audio_operations: true,
+    can_cancel_audio_operation: true,
+    can_stream_audio: true,
+  },
+  neighbors: null,
 };
 
 const groups = [
@@ -717,6 +728,59 @@ export const demoExplore = {
   })),
   total_nodes: demoStateInsights.stages.length,
   total_edges: demoStateInsights.transitions.length,
+  edge_window: {
+    total: demoStateInsights.transitions.length,
+    returned: demoStateInsights.transitions.length,
+    truncated: false,
+    render_budget: 5_000,
+  },
+};
+
+const topicClusterMembers = [
+  ["预算敏感", "价格偏高", "活动折扣", "工费说明", "会员权益"],
+  ["简约款式", "日常佩戴", "材质偏好", "18K 金", "佩戴舒适"],
+  ["售后保障", "免费保养", "尺寸调整", "证书克重", "取货提醒"],
+  ["送礼场景", "生日礼物", "刻字服务", "包装需求", "交付时间"],
+  ["成交推进", "确认款式", "核对尺码", "支付方式", "预约取货"],
+  ["客户异议", "保值顾虑", "价格异议", "等待家人意见", "再做比较"],
+];
+
+export const demoTopicClusters = {
+  job: {
+    id: 240724,
+    status: "succeeded",
+    job_type: "full",
+    modularity: 0.782,
+    finished_at: generatedAt,
+  },
+  available_jobs: [
+    {
+      id: 240724,
+      status: "succeeded",
+      job_type: "full",
+      modularity: 0.782,
+      finished_at: generatedAt,
+    },
+  ],
+  level: 0,
+  clusters: [
+    ["价格与预算", "围绕预算边界、报价解释与促销权益形成的核心议题。"],
+    ["商品与偏好", "聚合款式、材质、用途和佩戴体验等商品选择信号。"],
+    ["服务与承诺", "覆盖售后、证书、保养及交付提醒等服务承诺。"],
+    ["场景与需求", "识别送礼用途、刻字包装与交付时点等明确需求。"],
+    ["成交信号", "汇总尺码确认、支付选择与取货预约等推进动作。"],
+    ["阻力与风险", "聚合价格、保值及决策人意见等成交阻力。"],
+  ].map(([title, summary], index) => ({
+    community_id: index + 1,
+    level: 0,
+    title,
+    summary,
+    member_count: topicClusterMembers[index].length,
+    member_node_ids: topicClusterMembers[index],
+  })),
+  total_clusters: 6,
+  total_members: topicClusterMembers.flat().length,
+  generated_at: generatedAt,
 };
 
 export const demoStats = {

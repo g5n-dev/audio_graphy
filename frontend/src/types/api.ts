@@ -54,11 +54,19 @@ export type MeResponse = UserInfo;
 // Recordings
 // ============================================================
 
+export type RecordingStatus =
+  | "queued"
+  | "processing"
+  | "indexed"
+  | "ready_no_speech"
+  | "failed"
+  | "archived";
+
 export interface RecordingListItem {
   id: number;
   store_id: string;
   agent_name: string;
-  status: string;
+  status: RecordingStatus;
   pipeline_state: string;
   recorded_at: string | null;
   indexed_at: string | null;
@@ -78,7 +86,7 @@ export interface RecordingResponse {
   store_id: string;
   agent_name: string;
   customer_hash: string | null;
-  status: string;
+  status: RecordingStatus;
   pipeline_state: string;
   recorded_at: string | null;
   prompt_version: string | null;
@@ -142,11 +150,19 @@ export interface GraphEdgeResponse {
   source_ids: string[];
 }
 
+export interface GraphEdgeWindowResponse {
+  total: number;
+  returned: number;
+  truncated: boolean;
+  render_budget: number;
+}
+
 export interface ExploreResponse {
   nodes: GraphNodeResponse[];
   edges: GraphEdgeResponse[];
   total_nodes: number;
   total_edges: number;
+  edge_window: GraphEdgeWindowResponse;
 }
 
 export interface NeighborResponse {
@@ -311,6 +327,7 @@ export interface DialogueEvidenceRef {
   ref_id: string;
   kind: "audio" | "text";
   recording_id: EntityId;
+  segment_id?: EntityId | null;
   coordinate_space?: "source" | "timeline" | "both";
   start_ms: number | null;
   end_ms: number | null;
@@ -335,19 +352,37 @@ export interface ReceptionSummary {
   ended_at: string;
   duration_sec: number;
   merged_audio_url: string | null;
+  playback_expires_at: string | null;
   version: number;
 }
 
 export interface ReceptionRecordingItem {
+  /**
+   * Compatibility identity used by older workspace callers. It remains the
+   * recording id; new editing calls must use `mapping_id` explicitly.
+   */
   id: EntityId;
+  /** ReceptionRecording row identity used for ordering/gap edits. */
+  mapping_id?: EntityId;
+  /** Immutable source Recording identity used for playback/evidence. */
+  recording_id?: EntityId;
   name: string;
   sequence_no: number;
   timeline_start_sec: number;
   timeline_end_sec: number;
   source_start_sec: number;
   source_end_sec: number | null;
+  source_start_ms: number;
+  source_end_ms: number | null;
+  timeline_start_ms: number;
+  timeline_end_ms: number;
+  gap_before_ms: number;
+  time_origin_ms: number;
+  legal_source_start_ms: number;
+  legal_source_end_ms: number;
   gap_before_sec: number;
   audio_url: string | null;
+  playback_expires_at: string | null;
   decision_source: "explicit" | "auto" | "manual";
   merge_confidence: number | null;
 }
@@ -389,6 +424,7 @@ export interface ReceptionTagAssignment {
   confidence: number | null;
   source: string;
   is_manual: boolean;
+  model_run_id?: string | null;
   evidence_refs: DialogueEvidenceRef[];
 }
 
@@ -446,6 +482,22 @@ export interface ReceptionWorkspaceRequest {
   window_size_sec?: number;
 }
 
+export interface ReceptionWorkspaceCapabilities {
+  can_manage_audio: boolean;
+  can_run_segmentation: boolean;
+  can_edit_dialogue: boolean;
+  can_edit_tags: boolean;
+  supports_audio_plans: boolean;
+  supports_audio_operations: boolean;
+  can_cancel_audio_operation: boolean;
+  can_stream_audio?: boolean;
+}
+
+export interface ReceptionWorkspaceNeighbors {
+  previous_dialogue_unit: ReceptionDialogueUnit | null;
+  next_dialogue_unit: ReceptionDialogueUnit | null;
+}
+
 export interface ReceptionWorkspaceResponse {
   reception: ReceptionSummary;
   recordings: ReceptionRecordingItem[];
@@ -455,6 +507,15 @@ export interface ReceptionWorkspaceResponse {
   state_transitions: ReceptionStateTransition[];
   audit_events: ReceptionAuditEvent[];
   window: ReceptionWorkspaceWindow;
+  /**
+   * Server-owned authorization and feature capabilities. Omitted by legacy
+   * servers; the client then applies the documented inspector/admin fallback.
+   */
+  capabilities?: Partial<ReceptionWorkspaceCapabilities>;
+  /** Adjacent units outside the active 600-second page, when available. */
+  neighbors?: ReceptionWorkspaceNeighbors;
+  /** Server-selected non-terminal audio operation, used to resume polling after reload. */
+  active_audio_operation?: ReceptionAudioOperation | null;
   /** Real normalized peaks only; omitted while the backend has not produced them. */
   waveform_peaks?: number[];
 }
@@ -463,6 +524,79 @@ export interface MergeReceptionRecordingsRequest {
   recording_ids: EntityId[];
   mode: ReceptionMergeMode;
   expected_version: number;
+}
+
+export interface ReceptionAudioPlanSourceRequest {
+  mapping_id: EntityId;
+  gap_before_ms: number;
+}
+
+export interface ReceptionAudioPlanRequest {
+  sources: ReceptionAudioPlanSourceRequest[];
+  expected_version: number;
+}
+
+export interface ReceptionAudioPlanSource {
+  mapping_id: EntityId;
+  recording_id: EntityId;
+  sequence_no: number;
+  source_start_ms: number;
+  source_end_ms: number;
+  gap_before_ms: number;
+  timeline_start_ms: number;
+  timeline_end_ms: number;
+}
+
+export interface ReceptionAudioPlanResponse {
+  plan_token: string;
+  timeline_revision: number;
+  total_duration_ms: number;
+  physical_eligible: boolean;
+  warnings: string[];
+  sources: ReceptionAudioPlanSource[];
+}
+
+export interface CreateReceptionAudioOperationRequest {
+  plan_token: string;
+  mode: ReceptionMergeMode;
+  expected_version: number;
+}
+
+export type ReceptionAudioOperationStatus =
+  | "queued"
+  | "claimed"
+  | "probing"
+  | "slicing"
+  | "assembling"
+  | "encrypting"
+  | "verifying"
+  | "committing"
+  | "succeeded"
+  | "failed"
+  | "cancelled";
+
+export interface ReceptionAudioOperation {
+  id: EntityId;
+  reception_id: EntityId;
+  status: ReceptionAudioOperationStatus;
+  mode: ReceptionMergeMode;
+  progress: number;
+  error: string | null;
+  error_code?: string | null;
+  error_message?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface StreamingTicketRequest {
+  recording_id: EntityId;
+  consent_token: string;
+}
+
+export interface StreamingTicketResponse {
+  ticket: string;
+  expires_at: string;
+  ws_url: string;
 }
 
 export interface SegmentReceptionRequest {
@@ -492,6 +626,21 @@ export interface DialogueEditResponse {
   dialogue_units: ReceptionDialogueUnitApiResponse[];
 }
 
+export interface CorrectDialogueTagRequest {
+  expected_reception_version: number;
+  expected_group_version: string;
+  label_value: string;
+  reason: string;
+  evidence_ref_ids: string[];
+}
+
+export interface CorrectDialogueTagResponse {
+  reception_id: EntityId;
+  reception_version: number;
+  superseded_assignment_id: EntityId;
+  assignment: ReceptionTagAssignmentApiResponse;
+}
+
 /** Exact wire shape returned by backend schemas/receptions.py. */
 export interface ReceptionMetadataApiResponse {
   id: number;
@@ -509,6 +658,7 @@ export interface ReceptionMetadataApiResponse {
   ended_at: string;
   /** Short-lived browser playback URL; never derive this from a server file path. */
   audio_url: string | null;
+  playback_expires_at: string | null;
   version: number;
   created_at: string;
   updated_at: string;
@@ -522,6 +672,14 @@ export interface ReceptionRecordingApiResponse {
   timeline_end_sec: number;
   source_start_sec: number;
   source_end_sec: number | null;
+  source_start_ms: number;
+  source_end_ms: number | null;
+  timeline_start_ms: number;
+  timeline_end_ms: number;
+  gap_before_ms: number;
+  time_origin_ms: number;
+  legal_source_start_ms: number;
+  legal_source_end_ms: number;
   gap_before_sec: number;
   decision_source: "explicit" | "auto" | "manual";
   merge_confidence: number | null;
@@ -529,6 +687,7 @@ export interface ReceptionRecordingApiResponse {
   source_recorded_at: string | null;
   /** Short-lived browser playback URL supplied by the authorized audio endpoint. */
   audio_url: string;
+  playback_expires_at: string;
 }
 
 export interface ReceptionTagAssignmentApiResponse {
@@ -601,6 +760,12 @@ export interface ReceptionWorkspaceApiResponse {
   transcript_items: ReceptionTranscriptItemApiResponse[];
   provenance_events: ProvenanceEventApiResponse[];
   window: ReceptionWorkspaceWindow;
+  capabilities?: Partial<ReceptionWorkspaceCapabilities>;
+  neighbors?: {
+    previous_dialogue_unit: ReceptionDialogueUnitApiResponse | null;
+    next_dialogue_unit: ReceptionDialogueUnitApiResponse | null;
+  };
+  active_audio_operation?: ReceptionAudioOperation | null;
 }
 
 export interface ReceptionResponseApi extends ReceptionMetadataApiResponse {
@@ -688,8 +853,7 @@ export interface ReceptionSplitAcceptanceResponse {
 }
 
 export type ReceptionProposalAcceptResponse =
-  | ReceptionResponseApi
-  | ReceptionSplitAcceptanceResponse;
+  ReceptionResponseApi | ReceptionSplitAcceptanceResponse;
 
 export interface ProvenanceEventApiResponse {
   id: number;
@@ -1024,6 +1188,772 @@ export interface ReceptionTagInsightsResponse {
 }
 
 // ============================================================
+// Tag governance closed loop
+// ============================================================
+
+export interface TagGovernanceListResponse<T> {
+  items: T[];
+  total: number;
+}
+
+export type TagValueType = "enum" | "boolean" | "number" | "string";
+
+export interface TagDefinition {
+  key: string;
+  name: string;
+  category: string;
+  value_type: TagValueType;
+  allowed_values: unknown[];
+  subject_types: Array<"dialogue_unit" | "reception">;
+  scenarios: ReceptionScenario[];
+  evidence_required: boolean;
+  critical: boolean;
+  critical_values?: unknown[];
+  negative_values?: unknown[];
+  required?: boolean;
+  threshold: number;
+  mutually_exclusive_with?: string[];
+  depends_on?: string[];
+}
+
+export type TagSchemaVersionStatus =
+  "draft" | "validated" | "published" | "deprecated";
+
+export interface TagSchemaVersion {
+  id: number;
+  schema_id: number;
+  version: string;
+  status: TagSchemaVersionStatus;
+  checksum: string;
+  definitions: TagDefinition[];
+  created_at: string;
+  updated_at: string;
+  created_by: number;
+  published_by: number | null;
+  published_at: string | null;
+}
+
+export interface TagSchema {
+  id: number;
+  tenant_id: string;
+  key: string;
+  name: string;
+  description: string | null;
+  status: "draft" | "published" | "deprecated";
+  active_version_id: number | null;
+  created_by: number;
+  created_at: string;
+  updated_at: string;
+  versions?: TagSchemaVersion[];
+}
+
+export interface CreateTagSchemaRequest {
+  key: string;
+  name: string;
+  description?: string;
+}
+
+export interface CreateTagSchemaVersionRequest {
+  version: string;
+  definitions: TagDefinition[];
+}
+
+export type TaggerVersionStatus =
+  "draft" | "validating" | "evaluating" | "rejected" | "qualified";
+
+export interface TaggerVersion {
+  id: number;
+  tenant_id: string;
+  schema_version_id: number;
+  version: string;
+  engine: "rule" | "llm" | "hybrid";
+  prompt_content: string;
+  rule_bundle: Record<string, unknown>;
+  model_version: string;
+  thresholds: Record<string, number>;
+  harness_spec_version?: string;
+  harness_spec?: Record<string, unknown> | null;
+  parent_version_id?: number | null;
+  origin?: "manual" | "optimizer" | "bootstrap" | "migration";
+  optimization_run_id?: number | null;
+  change_summary?: string | null;
+  config_checksum: string;
+  status: TaggerVersionStatus;
+  created_by: number;
+  qualified_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateTaggerVersionRequest {
+  schema_version_id: number;
+  version: string;
+  engine: "rule" | "llm" | "hybrid";
+  prompt_content: string;
+  rule_bundle: Record<string, unknown>;
+  model_version: string;
+  thresholds: Record<string, number>;
+  harness_spec?: Record<string, unknown> | null;
+  parent_version_id?: number | null;
+  change_summary?: string | null;
+}
+
+export type TagJobType =
+  | "extract"
+  | "recompute"
+  | "review_batch"
+  | "evaluate"
+  | "optimize"
+  | "remediate";
+export type TagJobStatus =
+  | "queued"
+  | "running"
+  | "retry_wait"
+  | "completed"
+  | "succeeded"
+  | "failed"
+  | "cancelled";
+
+export interface TagJobScope {
+  reception_ids?: EntityId[];
+  dialogue_unit_ids?: number[];
+  store_ids?: string[];
+  group_ids?: string[];
+  label_keys?: string[];
+  [key: string]: unknown;
+}
+
+export interface CreateTagJobRequest {
+  job_type: "extract" | "recompute";
+  scope: TagJobScope;
+}
+
+export interface TagJob {
+  id: number;
+  tenant_id: string;
+  job_type: TagJobType;
+  status: TagJobStatus;
+  scope: TagJobScope;
+  tagger_version_id: number | null;
+  origin?: "manual" | "serving" | "backfill" | "monitor" | "system";
+  total_items: number;
+  completed_items: number;
+  failed_items: number;
+  failed_subset?: unknown[];
+  attempt_count: number;
+  max_attempts: number;
+  revision: number;
+  lease_owner: string | null;
+  lease_expires_at: string | null;
+  next_attempt_at: string | null;
+  last_error_code: string | null;
+  last_error_message: string | null;
+  created_at: string;
+  updated_at: string;
+  finished_at: string | null;
+}
+
+export type TagReviewStatus = "pending" | "claimed" | "resolved" | "skipped";
+export type TagReviewDecisionAction =
+  "accept" | "correct" | "reject" | "uncertain" | "escalate";
+export type TagTruthState =
+  "present" | "absent" | "not_applicable" | "uncertain";
+export type TagTruthTier = "t0" | "t1" | "t2" | "t3";
+export type TagReviewQueuePurpose =
+  | "routine"
+  | "active_learning"
+  | "representative_audit"
+  | "critical"
+  | "gold"
+  | "release_holdout"
+  | "adjudication";
+export type TagFailureStage =
+  | "vad"
+  | "asr"
+  | "speaker"
+  | "boundary"
+  | "schema"
+  | "tag_reasoning"
+  | "evidence"
+  | "fusion"
+  | "insufficient_audio";
+
+export interface TagReviewEvidenceRef {
+  recording_id?: EntityId;
+  segment_id?: EntityId;
+  start_sec?: number;
+  end_sec?: number;
+  text_excerpt?: string;
+  [key: string]: unknown;
+}
+
+export interface TagReviewTask {
+  id: number;
+  tenant_id: string;
+  batch_id?: string | null;
+  subject_type: "dialogue_unit" | "reception";
+  subject_id: number | null;
+  reception_id: number | null;
+  tag_key: string;
+  proposed_value: unknown;
+  proposed_fact_id: number | null;
+  schema_version_id: number | null;
+  tagger_version_id: number | null;
+  reason: string;
+  status: TagReviewStatus;
+  priority: number;
+  claimed_by: number | null;
+  claimed_at: string | null;
+  resolved_at: string | null;
+  created_at: string;
+  updated_at: string;
+  created_by: number | null;
+  confidence: number | null;
+  evidence_refs: TagReviewEvidenceRef[];
+  queue_purpose?: TagReviewQueuePurpose;
+  blind_mode?: boolean;
+  truth_tier?: TagTruthTier;
+  review_bundle_id?: string | null;
+  allowed_values?: unknown[];
+  selection_policy?: string | null;
+  selection_policy_version?: string | null;
+  sampling_probability?: number | null;
+  reviewer_round?: number | null;
+  requires_adjudication?: boolean;
+  source_deployment_id?: number | null;
+  source_extraction_run_id?: number | null;
+  source_harness_execution_id?: number | null;
+  sampled_deployment_stage?: TagDeploymentStatus | null;
+  sampled_deployment_revision?: number | null;
+  sampling_manifest_checksum?: string | null;
+}
+
+export interface CreateTagReviewSubject {
+  subject_type: "dialogue_unit" | "reception";
+  subject_id: number;
+  reception_id?: number;
+  tag_key: string;
+  proposed_value?: unknown;
+  proposed_fact_id?: number;
+  schema_version_id?: number;
+  tagger_version_id?: number;
+  confidence?: number;
+  evidence_refs?: TagReviewEvidenceRef[];
+  priority?: number;
+}
+
+export interface CreateTagReviewBatchRequest {
+  reason:
+    | "conflict"
+    | "missing"
+    | "low_confidence"
+    | "critical"
+    | "random"
+    | "drift"
+    | "audit"
+    | "gold"
+    | "adjudication"
+    | "active_learning";
+  subjects: CreateTagReviewSubject[];
+  review_bundle_id?: string;
+}
+
+export interface CreateTagReviewBatchResponse {
+  batch_id?: string;
+  created_count: number;
+  items: TagReviewTask[];
+}
+
+export interface DecideTagReviewRequest {
+  action: TagReviewDecisionAction;
+  /** Required by the structured review workbench; optional for legacy callers. */
+  truth_state?: TagTruthState;
+  corrected_value?: unknown;
+  reason_code: string;
+  reason_codes?: string[];
+  primary_failure_stage?: TagFailureStage;
+  reviewer_confidence?: number;
+  review_duration_ms?: number;
+  note?: string;
+  evidence_refs: TagReviewEvidenceRef[];
+}
+
+export interface TagAssignmentFact {
+  id: number;
+  source: string;
+  tag_key: string;
+  tag_value: unknown;
+  input_hash?: string;
+  schema_version_id?: number | null;
+  tagger_version_id?: number | null;
+  extraction_run_id?: number | null;
+  deployment_id?: number | null;
+  evidence_refs?: TagReviewEvidenceRef[];
+  [key: string]: unknown;
+}
+
+export interface TagFactLineageResponse {
+  fact: TagAssignmentFact;
+  is_current: boolean;
+  schema_version: TagSchemaVersion | null;
+  tagger_version: TaggerVersion | null;
+  model_version: string | null;
+  extraction_run: Record<string, unknown> | null;
+  job: TagJob | null;
+  deployment: TagDeployment | null;
+}
+
+export interface DecideTagReviewResponse {
+  task: TagReviewTask;
+  decision: TagReviewDecision;
+  fact: TagAssignmentFact | null;
+}
+
+export interface TagReviewDecision {
+  id: number;
+  tenant_id: string;
+  task_id: number;
+  action: TagReviewDecisionAction;
+  truth_state?: TagTruthState;
+  corrected_value: unknown;
+  reason_code: string;
+  reason_codes?: string[];
+  primary_failure_stage?: TagFailureStage | null;
+  reviewer_confidence?: number | null;
+  note: string | null;
+  evidence_refs: TagReviewEvidenceRef[];
+  resulting_fact_id: number | null;
+  reviewer_user_id: number;
+  adjudication: boolean;
+  decided_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TagGoldSet {
+  id: number;
+  tenant_id: string;
+  key: string;
+  name: string;
+  description: string | null;
+  schema_version_id: number;
+  created_by: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateTagGoldSetRequest {
+  key: string;
+  name: string;
+  description?: string;
+  schema_version_id: number;
+}
+
+export interface TagGoldSetVersion {
+  id: number;
+  tenant_id: string;
+  gold_set_id: number;
+  version: string;
+  status: "draft" | "frozen" | "retired";
+  checksum: string | null;
+  item_count: number;
+  frozen_by: number | null;
+  frozen_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface FreezeTagGoldSetRequest {
+  version: string;
+  cohort: {
+    review_bundle_ids: string[];
+    truth_tiers: Array<"t2" | "t3">;
+    subject_types: Array<"dialogue_unit" | "reception">;
+  };
+  completeness_checklist: {
+    full_applicable_matrix: true;
+    frozen_input_snapshots: true;
+    reception_level_isolation: true;
+    t2_t3_truth_only: true;
+  };
+}
+
+export interface TagQualityMetrics {
+  macro_f1?: number;
+  critical_recall?: number;
+  evidence_coverage?: number;
+  error_rate?: number;
+  precision?: number;
+  recall?: number;
+  [key: string]: number | undefined;
+}
+
+export interface TagQualityGate {
+  code: string;
+  passed: boolean;
+  actual: number | null;
+  threshold: number | null;
+  message: string;
+}
+
+export interface TagEvaluation {
+  id: number;
+  tenant_id: string;
+  tagger_version_id: number;
+  baseline_tagger_version_id: number;
+  gold_set_version_id: number;
+  status?: "queued" | "running" | "completed" | "failed";
+  passed: boolean;
+  metrics: TagQualityMetrics;
+  baseline_metrics: TagQualityMetrics;
+  supported_label_f1?: Record<string, number>;
+  baseline_label_f1?: Record<string, number>;
+  gates: TagQualityGate[];
+  started_at: string;
+  finished_at: string | null;
+  created_by: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateTagEvaluationRequest {
+  tagger_version_id: number;
+  gold_set_version_id: number;
+  baseline_tagger_version_id: number;
+}
+
+export interface CreateTagEvaluationResponse {
+  job_id: number;
+  evaluation: TagEvaluation;
+}
+
+export type TagDeploymentStatus =
+  | "shadow"
+  | "canary_5"
+  | "canary_25"
+  | "awaiting_admin"
+  | "production"
+  | "rolled_back"
+  | "retired";
+
+export interface TagDeployment {
+  id: number;
+  tenant_id: string;
+  tagger_version_id: number;
+  evaluation_run_id: number;
+  baseline_tagger_version_id: number;
+  status: TagDeploymentStatus;
+  traffic_percent: number;
+  revision: number;
+  promotion_paused: boolean;
+  pause_reason: string | null;
+  created_by: number;
+  approved_by: number | null;
+  approved_at: string | null;
+  rolled_back_by: number | null;
+  rolled_back_at: string | null;
+  rollback_reason: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateTagDeploymentRequest {
+  tagger_version_id: number;
+  evaluation_run_id: number;
+  baseline_tagger_version_id: number;
+}
+
+export interface TagDeploymentObservation {
+  id: number;
+  tenant_id: string;
+  deployment_id: number;
+  deployment_revision?: number;
+  stage: TagDeploymentStatus;
+  window_start: string;
+  window_end: string;
+  sample_count: number;
+  metrics: {
+    [key: string]: unknown;
+    error_rate?: number;
+    critical_recall?: number;
+    evidence_coverage?: number;
+    drift_max_jsd?: number;
+    drift_paired_sample_count?: number;
+    drift_min_paired_samples?: number;
+    drift_jsd_threshold?: number;
+    drift_eligible_tag_count?: number;
+    drift_affected_tags?: string[];
+    drift_by_tag?: Record<
+      string,
+      {
+        jsd?: number;
+        sample_count?: number;
+        eligible?: boolean;
+        breached?: boolean;
+        baseline_distribution?: Record<string, number>;
+        candidate_distribution?: Record<string, number>;
+      }
+    >;
+  };
+  breach_codes: string[];
+  action: "observe" | "pause" | "rollback";
+  /** Present only on hosted demonstration observations. */
+  is_demo?: boolean;
+  data_source?: "demo" | "production";
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TagAuditEvent {
+  id: number;
+  tenant_id: string;
+  action: string;
+  actor_user_id: number | null;
+  resource_type: string;
+  resource_id: string;
+  payload: Record<string, unknown>;
+  occurred_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface OptimizeTaggerVersionRequest {
+  gold_set_version_id: number;
+  production_tagger_version_id: number;
+}
+
+export interface OptimizeTaggerVersionResponse {
+  candidate: TaggerVersion;
+  optimization: {
+    source_tagger_version_id: number;
+    gold_set_version_id: number;
+    train_error_summary: Record<
+      string,
+      Array<{ error: string; count: number }>
+    >;
+    threshold_search: Record<
+      string,
+      { threshold: number; validation_f1: number; sample_count: number }
+    >;
+    holdout_read: false;
+  };
+}
+
+export type TagEvolutionDriftStatus = "stable" | "watch" | "paused";
+export type TagOptimizationObjectivePolicy =
+  "balanced" | "quality_first" | "efficiency_guarded";
+export type TagOptimizationRunStatus =
+  "queued" | "running" | "completed" | "failed" | "cancelled";
+
+export interface TagEvolutionHarnessSummary {
+  id: number;
+  version: string;
+  status: string;
+  updated_at?: string | null;
+}
+
+export interface TagEvolutionOverview {
+  production_harness: TagEvolutionHarnessSummary | null;
+  recommended_gold_set_version_id: number | null;
+  recommended_gold_set_label?: string | null;
+  quality: {
+    unbiased_macro_f1?: number | null;
+    critical_recall_lcb?: number | null;
+    evidence_iou?: number | null;
+    worst_slice_f1?: number | null;
+    delta_vs_baseline?: number | null;
+  };
+  feedback: {
+    eligible_count: number;
+    new_since_last_run: number;
+    representative_audit_count: number;
+    adjudicated_count: number;
+    coverage_rate?: number | null;
+    next_run_eligible: boolean;
+    blockers: string[];
+  };
+  drift: {
+    status: TagEvolutionDriftStatus;
+    input_psi?: number | null;
+    output_jsd?: number | null;
+    affected_slices?: string[];
+  };
+  release: {
+    stage: TagDeploymentStatus | "offline";
+    served_count: number;
+    paired_count: number;
+    audited_count: number;
+    adjudicated_count: number;
+    waiting_reasons: string[];
+    promotion_paused: boolean;
+  } | null;
+}
+
+export type TagBadcaseStatus =
+  "open" | "candidate_fix" | "verified" | "resolved" | "reopened" | "ignored";
+
+export interface TagBadcase {
+  id: number;
+  subject_type?: "dialogue_unit" | "reception";
+  subject_id?: number;
+  tag_key: string;
+  failure_stage: TagFailureStage;
+  failure_mode: string;
+  cluster_key?: string | null;
+  root_cause?: Record<string, unknown>;
+  status: TagBadcaseStatus;
+  occurrence_count: number;
+  regression_result?: Record<string, unknown>;
+  fix_candidate_tagger_version_id?: number | null;
+  first_seen_at?: string;
+  last_seen_at?: string;
+  resolved_at?: string | null;
+  /** Optional presentation fields returned by aggregated deployments. */
+  cluster_label?: string;
+  support_count?: number;
+  affected_slices?: string[];
+  representative_excerpt?: string | null;
+  last_regression_result?: "pending" | "passed" | "failed" | null;
+  updated_at?: string | null;
+}
+
+export interface TagOptimizationSourceCohort {
+  source: "eligible_feedback" | "tag_insights" | "scheduled" | string;
+  filters?: {
+    store_ids?: string[];
+    agent_names?: string[];
+    reception_ids?: EntityId[];
+    scenarios?: ReceptionScenario[];
+    group_keys?: string[];
+    started_from?: string;
+    started_to?: string;
+    label_keys?: string[];
+    [key: string]: unknown;
+  };
+  group_ids?: string[];
+  conflict_only?: boolean;
+  [key: string]: unknown;
+}
+
+export interface CreateTagOptimizationRunRequest {
+  cohort: TagOptimizationSourceCohort;
+  target_policy: {
+    policy: TagOptimizationObjectivePolicy;
+    [key: string]: unknown;
+  };
+  search_budget: {
+    max_trials: 8 | 16 | 24 | 32;
+    sealed_holdout_queries: 1;
+  };
+}
+
+export interface TagHarnessDimensionDiff {
+  dimension:
+    | "context"
+    | "tools"
+    | "generation"
+    | "orchestration"
+    | "memory"
+    | "output"
+    | string;
+  before: unknown;
+  after: unknown;
+}
+
+export interface TagOptimizationCandidateComparison {
+  dimensions: TagHarnessDimensionDiff[];
+  metric_deltas: {
+    macro_f1?: number | null;
+    critical_recall_lcb?: number | null;
+    evidence_iou?: number | null;
+    review_rate?: number | null;
+    p95_latency_ms?: number | null;
+    cost_per_1k?: number | null;
+    [key: string]: number | null | undefined;
+  };
+  reward_deltas?: {
+    quality_delta?: number | null;
+    review_rate_delta?: number | null;
+    p95_latency_delta?: number | null;
+    cost_delta?: number | null;
+    [key: string]: number | null | undefined;
+  };
+  improved_badcase_count: number;
+  regressed_badcase_count: number;
+}
+
+export interface TagOptimizationTrial {
+  id: number;
+  ordinal: number;
+  status:
+    | "pending"
+    | "running"
+    | "pruned"
+    | "completed"
+    | "failed"
+    | "cancelled";
+  phase?: "train" | "validation" | "challenge" | "holdout";
+  mutation?: Record<string, unknown>;
+  mutation_dimension?: string | null;
+  elimination_reason?: string | null;
+  reward?: Record<string, number | boolean | null>;
+}
+
+export interface TagOptimizationRun {
+  id: number;
+  job_id?: number | null;
+  status: TagOptimizationRunStatus;
+  phase:
+    "prepare" | "search" | "validation" | "challenge" | "holdout" | "completed";
+  baseline_tagger_version_id: number;
+  baseline_version?: string | null;
+  candidate_tagger_version_id?: number | null;
+  winner_tagger_version_id?: number | null;
+  candidate_version?: string | null;
+  gold_set_version_id: number;
+  cohort: TagOptimizationSourceCohort;
+  objective: {
+    policy: TagOptimizationObjectivePolicy;
+    [key: string]: unknown;
+  };
+  search_budget: {
+    max_trials: number;
+    sealed_holdout_queries: number;
+  };
+  trigger: "manual" | "scheduled" | "feedback_threshold" | "insight";
+  summary: Record<string, unknown>;
+  next_actions?: unknown[];
+  artifacts?: unknown[];
+  completed_trials?: number;
+  total_trials?: number;
+  trials?: TagOptimizationTrial[];
+  candidate_comparison?: TagOptimizationCandidateComparison | null;
+  failure_reason?: string | null;
+  is_demo?: boolean;
+  data_source?: "demo" | "production";
+  created_at: string;
+  updated_at: string;
+}
+
+export type TagSchemaListResponse = TagGovernanceListResponse<TagSchema>;
+export type TaggerVersionListResponse =
+  TagGovernanceListResponse<TaggerVersion>;
+export type TagJobListResponse = TagGovernanceListResponse<TagJob>;
+export type TagReviewListResponse = TagGovernanceListResponse<TagReviewTask>;
+export type TagGoldSetListResponse = TagGovernanceListResponse<TagGoldSet>;
+export type TagEvaluationListResponse =
+  TagGovernanceListResponse<TagEvaluation>;
+export type TagDeploymentListResponse =
+  TagGovernanceListResponse<TagDeployment>;
+export type TagDeploymentObservationListResponse =
+  TagGovernanceListResponse<TagDeploymentObservation>;
+export type TagAuditEventListResponse =
+  TagGovernanceListResponse<TagAuditEvent>;
+export type TagBadcaseListResponse = TagGovernanceListResponse<TagBadcase>;
+export type TagOptimizationRunListResponse =
+  TagGovernanceListResponse<TagOptimizationRun>;
+
+// ============================================================
 // Cross-reception dialogue-state insights
 // ============================================================
 
@@ -1080,9 +2010,9 @@ export interface ReceptionStateInsightsResponse {
 // ============================================================
 
 export type ReceptionAutomationStatus =
-  | "pending" | "running" | "failed" | "ready";
+  "pending" | "running" | "failed" | "ready";
 export type ReceptionAutomationStage =
-  | "merge" | "segmentation" | "tagging" | "ready";
+  "merge" | "segmentation" | "tagging" | "ready";
 
 export interface ReceptionAutomationRequest {
   segmentation_algorithm?: string;

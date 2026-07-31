@@ -1,5 +1,7 @@
 import type {
   DialogueEvidenceRef,
+  EntityId,
+  ReceptionTagAssignment,
   ReceptionWorkspaceResponse,
 } from "@/types/api";
 import { formatClock, formatPercent, formatSeconds } from "./format";
@@ -7,11 +9,17 @@ import { formatClock, formatPercent, formatSeconds } from "./format";
 interface EvidenceAuditPanelProps {
   workspace: ReceptionWorkspaceResponse;
   onSeekEvidence: (evidence: DialogueEvidenceRef) => void;
+  selectedTagId?: EntityId | null;
+  canEdit?: boolean;
+  onEditTag?: (tag: ReceptionTagAssignment) => void;
 }
 
 export function EvidenceAuditPanel({
   workspace,
   onSeekEvidence,
+  selectedTagId = null,
+  canEdit = false,
+  onEditTag,
 }: EvidenceAuditPanelProps) {
   return (
     <div className="ag-evidence-panel">
@@ -25,10 +33,24 @@ export function EvidenceAuditPanel({
         ) : (
           <ul className="ag-evidence-list">
             {workspace.tag_assignments.map((tag) => (
-              <li key={String(tag.id)} className="ag-evidence-card">
+              <li
+                key={String(tag.id)}
+                className={`ag-evidence-card${selectedTagId !== null && String(selectedTagId) === String(tag.id) ? " is-selected" : ""}`}
+              >
                 <div className="ag-evidence-card__title">
-                  <span>{tag.label_key}</span>
-                  <strong>{tag.label_value}</strong>
+                  <div>
+                    <span>{tag.label_key}</span>
+                    <strong>{tag.label_value}</strong>
+                  </div>
+                  {canEdit && onEditTag && (
+                    <button
+                      type="button"
+                      aria-label={`从证据卡编辑标签 ${tag.label_key}`}
+                      onClick={() => onEditTag(tag)}
+                    >
+                      编辑
+                    </button>
+                  )}
                 </div>
                 <div className="ag-meta-row">
                   <span>

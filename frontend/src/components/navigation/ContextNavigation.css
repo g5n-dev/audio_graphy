@@ -17,7 +17,7 @@
   align-items: center;
   gap: 9px;
   min-width: 0;
-  font-size: 11px;
+  font-size: 14px;
 }
 
 .ag-context-navigation__identity > a {
@@ -42,7 +42,7 @@
 
 .ag-context-navigation__identity > strong {
   color: #1d2a40;
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .ag-context-navigation__tabs {
@@ -59,7 +59,7 @@
   min-width: 104px;
   padding: 0 8px;
   color: #59677d;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 500;
   justify-content: center;
   text-decoration: none;
@@ -94,7 +94,7 @@
   align-self: center;
   justify-self: end;
   color: #3567c9;
-  font-size: 11px;
+  font-size: 14px;
   white-space: nowrap;
 }
 

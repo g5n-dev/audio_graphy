@@ -31,7 +31,7 @@
 .ag-graph-studio-header__identity .ag-eyebrow {
   grid-column: 1 / -1;
   color: #68758c;
-  font-size: 10px;
+  font-size: 13px;
 }
 
 .ag-graph-studio-header__identity strong {
@@ -40,7 +40,7 @@
 
 .ag-graph-studio-header__live {
   color: #078b83;
-  font-size: 10px;
+  font-size: 13px;
   font-weight: 600;
 }
 
@@ -50,13 +50,13 @@
 
 .ag-graph-studio-header__summary span {
   color: #2468f2;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 700;
 }
 
 .ag-graph-studio-header__summary strong {
   color: #7b879b;
-  font-size: 10px;
+  font-size: 13px;
   font-weight: 400;
 }
 
@@ -72,7 +72,7 @@
   background: #f7faff;
   border: 1px solid #d9e5fb;
   border-radius: 5px;
-  font-size: 10px;
+  font-size: 13px;
   text-decoration: none;
 }
 
@@ -133,18 +133,18 @@
   align-self: center;
   color: #9aa5b7;
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-  font-size: 11px;
+  font-size: 14px;
 }
 
 .ag-graph-mode-tabs button strong {
   color: inherit;
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .ag-graph-mode-tabs button small {
   overflow: hidden;
   color: #8994a6;
-  font-size: 9px;
+  font-size: 13px;
   line-height: 1.45;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -166,7 +166,7 @@
   background: #f8faff;
   border: 1px solid #dde7f7;
   border-radius: 6px;
-  font-size: 9px;
+  font-size: 13px;
 }
 
 .ag-graph-window-context header {
@@ -178,7 +178,7 @@
 
 .ag-graph-window-context header strong {
   color: #155bd7;
-  font-size: 11px;
+  font-size: 14px;
 }
 
 .ag-graph-window-context header small {
@@ -207,7 +207,7 @@
 .ag-graph-window-context dd {
   margin: 1px 0 0;
   color: #24324a;
-  font-size: 11px;
+  font-size: 14px;
   font-weight: 650;
   font-variant-numeric: tabular-nums;
 }
@@ -230,13 +230,13 @@
 
 .ag-detail-graph-sidebar__section-heading span {
   color: #526078 !important;
-  font-size: 11px !important;
+  font-size: 14px !important;
   font-weight: 600;
 }
 
 .ag-detail-graph-sidebar__section-heading strong {
   color: #2468f2;
-  font-size: 9px !important;
+  font-size: 13px !important;
 }
 
 .ag-detail-graph-sidebar li {
@@ -276,18 +276,18 @@
 .ag-graph-canvas__header span {
   color: #7c8ba3;
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-  font-size: 8px;
+  font-size: 13px;
   letter-spacing: 0.08em;
 }
 
 .ag-graph-canvas__header strong {
   color: #1b2b45;
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .ag-graph-canvas__header small {
   color: #8390a5;
-  font-size: 9px;
+  font-size: 13px;
 }
 
 .ag-detail-graph-layout .ag-dialogue-graph {
@@ -329,19 +329,19 @@
 
 .ag-graph-canvas-clue span {
   color: #a8630a;
-  font-size: 9px;
+  font-size: 13px;
   font-weight: 700;
 }
 
 .ag-graph-canvas-clue strong {
   color: #784000;
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .ag-graph-canvas-clue p {
   margin: 0;
   color: #866744;
-  font-size: 9px;
+  font-size: 13px;
   line-height: 1.5;
 }
 
@@ -351,7 +351,7 @@
 
 .ag-graph-node-inspector > header span {
   color: #7a8799;
-  font-size: 9px;
+  font-size: 13px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
@@ -364,7 +364,7 @@
 
 .ag-graph-node-inspector p {
   color: #748197;
-  font-size: 10px;
+  font-size: 13px;
   line-height: 1.65;
 }
 
@@ -380,14 +380,14 @@
 
 .ag-graph-value-clue > span {
   color: #a8630a;
-  font-size: 9px;
+  font-size: 13px;
   font-weight: 700;
   letter-spacing: 0.08em;
 }
 
 .ag-graph-value-clue > strong {
   color: #784000;
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .ag-graph-value-clue > p {

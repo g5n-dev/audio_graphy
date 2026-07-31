@@ -19,6 +19,8 @@ const clientIndex = path.join(clientDir, "index.html");
 const clientAssets = path.join(clientDir, "assets");
 const rootIndex = path.join(distDir, "index.html");
 const rootAssets = path.join(distDir, "assets");
+const sourceOpenAiDir = path.join(frontendDir, ".openai");
+const distOpenAiDir = path.join(distDir, ".openai");
 
 await access(path.join(distDir, "server", "index.js"));
 await access(clientIndex);
@@ -30,6 +32,8 @@ await access(clientAssets);
 await rm(rootAssets, { force: true, recursive: true });
 await copyFile(clientIndex, rootIndex);
 await cp(clientAssets, rootAssets, { force: true, recursive: true });
+await rm(distOpenAiDir, { force: true, recursive: true });
+await cp(sourceOpenAiDir, distOpenAiDir, { force: true, recursive: true });
 
 const html = await readFile(rootIndex, "utf8");
 const assetRefs = [

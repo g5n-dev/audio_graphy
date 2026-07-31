@@ -35,7 +35,7 @@
 .ag-state-topology .ag-topology-title p {
   max-width: 580px;
   color: #657187;
-  font-size: 11px;
+  font-size: 14px;
 }
 
 .ag-state-topology .ag-state-insights-header dl {
@@ -55,7 +55,7 @@
 }
 
 .ag-state-topology .ag-state-insights-header dt {
-  font-size: 9px;
+  font-size: 13px;
 }
 
 .ag-state-topology .ag-state-insights-header dd {
@@ -98,7 +98,7 @@
 }
 
 .ag-state-topology .ag-panel-heading strong {
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .ag-state-topology .ag-state-filter-panel form {
@@ -109,7 +109,7 @@
 .ag-state-topology .ag-state-filter-panel label {
   gap: 3px;
   color: #566278;
-  font-size: 9px;
+  font-size: 13px;
 }
 
 .ag-state-topology .ag-state-filter-panel input,
@@ -117,7 +117,7 @@
   min-height: 32px;
   padding: 5px 8px;
   border-color: #d7deea;
-  font-size: 10px;
+  font-size: 13px;
 }
 
 .ag-state-topology .ag-primary-action {
@@ -135,7 +135,7 @@
 .ag-state-topology .ag-topology-line-legend h2 {
   margin: 0 0 7px;
   color: #283348;
-  font-size: 10px;
+  font-size: 13px;
 }
 
 .ag-state-topology .ag-stage-legend ol {
@@ -146,7 +146,7 @@
   min-height: 26px;
   padding: 3px 4px;
   background: transparent;
-  font-size: 9px;
+  font-size: 13px;
 }
 
 .ag-state-topology .ag-stage-legend li:hover {
@@ -156,7 +156,7 @@
 .ag-state-topology .ag-stage-legend li i {
   width: 18px;
   height: 18px;
-  font-size: 8px;
+  font-size: 13px;
 }
 
 .ag-state-topology .ag-topology-line-legend {
@@ -170,7 +170,7 @@
   margin: 8px 0;
   padding-left: 38px;
   color: #68758b;
-  font-size: 8px;
+  font-size: 13px;
 }
 
 .ag-state-topology .ag-topology-line-legend p::before {
@@ -199,7 +199,7 @@
   bottom: 16px;
   left: 14px;
   color: #8a96a8;
-  font-size: 8px;
+  font-size: 13px;
 }
 
 .ag-state-topology .ag-state-flow-workbench {
@@ -217,14 +217,14 @@
   color: #82510d;
   background: #fff9eb;
   border-bottom: 1px solid #f0ddb7;
-  font-size: 10px;
+  font-size: 13px;
   line-height: 1.45;
 }
 
 .ag-state-topology .ag-state-truncation-notice strong {
   flex: none;
   color: #a05b00;
-  font-size: 10px;
+  font-size: 13px;
 }
 
 .ag-state-topology .ag-state-flow-toolbar {
@@ -254,7 +254,7 @@
 
 .ag-state-topology .ag-topology-summary-strip dt {
   color: #7d889a;
-  font-size: 8px;
+  font-size: 13px;
 }
 
 .ag-state-topology .ag-topology-summary-strip dd {
@@ -277,7 +277,7 @@
   border: 0;
   border-right: 1px solid #e3e8f0;
   border-radius: 0;
-  font-size: 9px;
+  font-size: 13px;
 }
 
 .ag-state-topology .ag-state-flow-toolbar button:last-child {
@@ -294,7 +294,7 @@
 .ag-state-topology .ag-state-flow-toolbar > span {
   margin-left: auto;
   color: #7b8799;
-  font-size: 8px;
+  font-size: 13px;
 }
 
 .ag-state-topology .ag-topology-confidence-legend {
@@ -302,7 +302,7 @@
   align-items: center;
   gap: 4px;
   color: #7b8799;
-  font-size: 8px;
+  font-size: 13px;
 }
 
 .ag-state-topology .ag-topology-confidence-legend i {
@@ -391,7 +391,7 @@
   paint-order: stroke;
   stroke: #fbfdff;
   stroke-width: 4px;
-  font-size: 9px;
+  font-size: 13px;
   font-weight: 600;
 }
 
@@ -521,18 +521,18 @@
 
 .ag-state-topology .ag-state-community text {
   fill: #253148;
-  font-size: 9px;
+  font-size: 13px;
 }
 
 .ag-state-topology .ag-state-community .ag-stage-index {
   fill: #fff;
-  font-size: 9px;
+  font-size: 13px;
   font-weight: 700;
 }
 
 .ag-state-topology .ag-state-community .ag-stage-name {
   fill: #246bce;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 700;
 }
 
@@ -568,12 +568,12 @@
 
 .ag-state-topology .ag-state-community .ag-stage-meta {
   fill: #68758b;
-  font-size: 8px;
+  font-size: 13px;
 }
 
 .ag-state-topology .ag-topology-section-label {
   fill: #246bce;
-  font-size: 8px;
+  font-size: 13px;
   font-weight: 700;
 }
 
@@ -585,7 +585,7 @@
 
 .ag-state-topology .ag-topology-stage-pill text {
   fill: #4c5a70;
-  font-size: 8px;
+  font-size: 13px;
 }
 
 .ag-state-topology .ag-topology-stage-pill.is-accent rect {
@@ -595,7 +595,7 @@
 
 .ag-state-topology .ag-topology-stage-pill.is-accent text {
   fill: #2761a9;
-  font-size: 7.5px;
+  font-size: 13px;
   font-weight: 600;
 }
 
@@ -658,7 +658,7 @@
 
 .ag-state-topology .ag-topology-sample-count {
   fill: #738095;
-  font-size: 7.5px;
+  font-size: 13px;
 }
 
 .ag-state-topology .ag-graph-controls {
@@ -688,7 +688,7 @@
 }
 
 .ag-state-topology .ag-state-path-detail h2 {
-  font-size: 13px;
+  font-size: 14px;
   line-height: 1.45;
 }
 
@@ -703,7 +703,7 @@
 }
 
 .ag-state-topology .ag-state-path-detail dd {
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .ag-state-topology .ag-state-path-detail section {
@@ -722,7 +722,7 @@
   background: transparent;
   border: 0;
   cursor: pointer;
-  font-size: 8px;
+  font-size: 13px;
   text-align: left;
 }
 
@@ -734,7 +734,7 @@
 .ag-state-topology .ag-topology-trace p {
   margin: 0;
   color: #748095;
-  font-size: 8px;
+  font-size: 13px;
   line-height: 1.75;
 }
 

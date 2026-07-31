@@ -15,7 +15,31 @@
   min-height: 620px;
   overflow: hidden;
   color: #17233d;
-  background: #fcfdff;
+  background:
+    radial-gradient(circle at 50% 42%, rgba(236, 244, 255, 0.86), rgba(255, 255, 255, 0) 38%),
+    linear-gradient(180deg, #fbfdff 0%, #ffffff 100%);
+  border-radius: 13px;
+}
+
+.ag-dialogue-graph::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0.5;
+  background-image: radial-gradient(#c8d6ed 1px, transparent 1px);
+  background-size: 24px 24px;
+  -webkit-mask-image: radial-gradient(circle at center, #000, transparent 78%);
+          mask-image: radial-gradient(circle at center, #000, transparent 78%);
+}
+
+.ag-dialogue-graph > svg,
+.ag-dialogue-graph__viewport,
+.ag-dialogue-graph__controls,
+.ag-graph-limit {
+  position: relative;
+  z-index: 1;
 }
 
 .ag-dialogue-graph:fullscreen {
@@ -24,7 +48,9 @@
   min-width: 100vw;
   min-height: 100vh;
   padding: 24px;
-  background: #fcfdff;
+  background:
+    radial-gradient(circle at 50% 42%, rgba(236, 244, 255, 0.86), rgba(255, 255, 255, 0) 38%),
+    linear-gradient(180deg, #fbfdff 0%, #ffffff 100%);
 }
 
 .ag-dialogue-graph__sr-label {
@@ -134,7 +160,7 @@
   .ag-graph-community__count {
   fill: var(--community-color);
   fill-opacity: 0.84;
-  font-size: 10px;
+  font-size: 13px;
   font-weight: 650;
 }
 
@@ -151,7 +177,7 @@
   .ag-graph-community--embedded
   .ag-graph-community__label {
   fill: #7c8ca4;
-  font-size: 10px;
+  font-size: 13px;
   font-weight: 600;
 }
 
@@ -318,10 +344,12 @@
   stroke: var(--node-color);
   stroke-opacity: 0.26;
   stroke-width: 1;
+  filter: drop-shadow(0 3px 6px rgba(65, 87, 124, 0.14));
   transition:
     stroke-width 140ms ease,
     stroke-opacity 140ms ease,
-    transform 140ms ease;
+    transform 140ms ease,
+    filter 140ms ease;
 }
 
 .ag-dialogue-graph.ag-dialogue-graph
@@ -353,7 +381,7 @@
   .ag-graph-node
   .ag-graph-node__label {
   fill: #263249;
-  font-size: 10px;
+  font-size: 13px;
   font-weight: 560;
   pointer-events: none;
 }
@@ -362,7 +390,7 @@
   .ag-graph-node[data-kind="reception"]
   .ag-graph-node__label {
   fill: #7f5000;
-  font-size: 11px;
+  font-size: 14px;
   font-weight: 720;
 }
 
@@ -377,6 +405,7 @@
   .ag-graph-node__halo {
   stroke-opacity: 0.9;
   stroke-width: 3;
+  filter: drop-shadow(0 9px 16px rgba(22, 93, 255, 0.22));
   transform: scale(1.16);
 }
 
@@ -399,10 +428,12 @@
   grid-template-columns: 44px 44px 64px 44px 44px;
   min-height: 44px;
   overflow: hidden;
-  background: rgb(255 255 255 / 96%);
-  border: 1px solid #dfe7f2;
-  border-radius: 9px;
-  box-shadow: 0 8px 24px rgb(32 70 120 / 10%);
+  background: rgba(255, 255, 255, 0.78);
+  -webkit-backdrop-filter: blur(14px);
+          backdrop-filter: blur(14px);
+  border: 1px solid rgba(207, 220, 240, 0.6);
+  border-radius: 10px;
+  box-shadow: 0 9px 22px rgba(32, 70, 120, 0.12);
 }
 
 .ag-dialogue-graph__controls button,
@@ -454,7 +485,7 @@
 
 .ag-dialogue-graph__controls output {
   color: #17233d;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 680;
   font-variant-numeric: tabular-nums;
 }
@@ -465,12 +496,14 @@
   top: 12px;
   right: 16px;
   margin: 0;
-  padding: 5px 8px;
-  color: #8b5a05;
-  background: rgb(255 250 240 / 94%);
-  border: 1px solid #f1d7a8;
-  border-radius: 5px;
-  font-size: 9px;
+  padding: 6px 10px;
+  color: #8c5a08;
+  background: rgba(255, 249, 232, 0.82);
+  -webkit-backdrop-filter: blur(10px);
+          backdrop-filter: blur(10px);
+  border: 1px solid rgba(241, 215, 168, 0.7);
+  border-radius: 8px;
+  font-size: 13px;
 }
 
 .ag-graph-empty {

@@ -4,19 +4,25 @@
 
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Table, Card, Input, Select, Typography, Tag } from "@arco-design/web-react";
+import { Table, Card, Input, Select, Tag } from "@arco-design/web-react";
 import { useNavigate } from "react-router-dom";
 import { listRecordings } from "@/api/services";
-import type { RecordingListItem } from "@/types/api";
+import type { RecordingListItem, RecordingStatus } from "@/types/api";
 
-const { Title } = Typography;
-
-const statusOptions = ["queued", "processing", "indexed", "failed", "archived"];
+const statusOptions: RecordingStatus[] = [
+  "queued",
+  "processing",
+  "indexed",
+  "ready_no_speech",
+  "failed",
+  "archived",
+];
 
 const statusColorMap: Record<string, string> = {
   queued: "gray",
   processing: "blue",
   indexed: "green",
+  ready_no_speech: "cyan",
   failed: "red",
   archived: "orange",
 };
@@ -26,7 +32,7 @@ export default function RecordingsPage() {
   const [page, setPage] = useState(1);
   const [pageSize] = useState(20);
   const [storeId, setStoreId] = useState<string>("");
-  const [status, setStatus] = useState<string>("");
+  const [status, setStatus] = useState<RecordingStatus | "">("");
 
   const { data, isLoading } = useQuery({
     queryKey: ["recordings", page, pageSize, storeId, status],
@@ -40,11 +46,16 @@ export default function RecordingsPage() {
   });
 
   return (
-    <div style={{ padding: 24 }}>
-      <Title heading={4} style={{ marginBottom: 16 }}>
-        录音管理
-      </Title>
+    <div>
+      <header className="ag-feature-header">
+        <div>
+          <span className="ag-eyebrow">RECORDING REPOSITORY · 录音库</span>
+          <h1>录音管理</h1>
+          <p>按门店与状态筛选，进入单条录音查看分段转写与标签详情。</p>
+        </div>
+      </header>
 
+      <div style={{ padding: 24 }}>
       <Card style={{ marginBottom: 16 }}>
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
           <Input
@@ -57,7 +68,7 @@ export default function RecordingsPage() {
           <Select
             placeholder="状态"
             value={status || undefined}
-            onChange={(val) => setStatus(val ?? "")}
+            onChange={(val) => setStatus((val ?? "") as RecordingStatus | "")}
             style={{ width: 150 }}
             allowClear
           >
@@ -115,6 +126,7 @@ export default function RecordingsPage() {
           ]}
         />
       </Card>
+      </div>
     </div>
   );
 }

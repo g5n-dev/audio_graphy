@@ -150,6 +150,43 @@ export interface DrillDownResponse {
 }
 
 // ============================================================
+// Global graph topic-cluster types
+// ============================================================
+
+export interface TopicClusterJob {
+  id: number;
+  status: "succeeded";
+  job_type: "full" | "incremental";
+  modularity: number | null;
+  finished_at: string | null;
+}
+
+export interface TopicCluster {
+  community_id: number;
+  level: number;
+  title: string;
+  summary: string;
+  member_count: number;
+  member_node_ids: string[];
+}
+
+export interface TopicClustersResponse {
+  job: TopicClusterJob;
+  available_jobs: TopicClusterJob[];
+  level: number;
+  clusters: TopicCluster[];
+  total_clusters: number;
+  total_members: number;
+  generated_at: string | null;
+}
+
+export interface TopicClusterDetailResponse {
+  job: TopicClusterJob;
+  cluster: TopicCluster;
+  related_clusters: TopicCluster[];
+}
+
+// ============================================================
 // Compression types
 // ============================================================
 
@@ -338,6 +375,29 @@ export async function drillDown(
   const { data } = await httpClient.post<DrillDownResponse>(
     `/search/communities/${communityId}/drill-down`,
     body,
+  );
+  return data;
+}
+
+export async function getTopicClusters(params: {
+  job_id?: number;
+  level?: number;
+  query?: string;
+}): Promise<TopicClustersResponse> {
+  const { data } = await httpClient.get<TopicClustersResponse>(
+    "/graph/topic-clusters",
+    { params },
+  );
+  return data;
+}
+
+export async function getTopicClusterDetail(
+  jobId: number,
+  level: number,
+  communityId: number,
+): Promise<TopicClusterDetailResponse> {
+  const { data } = await httpClient.get<TopicClusterDetailResponse>(
+    `/graph/topic-clusters/${jobId}/${level}/${communityId}`,
   );
   return data;
 }

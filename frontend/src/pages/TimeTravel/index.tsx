@@ -4,14 +4,22 @@
  * Inspector+ can pick a recording + an ISO timestamp and see all
  * bi-temporal edges alive at that moment. The page also exposes the
  * edge-history drawer: click any edge to see its audit-log events.
+ *
+ * GD-002 / GD-003 / GD-009 (graph drilldown closed loop):
+ *   - Recording picker upgraded from InputNumber to AutoComplete
+ *     (pulls from listRecordings).
+ *   - Edge Action column gains a "跳到录音" link.
+ *   - Consumes `?recording=<id>` URL param to pre-fill the picker.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
 import {
+  AutoComplete,
   Card,
   DatePicker,
   Empty,
-  InputNumber,
   Message,
   Spin,
   Table,
@@ -25,16 +33,56 @@ import {
   type EdgeOut,
   type EdgeEventOut,
 } from "@/api/advancedGraph";
+import { listRecordings } from "@/api/services";
 
-const { Title, Text } = Typography;
+const { Text } = Typography;
 
 export default function TimeTravelPage() {
+  const [searchParams] = useSearchParams();
   const [recordingId, setRecordingId] = useState<number>(1);
   const [at, setAt] = useState<Dayjs | null>(dayjs());
   const [loading, setLoading] = useState(false);
   const [edges, setEdges] = useState<EdgeOut[]>([]);
   const [historyVisible, setHistoryVisible] = useState(false);
   const [history, setHistory] = useState<EdgeEventOut[]>([]);
+  const [autoCompleteValue, setAutoCompleteValue] = useState<string>("");
+
+  // GD-002: fetch recording list for the AutoComplete picker
+  const { data: recordingsData } = useQuery({
+    queryKey: ["recordings", "list", "time-travel"],
+    queryFn: () => listRecordings({ page: 1, page_size: 500 }),
+    staleTime: 60_000,
+  });
+
+  // Build AutoComplete options from the recording list
+  const recordingOptions = useMemo(() => {
+    if (!recordingsData?.items) return [];
+    return recordingsData.items.map((rec) => ({
+      label: `#${rec.id} · ${rec.store_id} · ${rec.agent_name} · ${rec.status}`,
+      value: String(rec.id),
+    }));
+  }, [recordingsData]);
+
+  // Sync AutoComplete display value with recordingId
+  useEffect(() => {
+    const matchedOption = recordingOptions.find(
+      (opt) => opt.value === String(recordingId),
+    );
+    setAutoCompleteValue(matchedOption?.label ?? String(recordingId));
+  }, [recordingId, recordingOptions]);
+
+  // GD-009: consume `?recording=<id>` URL param to pre-fill the picker
+  useEffect(() => {
+    const recordingParam = searchParams.get("recording");
+    if (recordingParam) {
+      const num = Number(recordingParam);
+      if (!Number.isNaN(num) && num > 0) {
+        setRecordingId(num);
+      }
+    }
+    // Run once on mount
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function refresh() {
     if (!at) return;
@@ -85,33 +133,60 @@ export default function TimeTravelPage() {
     {
       title: "Valid at",
       dataIndex: "valid_at",
-      render: (v: string | null) => (v ? dayjs(v).format("YYYY-MM-DD HH:mm") : "—"),
+      render: (v: string | null) =>
+        v ? dayjs(v).format("YYYY-MM-DD HH:mm") : "—",
     },
     {
       title: "Invalid at",
       dataIndex: "invalid_at",
-      render: (v: string | null) => (v ? dayjs(v).format("YYYY-MM-DD HH:mm") : "—"),
+      render: (v: string | null) =>
+        v ? dayjs(v).format("YYYY-MM-DD HH:mm") : "—",
     },
     {
       title: "Action",
       key: "action",
       render: (_: unknown, row: EdgeOut) => (
-        <a onClick={() => openHistory(row)}>History</a>
+        <span style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <a onClick={() => openHistory(row)}>History</a>
+          {/* GD-003: jump to recording detail (Q4: no at param — EdgeOut
+              has no recording_id and valid_at is ISO fact-time, not
+              recording offset) */}
+          <Link to={`/recordings/${recordingId}`}>跳到录音</Link>
+        </span>
       ),
     },
   ];
 
   return (
-    <div style={{ padding: 24 }}>
-      <Title heading={4}>Time Travel Explorer</Title>
+    <div>
+      <header className="ag-feature-header">
+        <div>
+          <span className="ag-eyebrow">BI-TEMPORAL GRAPH · 双时态图谱</span>
+          <h1>时间旅行浏览器</h1>
+          <p>选择录音与时间点，查看该时刻存活的图谱边及其审计历史。</p>
+        </div>
+      </header>
+
+      <div style={{ padding: 24 }}>
       <Card style={{ marginBottom: 16 }}>
         <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
           <div>
-            <Text>Recording ID</Text>
-            <InputNumber
-              value={recordingId}
-              onChange={(v) => setRecordingId(Number(v) || 1)}
-              style={{ width: 120 }}
+            <Text>Recording</Text>
+            <AutoComplete
+              value={autoCompleteValue}
+              data={recordingOptions.map((opt) => opt.label)}
+              onSelect={(value: string) => {
+                const matched = recordingOptions.find(
+                  (opt) => opt.label === value,
+                );
+                if (matched) {
+                  setRecordingId(Number(matched.value));
+                }
+              }}
+              onChange={setAutoCompleteValue}
+              placeholder="搜索录音 #ID、门店或坐席"
+              style={{ width: 300 }}
+              allowClear
             />
           </div>
           <div>
@@ -157,6 +232,7 @@ export default function TimeTravelPage() {
           />
         </Card>
       )}
+      </div>
     </div>
   );
 }

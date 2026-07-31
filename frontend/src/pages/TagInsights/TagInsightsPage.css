@@ -2,6 +2,7 @@
   min-height: calc(100vh - 56px);
   padding-bottom: 24px;
   background: #fbfcfe;
+  overflow-anchor: none;
 }
 
 .ag-tag-insights-header {
@@ -26,7 +27,7 @@
 
 .ag-tag-insights-header .ag-feature-header__actions span {
   color: #7a8799;
-  font-size: 9px;
+  font-size: 13px;
 }
 
 .ag-tag-filter-console {
@@ -60,7 +61,7 @@
 .ag-tag-filter-console .ag-database-filter-grid label {
   min-width: 104px;
   color: #738096;
-  font-size: 8px;
+  font-size: 13px;
 }
 
 .ag-tag-filter-console .ag-database-filter-grid input,
@@ -68,7 +69,7 @@
   min-height: 29px;
   border-color: #dfe5ee;
   border-radius: 5px;
-  font-size: 9px;
+  font-size: 13px;
 }
 
 .ag-tag-filter-console .ag-database-filter-actions {
@@ -88,6 +89,13 @@
   display: grid;
   gap: 12px;
   margin: 0;
+  /*
+   * Each insight view has a deliberately different height.  Excluding this
+   * subtree from browser scroll anchoring keeps a real Tab switch from
+   * nudging the document when the graph is replaced by the shorter matrix or
+   * chart panel.
+   */
+  overflow-anchor: none;
 }
 
 .ag-tag-insights-page .ag-output-budget-notice {
@@ -201,6 +209,104 @@
 .ag-tag-insights-page .ag-advanced-snapshot {
   margin-right: 18px;
   margin-left: 18px;
+}
+
+.ag-quality-loop {
+  display: grid;
+  gap: 13px;
+}
+
+.ag-quality-loop__metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.ag-quality-loop__metrics > div > span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: #69778f;
+  font-size: 13px;
+}
+
+.ag-quality-loop__metrics > div > span b {
+  color: #283955;
+  font-size: 13px;
+}
+
+.ag-quality-loop__metrics > div > i {
+  display: block;
+  height: 6px;
+  margin-top: 6px;
+  overflow: hidden;
+  background: #edf1f6;
+  border-radius: 999px;
+}
+
+.ag-quality-loop__metrics > div > i > b {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+}
+
+.ag-quality-loop__metrics .is-blue {
+  background: #2f6bff;
+}
+
+.ag-quality-loop__metrics .is-green {
+  background: #00a870;
+}
+
+.ag-quality-loop__metrics .is-orange {
+  background: #e59a15;
+}
+
+.ag-quality-loop__metrics .is-purple {
+  background: #7458d8;
+}
+
+.ag-quality-loop__issues {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1px;
+  margin: 0;
+  overflow: hidden;
+  background: #e5ebf2;
+  border: 1px solid #e1e7ef;
+  border-radius: 7px;
+}
+
+.ag-quality-loop__issues > div {
+  padding: 8px 10px;
+  background: #f9fbfe;
+}
+
+.ag-quality-loop__issues dt {
+  color: #7e8b9e;
+  font-size: 13px;
+}
+
+.ag-quality-loop__issues dd {
+  margin: 1px 0 0;
+  color: #2d3c58;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.ag-quality-loop > footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #7b889c;
+  font-size: 13px;
+}
+
+.ag-quality-loop > footer a {
+  flex: 0 0 auto;
+  font-weight: 700;
 }
 
 @media (max-width: 1180px) {

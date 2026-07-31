@@ -9,7 +9,7 @@ import { Card, Input, Button, Typography, List, Tag, Spin, Statistic, Grid } fro
 import { query as queryApi } from "@/api/services";
 import type { QueryResponse } from "@/types/api";
 
-const { Title, Text, Paragraph } = Typography;
+const { Text, Paragraph } = Typography;
 const { Row, Col } = Grid;
 
 export default function QueryPage() {
@@ -39,11 +39,16 @@ export default function QueryPage() {
   };
 
   return (
-    <div style={{ padding: 24 }}>
-      <Title heading={4} style={{ marginBottom: 16 }}>
-        智能问答
-      </Title>
+    <div>
+      <header className="ag-feature-header">
+        <div>
+          <span className="ag-eyebrow">NATURAL LANGUAGE QUERY · 自然语言检索</span>
+          <h1>智能问答</h1>
+          <p>以自然语言提问，借助向量与图谱双通道检索，返回带引用的答案。</p>
+        </div>
+      </header>
 
+      <div style={{ padding: 24 }}>
       <Card style={{ marginBottom: 16 }}>
         <div style={{ display: "flex", gap: 12 }}>
           <Input
@@ -107,16 +112,16 @@ export default function QueryPage() {
                       <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 4 }}>
                         <Tag color="blue">{cite.entity}</Tag>
                         {cite.recording_id && (
-                          <Text style={{ fontSize: 12, color: "#86909c" }}>
+                          <Text style={{ fontSize: 14, color: "#86909c" }}>
                             录音 #{cite.recording_id}
                           </Text>
                         )}
-                        <Text style={{ fontSize: 12, color: "#86909c" }}>
+                        <Text style={{ fontSize: 14, color: "#86909c" }}>
                           置信度: {(cite.confidence * 100).toFixed(1)}%
                         </Text>
                       </div>
                       {cite.transcript_snippet && (
-                        <Paragraph style={{ margin: 0, color: "#4e5969", fontSize: 13 }}>
+                        <Paragraph style={{ margin: 0, color: "#4e5969", fontSize: 14 }}>
                           "{cite.transcript_snippet}"
                         </Paragraph>
                       )}
@@ -128,6 +133,7 @@ export default function QueryPage() {
           )}
         </>
       )}
+      </div>
     </div>
   );
 }

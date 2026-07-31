@@ -1,17 +1,19 @@
 .tig-shell {
-  --tig-ink: #17243d;
+  --tig-ink: #17233d;
   --tig-secondary: #52627d;
   --tig-muted: #7f8ba0;
-  --tig-line: #dce4f0;
+  --tig-line: #e3eaf5;
   --tig-blue: #315ff4;
   min-width: 0;
   position: relative;
   overflow: hidden;
   color: var(--tig-ink);
-  background: #f7f9fc;
-  border: 1px solid #d8e1ee;
-  border-radius: 8px;
-  box-shadow: 0 12px 30px rgba(52, 73, 110, 0.07);
+  background:
+    radial-gradient(circle at 50% 0%, rgba(236, 244, 255, 0.55), rgba(255, 255, 255, 0) 42%),
+    #fdfefe;
+  border: 1px solid #e3eaf5;
+  border-radius: 14px;
+  box-shadow: 0 12px 30px rgba(40, 79, 143, 0.06);
   font-family:
     Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
 }
@@ -22,8 +24,8 @@
   justify-content: space-between;
   gap: 24px;
   min-height: 82px;
-  padding: 15px 18px;
-  background: #fff;
+  padding: 16px 20px;
+  background: rgba(255, 255, 255, 0.96);
   border-bottom: 1px solid var(--tig-line);
 }
 
@@ -35,10 +37,11 @@
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  color: #3156bc;
-  font-size: 10px;
-  font-weight: 800;
+  color: #4274d5;
+  font-size: 13px;
+  font-weight: 700;
   letter-spacing: 0.13em;
+  text-transform: uppercase;
 }
 
 .tig-header__title > span svg {
@@ -46,16 +49,17 @@
 }
 
 .tig-header h2 {
-  margin: 4px 0 2px;
-  color: #17243d;
-  font-size: 19px;
+  margin: 5px 0 3px;
+  color: #1d3f80;
+  font-size: 21px;
+  font-weight: 750;
   line-height: 1.3;
 }
 
 .tig-header p {
   margin: 0;
   color: var(--tig-secondary);
-  font-size: 11px;
+  font-size: 14px;
 }
 
 .tig-telemetry {
@@ -63,8 +67,10 @@
   grid-template-columns: repeat(4, minmax(72px, 1fr));
   min-width: 350px;
   margin: 0;
-  border: 1px solid #e1e7f0;
-  border-radius: 6px;
+  border: 1px solid #e3eaf5;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #fff;
 }
 
 .tig-telemetry > div {
@@ -72,8 +78,8 @@
   grid-template-columns: 1fr auto;
   align-items: baseline;
   gap: 8px;
-  padding: 9px 11px;
-  border-left: 1px solid #e7ebf2;
+  padding: 11px 13px;
+  border-left: 1px solid #edf1f7;
 }
 
 .tig-telemetry > div:first-child {
@@ -82,13 +88,14 @@
 
 .tig-telemetry dt {
   color: var(--tig-muted);
-  font-size: 10px;
+  font-size: 13px;
+  letter-spacing: 0.04em;
 }
 
 .tig-telemetry dd {
   margin: 0;
-  color: #263752;
-  font-size: 17px;
+  color: #1d3f80;
+  font-size: 19px;
   font-weight: 750;
   font-variant-numeric: tabular-nums;
 }
@@ -119,7 +126,7 @@
 .tig-filterbar > label > span {
   flex: none;
   color: var(--tig-muted);
-  font-size: 10px;
+  font-size: 13px;
 }
 
 .tig-filterbar select {
@@ -131,7 +138,7 @@
   border: 1px solid #dbe3ef;
   border-radius: 5px;
   font: inherit;
-  font-size: 11px;
+  font-size: 14px;
 }
 
 .tig-filterbar button {
@@ -142,7 +149,7 @@
   border: 1px solid #dbe3ef;
   border-radius: 5px;
   font: inherit;
-  font-size: 10px;
+  font-size: 13px;
   font-weight: 650;
   cursor: pointer;
 }
@@ -216,11 +223,14 @@
   position: relative;
   min-width: 0;
   overflow: hidden;
-  background: #fbfdff;
   border-right: 1px solid var(--tig-line);
+  background:
+    radial-gradient(circle at 50% 42%, rgba(236, 244, 255, 0.86), rgba(255, 255, 255, 0) 38%),
+    linear-gradient(180deg, #fbfdff 0%, #ffffff 100%);
 }
 
 .tig-canvas-viewport {
+  position: relative;
   height: calc(100vh - 218px);
   min-height: 500px;
   max-height: none;
@@ -228,16 +238,35 @@
   scrollbar-color: #c8d3e3 transparent;
 }
 
+/* Dot grid texture matching CommunityExplorer baseline. Hidden from AT. */
+.tig-canvas-viewport::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0.55;
+  background-image: radial-gradient(#c8d6ed 1px, transparent 1px);
+  background-size: 24px 24px;
+  -webkit-mask-image: radial-gradient(circle at center, #000, transparent 78%);
+          mask-image: radial-gradient(circle at center, #000, transparent 78%);
+}
+
+.tig-canvas-viewport > * {
+  position: relative;
+  z-index: 1;
+}
+
 .tig-graph-svg {
   display: block;
   height: auto;
   min-height: 0;
-  background: #fbfdff;
+  background: transparent;
   transition: width 160ms ease;
 }
 
 .tig-community__label {
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 780;
   paint-order: stroke;
   stroke: #fbfdff;
@@ -247,7 +276,7 @@
 
 .tig-community__meta {
   fill: #6f7f98;
-  font-size: 9px;
+  font-size: 13px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -270,7 +299,7 @@
 }
 
 .tig-edge__label {
-  font-size: 9px;
+  font-size: 13px;
   font-weight: 700;
 }
 
@@ -320,20 +349,20 @@
 
 .tig-central-target__eyebrow {
   fill: #a66d08;
-  font-size: 7px;
+  font-size: 13px;
   font-weight: 800;
   letter-spacing: 0.12em;
 }
 
 .tig-central-target__title {
   fill: #1c2b49;
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 750;
 }
 
 .tig-central-target__meta {
   fill: #6f7e98;
-  font-size: 9px;
+  font-size: 13px;
 }
 
 .tig-node {
@@ -344,7 +373,7 @@
 .tig-node__body {
   fill: var(--tig-node-fill);
   stroke: var(--tig-node-stroke);
-  filter: drop-shadow(0 2px 4px rgba(65, 87, 124, 0.12));
+  filter: drop-shadow(0 2px 5px rgba(65, 87, 124, 0.16));
   transition:
     filter 120ms ease,
     stroke-width 120ms ease;
@@ -352,8 +381,13 @@
 
 .tig-node:hover .tig-node__body,
 .tig-node.is-focused .tig-node__body {
-  filter: drop-shadow(0 6px 9px rgba(50, 76, 122, 0.17));
+  filter: drop-shadow(0 7px 11px rgba(50, 76, 122, 0.22));
   stroke-width: 2.4;
+}
+
+.tig-node.is-selected .tig-node__body {
+  filter: drop-shadow(0 8px 14px rgba(22, 93, 255, 0.28));
+  stroke-width: 2.6;
 }
 
 .tig-node--focus .tig-node__body {
@@ -382,7 +416,7 @@
 
 .tig-node__title {
   fill: #1d2b44;
-  font-size: 9px;
+  font-size: 13px;
   font-weight: 700;
   paint-order: stroke;
   stroke: #fbfdff;
@@ -391,13 +425,13 @@
 }
 
 .tig-node--focus .tig-node__title {
-  font-size: 10px;
+  font-size: 13px;
   font-weight: 760;
 }
 
 .tig-node__subtitle {
   fill: #687892;
-  font-size: 7.5px;
+  font-size: 13px;
   paint-order: stroke;
   stroke: #fbfdff;
   stroke-width: 3px;
@@ -427,18 +461,20 @@
   display: grid;
   min-width: 190px;
   max-width: 280px;
-  padding: 10px 12px;
-  background: rgba(255, 255, 255, 0.97);
-  border: 1px solid #cbd7e8;
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.78);
+  -webkit-backdrop-filter: blur(14px);
+          backdrop-filter: blur(14px);
+  border: 1px solid rgba(207, 220, 240, 0.6);
   border-left: 3px solid var(--tig-blue);
-  border-radius: 6px;
-  box-shadow: 0 10px 24px rgba(46, 66, 102, 0.13);
+  border-radius: 10px;
+  box-shadow: 0 12px 30px rgba(46, 66, 102, 0.13);
   pointer-events: none;
 }
 
 .tig-hovercard span {
   color: #315bc6;
-  font-size: 9px;
+  font-size: 13px;
   font-weight: 750;
   letter-spacing: 0.08em;
 }
@@ -447,7 +483,7 @@
   margin-top: 3px;
   overflow: hidden;
   color: #182740;
-  font-size: 12px;
+  font-size: 13px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -456,7 +492,7 @@
   margin-top: 2px;
   overflow: hidden;
   color: #6b7990;
-  font-size: 10px;
+  font-size: 13px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -466,21 +502,23 @@
   z-index: 5;
   bottom: 14px;
   left: 14px;
-  width: 205px;
-  padding: 10px 12px;
+  width: 215px;
+  padding: 12px 14px;
   color: #52617a;
-  background: rgba(255, 255, 255, 0.95);
-  border: 1px solid #d5dfeb;
-  border-radius: 6px;
-  box-shadow: 0 7px 18px rgba(54, 76, 111, 0.08);
-  font-size: 9px;
+  background: rgba(255, 255, 255, 0.78);
+  -webkit-backdrop-filter: blur(14px);
+          backdrop-filter: blur(14px);
+  border: 1px solid rgba(207, 220, 240, 0.6);
+  border-radius: 10px;
+  box-shadow: 0 9px 22px rgba(54, 76, 111, 0.1);
+  font-size: 13px;
 }
 
 .tig-legend > strong {
   display: block;
   margin-bottom: 7px;
   color: #26354d;
-  font-size: 10px;
+  font-size: 13px;
 }
 
 .tig-legend > div {
@@ -542,10 +580,12 @@
   bottom: 14px;
   display: flex;
   overflow: hidden;
-  background: #fff;
-  border: 1px solid #d8e0ec;
-  border-radius: 6px;
-  box-shadow: 0 7px 18px rgba(54, 76, 111, 0.1);
+  background: rgba(255, 255, 255, 0.78);
+  -webkit-backdrop-filter: blur(14px);
+          backdrop-filter: blur(14px);
+  border: 1px solid rgba(207, 220, 240, 0.6);
+  border-radius: 10px;
+  box-shadow: 0 9px 22px rgba(54, 76, 111, 0.12);
 }
 
 .tig-zoom button {
@@ -559,7 +599,7 @@
   border: 0;
   border-left: 1px solid #e3e8ef;
   font: inherit;
-  font-size: 10px;
+  font-size: 13px;
   font-weight: 700;
   cursor: pointer;
 }
@@ -583,7 +623,9 @@
   max-height: none;
   overflow: auto;
   color: #20304a;
-  background: #fff;
+  background:
+    radial-gradient(circle at 50% 18%, rgba(236, 244, 255, 0.7), rgba(255, 255, 255, 0) 52%),
+    rgba(255, 255, 255, 0.96);
 }
 
 .tig-inspector__empty {
@@ -592,10 +634,11 @@
 
 .tig-inspector__empty > span,
 .tig-inspector__header > div > span {
-  color: #3557ad;
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 0.08em;
+  color: #4274d5;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
 }
 
 .tig-inspector__empty h3 {
@@ -606,7 +649,7 @@
 .tig-inspector__empty p {
   margin: 0;
   color: #66758d;
-  font-size: 11px;
+  font-size: 14px;
   line-height: 1.65;
 }
 
@@ -625,14 +668,14 @@
 
 .tig-inspector__empty dt {
   color: #293a55;
-  font-size: 11px;
+  font-size: 14px;
   font-weight: 700;
 }
 
 .tig-inspector__empty dd {
   margin: 3px 0 0;
   color: #7a879a;
-  font-size: 10px;
+  font-size: 13px;
 }
 
 .tig-inspector__header {
@@ -649,15 +692,16 @@
 
 .tig-inspector__header h3 {
   margin: 10px 0 4px;
-  color: #17243d;
-  font-size: 17px;
+  color: #1d3f80;
+  font-size: 19px;
+  font-weight: 750;
   overflow-wrap: anywhere;
 }
 
 .tig-inspector__header p {
   margin: 0;
   color: #6b7890;
-  font-size: 10px;
+  font-size: 13px;
   overflow-wrap: anywhere;
 }
 
@@ -666,7 +710,7 @@
   color: #126a4e;
   background: #eaf8f1;
   border-radius: 10px;
-  font-size: 9px;
+  font-size: 13px;
 }
 
 .tig-state-pill.is-conflict {
@@ -691,7 +735,7 @@
   min-width: 300px;
   border-collapse: collapse;
   table-layout: fixed;
-  font-size: 9px;
+  font-size: 13px;
 }
 
 .tig-comparison-table th,
@@ -737,7 +781,7 @@
 .tig-comparison-table td strong {
   display: block;
   color: #1d2b44;
-  font-size: 10px;
+  font-size: 13px;
 }
 
 .tig-missing-value {
@@ -754,18 +798,18 @@
 .tig-evidence-heading h4 {
   margin: 0;
   color: #263650;
-  font-size: 11px;
+  font-size: 14px;
 }
 
 .tig-evidence-heading span {
   color: #7a8799;
-  font-size: 9px;
+  font-size: 13px;
 }
 
 .tig-inspector__no-evidence {
   margin: 12px 15px;
   color: #7b899e;
-  font-size: 10px;
+  font-size: 13px;
 }
 
 .tig-evidence-list {
@@ -788,7 +832,7 @@
   justify-content: space-between;
   gap: 8px;
   color: #35445c;
-  font-size: 10px;
+  font-size: 13px;
 }
 
 .tig-evidence-list li > div span {
@@ -800,13 +844,13 @@
 .tig-evidence-list blockquote {
   margin: 6px 0 8px;
   color: #66758d;
-  font-size: 10px;
+  font-size: 13px;
   line-height: 1.5;
 }
 
 .tig-evidence-list a {
   color: #2755d7;
-  font-size: 10px;
+  font-size: 13px;
   font-weight: 700;
   text-decoration: none;
 }
@@ -821,7 +865,7 @@
   color: #68778f;
   background: #f8fafc;
   border-top: 1px solid #dfe6ef;
-  font-size: 10px;
+  font-size: 13px;
 }
 
 .tig-empty {

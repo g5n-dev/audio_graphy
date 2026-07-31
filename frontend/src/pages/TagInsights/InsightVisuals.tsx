@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { Link } from "react-router-dom";
 import { formatPercent } from "@/components/dialogue/format";
 import type { AnalyzeTagInsightsResponse } from "@/types/api";
 
@@ -328,6 +329,94 @@ function PairwiseCards({ result }: InsightVisualsProps) {
   );
 }
 
+function compactPercent(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return "—";
+  return `${new Intl.NumberFormat("zh-CN", {
+    maximumFractionDigits: 1,
+  }).format(value * 100)}%`;
+}
+
+function average(values: Array<number | null>): number | null {
+  const finiteValues = values.filter(
+    (value): value is number => value !== null && Number.isFinite(value),
+  );
+  if (finiteValues.length === 0) return null;
+  return (
+    finiteValues.reduce((total, value) => total + value, 0) /
+    finiteValues.length
+  );
+}
+
+function QualityLoopCard({ result }: InsightVisualsProps) {
+  const coverage =
+    average(result.coverage.map((item) => item.coverage_rate)) ??
+    (result.overview.total_cells > 0
+      ? result.overview.complete_cells / result.overview.total_cells
+      : null);
+  const agreement = average(
+    result.pairwise.map((item) => item.agreement_rate),
+  );
+  const conflict = result.overview.conflict_rate;
+  const evidenceDensity =
+    result.overview.assignment_count > 0
+      ? Math.min(
+          1,
+          result.output_budget.evidence_ref_count /
+            result.overview.assignment_count,
+        )
+      : null;
+  const signals = [
+    { label: "平均覆盖率", value: coverage, tone: "blue" },
+    { label: "平均一致率", value: agreement, tone: "green" },
+    { label: "冲突率", value: conflict, tone: "orange" },
+    { label: "证据密度", value: evidenceDensity, tone: "purple" },
+  ] as const;
+
+  return (
+    <div className="ag-quality-loop">
+      <div className="ag-quality-loop__metrics">
+        {signals.map((signal) => (
+          <div key={signal.label}>
+            <span>
+              <strong>{signal.label}</strong>
+              <b>{compactPercent(signal.value)}</b>
+            </span>
+            <i aria-hidden="true">
+              <b
+                className={`is-${signal.tone}`}
+                style={{ width: `${Math.max(0, signal.value ?? 0) * 100}%` }}
+              />
+            </i>
+          </div>
+        ))}
+      </div>
+      <dl className="ag-quality-loop__issues">
+        <div>
+          <dt>待复核冲突</dt>
+          <dd>{result.overview.conflict_cells}</dd>
+        </div>
+        <div>
+          <dt>缺失单元</dt>
+          <dd>{result.overview.incomplete_cells}</dd>
+        </div>
+        <div>
+          <dt>版本差异</dt>
+          <dd>
+            {result.pairwise.reduce(
+              (total, item) => total + item.differences,
+              0,
+            )}
+          </dd>
+        </div>
+      </dl>
+      <footer>
+        <span>将异常送入人工复核、评估和灰度发布链路。</span>
+        <Link to="/tag-governance">进入标签治理中心</Link>
+      </footer>
+    </div>
+  );
+}
+
 function DimensionTable({ result }: InsightVisualsProps) {
   if (result.dimension_comparisons.length === 0) {
     return <EmptyChart>标签快照未提供门店或人员维度。</EmptyChart>;
@@ -423,6 +512,15 @@ export function InsightVisuals({ result }: InsightVisualsProps) {
             </div>
           </header>
           <PairwiseCards result={result} />
+        </article>
+        <article className="ag-insight-card ag-insight-card--wide">
+          <header>
+            <div>
+              <h2>质量闭环</h2>
+              <p>把覆盖、一致、冲突与证据完整度转成治理行动</p>
+            </div>
+          </header>
+          <QualityLoopCard result={result} />
         </article>
       </section>
 

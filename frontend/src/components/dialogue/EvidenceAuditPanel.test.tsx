@@ -30,6 +30,7 @@ function makeWorkspace(
       ended_at: "2026-07-24T08:05:00Z",
       duration_sec: 300,
       merged_audio_url: null,
+      playback_expires_at: null,
       version: 1,
     },
     recordings: [],

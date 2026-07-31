@@ -13,7 +13,10 @@
  *   /speakers/:id — speaker profile detail (M7 + M9 T15 pending merges)
  *   /receptions    — reception workspace entry
  *   /time-travel  — M9 R2 T15 bi-temporal explorer
- *   /communities  — M9 R2 T15 Leiden community explorer
+ *   /communities  — compatibility redirect to /graph?view=clusters
+ *   /tag-governance — tag schema/evaluation/deployment governance
+ *   /tag-review   — human review workbench
+ *   /tag-runs/:id — tag extraction/recompute run detail
  *   /prompts      — prompt management
  */
 
@@ -42,7 +45,7 @@ import {
   IconStorage,
   IconUser,
   IconClockCircle,
-  IconCommon,
+  IconMenu,
 } from "@arco-design/web-react/icon";
 import { useAuthStore } from "@/stores/auth";
 import "@/styles/immersiveGraphShell.css";
@@ -59,9 +62,6 @@ const SpeakerProfileDetailPage = lazy(
   () => import("@/pages/SpeakerProfile/Detail"),
 );
 const TimeTravelPage = lazy(() => import("@/pages/TimeTravel"));
-const CommunityExplorerPage = lazy(
-  () => import("@/pages/CommunityExplorer"),
-);
 const ReceptionWorkspacePage = lazy(
   () => import("@/pages/ReceptionWorkspace"),
 );
@@ -73,6 +73,9 @@ const ReceptionStateInsightsPage = lazy(
   () => import("@/pages/ReceptionStateInsights"),
 );
 const TagInsightsPage = lazy(() => import("@/pages/TagInsights"));
+const TagGovernancePage = lazy(() => import("@/pages/TagGovernance"));
+const TagReviewPage = lazy(() => import("@/pages/TagReview"));
+const TagRunDetailPage = lazy(() => import("@/pages/TagRunDetail"));
 
 const { Header, Sider, Content } = Layout;
 const { Title } = Typography;
@@ -193,28 +196,59 @@ const menuGroups = [
       { key: "/graph", icon: <IconBranch />, label: "全域知识图谱" },
       { key: "/query", icon: <IconMessage />, label: "智能问答" },
       { key: "/stats", icon: <IconStorage />, label: "标签统计" },
+      {
+        key: "/tag-governance",
+        icon: <IconStorage />,
+        label: "标签治理",
+        requiresInspector: true,
+      },
+      {
+        key: "/tag-review",
+        icon: <IconUser />,
+        label: "人工复核",
+        requiresInspector: true,
+      },
       { key: "/speakers", icon: <IconUser />, label: "说话人" },
-      { key: "/communities", icon: <IconCommon />, label: "社区探索" },
       { key: "/time-travel", icon: <IconClockCircle />, label: "时间演化" },
     ],
   },
 ];
 
-const menuItems = menuGroups.flatMap((group) => group.items);
-
 function AppLayout() {
   const location = useLocation();
   const navigate = useNavigate();
+  const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false);
   const user = useAuthStore((s) => s.user);
   const clearAuth = useAuthStore((s) => s.clearAuth);
+  const canGovernTags =
+    user?.role === "admin" || user?.role === "inspector";
+  const visibleMenuGroups = menuGroups.map((group) => ({
+    ...group,
+    items: group.items.filter(
+      (item) => !("requiresInspector" in item) || canGovernTags,
+    ),
+  }));
+  const visibleMenuItems = visibleMenuGroups.flatMap(
+    (group) => group.items,
+  );
 
   useEffect(() => {
     document.documentElement.scrollTop = 0;
     document.body.scrollTop = 0;
+    setMobileNavigationOpen(false);
   }, [location.pathname]);
 
+  useEffect(() => {
+    if (!mobileNavigationOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMobileNavigationOpen(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [mobileNavigationOpen]);
+
   const selectedKey =
-    menuItems.find(
+    visibleMenuItems.find(
       (m) =>
         m.key === location.pathname ||
         (m.key !== "/" && location.pathname.startsWith(m.key)),
@@ -240,6 +274,20 @@ function AppLayout() {
         <Space className="ag-app-brand">
           <button
             type="button"
+            className="ag-app-nav-toggle"
+            aria-label={
+              mobileNavigationOpen ? "关闭平台导航" : "打开平台导航"
+            }
+            aria-controls="ag-platform-navigation"
+            aria-expanded={mobileNavigationOpen}
+            onClick={() =>
+              setMobileNavigationOpen((current) => !current)
+            }
+          >
+            <IconMenu aria-hidden="true" />
+          </button>
+          <button
+            type="button"
             className="ag-app-brand__mark"
             aria-label="返回 AudioGraphy 仪表盘"
             onClick={() => navigate("/")}
@@ -260,7 +308,7 @@ function AppLayout() {
         </Space>
         {user && (
           <Space className="ag-app-account">
-            <span style={{ fontSize: 13, color: "#4e5969" }}>
+            <span style={{ fontSize: 14, color: "#4e5969" }}>
               {user.name} ({user.role})
             </span>
             <Button
@@ -276,20 +324,21 @@ function AppLayout() {
           </Space>
         )}
       </Header>
-      <Layout>
+      <Layout className="ag-app-body">
         <Sider
-          className="ag-platform-sider"
-          width={208}
+          className={`ag-platform-sider${mobileNavigationOpen ? " is-mobile-open" : ""}`}
+          width={228}
           style={{
             background: "#fff",
             borderRight: "1px solid #e5e6eb",
           }}
         >
           <nav
+            id="ag-platform-navigation"
             className="ag-platform-navigation"
             aria-label="平台功能导航"
           >
-            {menuGroups.map((group) => (
+            {visibleMenuGroups.map((group) => (
               <section
                 key={group.label}
                 className="ag-platform-menu-group"
@@ -315,6 +364,14 @@ function AppLayout() {
             ))}
           </nav>
         </Sider>
+        {mobileNavigationOpen && (
+          <button
+            type="button"
+            className="ag-platform-backdrop"
+            aria-label="关闭平台导航"
+            onClick={() => setMobileNavigationOpen(false)}
+          />
+        )}
         <Content
           className="ag-app-content"
           style={{
@@ -351,10 +408,43 @@ function AppLayout() {
                   path="/speakers/:id"
                   element={<SpeakerProfileDetailPage />}
                 />
-                <Route path="/communities" element={<CommunityExplorerPage />} />
+                <Route
+                  path="/communities"
+                  element={<Navigate to="/graph?view=clusters" replace />}
+                />
                 <Route path="/time-travel" element={<TimeTravelPage />} />
                 <Route path="/stats" element={<StatsPage />} />
                 <Route path="/tag-insights" element={<TagInsightsPage />} />
+                <Route
+                  path="/tag-governance"
+                  element={
+                    canGovernTags ? (
+                      <TagGovernancePage />
+                    ) : (
+                      <Navigate to="/" replace />
+                    )
+                  }
+                />
+                <Route
+                  path="/tag-review"
+                  element={
+                    canGovernTags ? (
+                      <TagReviewPage />
+                    ) : (
+                      <Navigate to="/" replace />
+                    )
+                  }
+                />
+                <Route
+                  path="/tag-runs/:id"
+                  element={
+                    canGovernTags ? (
+                      <TagRunDetailPage />
+                    ) : (
+                      <Navigate to="/" replace />
+                    )
+                  }
+                />
                 <Route path="*" element={<Navigate to="/" replace />} />
               </Routes>
             </Suspense>

@@ -4,10 +4,8 @@
 
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Card, Select, Table, Typography, Tag } from "@arco-design/web-react";
+import { Card, Select, Table, Tag } from "@arco-design/web-react";
 import { getStats } from "@/api/services";
-
-const { Title } = Typography;
 
 const groupByOptions = [
   { label: "标签路径", value: "tag_path" },
@@ -25,11 +23,16 @@ export default function StatsPage() {
   });
 
   return (
-    <div style={{ padding: 24 }}>
-      <Title heading={4} style={{ marginBottom: 16 }}>
-        标签统计
-      </Title>
+    <div>
+      <header className="ag-feature-header">
+        <div>
+          <span className="ag-eyebrow">TAG ANALYTICS · 标签分析</span>
+          <h1>标签统计</h1>
+          <p>按标签路径、标签值、门店或坐席多维度聚合统计。</p>
+        </div>
+      </header>
 
+      <div style={{ padding: 24 }}>
       <Card style={{ marginBottom: 16 }}>
         <Select
           value={groupBy}
@@ -69,11 +72,12 @@ export default function StatsPage() {
           ]}
         />
         {data && (
-          <div style={{ marginTop: 12, color: "#86909c", fontSize: 12 }}>
+          <div style={{ marginTop: 12, color: "#86909c", fontSize: 14 }}>
             共 {data.total_records} 条标签记录
           </div>
         )}
       </Card>
+      </div>
     </div>
   );
 }

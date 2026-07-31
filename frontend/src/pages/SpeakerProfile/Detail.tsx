@@ -16,7 +16,7 @@
  */
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, Link } from "react-router-dom";
 import {
   Button,
   Card,
@@ -38,6 +38,7 @@ import {
   type SpeakerMergePendingListItem,
 } from "@/api/advancedGraph";
 import { SpeakerBadge } from "@/components/SpeakerBadge";
+import { buildFocusParam } from "@/utils/urlParams";
 
 const { Title, Text } = Typography;
 
@@ -70,30 +71,36 @@ export default function SpeakerProfileDetailPage(): JSX.Element {
   }
 
   return (
-    <div style={{ padding: 24 }}>
-      <div style={{ marginBottom: 16 }}>
-        <Button
-          type="text"
-          icon={<IconArrowLeft />}
-          onClick={() => navigate("/speakers")}
-          style={{ marginRight: 8 }}
-        >
-          返回列表
-        </Button>
-      </div>
+    <div>
+      <header className="ag-feature-header">
+        <div>
+          <span className="ag-eyebrow">SPEAKER PROFILE · 说话人详情</span>
+          <h1>
+            {data.display_name}
+            <SpeakerBadge
+              role={data.speaker_role}
+              ambiguity={data.ambiguity_tag}
+            />
+          </h1>
+          <p>声纹、角色、合并策略与关联录音一览。SpeakerNode #{data.id} · tenant={data.tenant_id}</p>
+        </div>
+        <div className="ag-feature-header__actions">
+          <Button
+            type="text"
+            icon={<IconArrowLeft />}
+            onClick={() => navigate("/speakers")}
+            style={{ marginRight: 8, color: "var(--ag-text-secondary)" }}
+          >
+            返回列表
+          </Button>
+          <Link to={`/graph?focus=${buildFocusParam("speaker", speakerId)}`}>
+            在图谱中查看
+          </Link>
+        </div>
+      </header>
 
+      <div style={{ padding: 24 }}>
       <Card style={{ marginBottom: 16 }}>
-        <Title heading={4} style={{ marginBottom: 4 }}>
-          {data.display_name}
-          <SpeakerBadge
-            role={data.speaker_role}
-            ambiguity={data.ambiguity_tag}
-          />
-        </Title>
-        <Text type="secondary" style={{ fontSize: 13 }}>
-          SpeakerNode #{data.id} · tenant={data.tenant_id}
-        </Text>
-
         <Descriptions
           column={2}
           style={{ marginTop: 16 }}
@@ -101,7 +108,7 @@ export default function SpeakerProfileDetailPage(): JSX.Element {
             {
               label: "声纹Hash",
               value: (
-                <code style={{ fontSize: 13 }}>{data.voiceprint_hash}</code>
+                <code style={{ fontSize: 14 }}>{data.voiceprint_hash}</code>
               ),
             },
             {
@@ -151,7 +158,7 @@ export default function SpeakerProfileDetailPage(): JSX.Element {
               dataIndex: "voiceprint_id",
               width: 140,
               render: (val: string) => (
-                <code style={{ fontSize: 12, color: "#86909c" }}>{val}</code>
+                <code style={{ fontSize: 14, color: "#86909c" }}>{val}</code>
               ),
             },
             {
@@ -176,6 +183,7 @@ export default function SpeakerProfileDetailPage(): JSX.Element {
       </Card>
 
       <PendingMergesCard speakerId={data.id} />
+      </div>
     </div>
   );
 }
@@ -308,7 +316,7 @@ function CrossRecordingMiniView({
         background: "#f7f8fa",
         borderRadius: 4,
         fontFamily: "monospace",
-        fontSize: 13,
+        fontSize: 14,
       }}
     >
       <div>

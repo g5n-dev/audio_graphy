@@ -2,8 +2,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   acceptReceptionProposal,
   analyzeTagInsights,
+  cancelReceptionAudioOperation,
+  correctReceptionDialogueTag,
+  createReceptionAudioOperation,
+  createReceptionAudioPlan,
+  createStreamingTicket,
   deriveReceptionDialogueTags,
   discoverReceptionProposals,
+  getReceptionAudioOperation,
   getReceptionTagInsights,
   getReceptionProvenance,
   getReceptionWorkspace,
@@ -23,6 +29,7 @@ import type {
 vi.mock("./client", () => ({
   httpClient: {
     get: vi.fn(),
+    patch: vi.fn(),
     post: vi.fn(),
   },
 }));
@@ -30,6 +37,7 @@ vi.mock("./client", () => ({
 import { httpClient } from "./client";
 
 const mockedGet = httpClient.get as unknown as ReturnType<typeof vi.fn>;
+const mockedPatch = httpClient.patch as unknown as ReturnType<typeof vi.fn>;
 const mockedPost = httpClient.post as unknown as ReturnType<typeof vi.fn>;
 
 const WIRE_WORKSPACE: ReceptionWorkspaceApiResponse = {
@@ -47,6 +55,7 @@ const WIRE_WORKSPACE: ReceptionWorkspaceApiResponse = {
     started_at: "2026-07-23T01:00:00Z",
     ended_at: "2026-07-23T01:01:00Z",
     audio_url: "/api/v1/receptions/9/audio?playback_grant=signed",
+    playback_expires_at: "2026-07-23T01:05:00Z",
     version: 2,
     created_at: "2026-07-23T01:00:00Z",
     updated_at: "2026-07-23T01:01:00Z",
@@ -58,8 +67,16 @@ const WIRE_WORKSPACE: ReceptionWorkspaceApiResponse = {
       sequence_no: 0,
       timeline_start_sec: 0,
       timeline_end_sec: 12,
-      source_start_sec: 0,
-      source_end_sec: 12,
+      source_start_sec: 1,
+      source_end_sec: 13,
+      source_start_ms: 1_000,
+      source_end_ms: 13_000,
+      timeline_start_ms: 0,
+      timeline_end_ms: 12_000,
+      gap_before_ms: 0,
+      time_origin_ms: -1_000,
+      legal_source_start_ms: 1_000,
+      legal_source_end_ms: 13_000,
       gap_before_sec: 0,
       decision_source: "explicit",
       merge_confidence: 1,
@@ -67,6 +84,7 @@ const WIRE_WORKSPACE: ReceptionWorkspaceApiResponse = {
       source_recorded_at: "2026-07-23T01:00:00Z",
       audio_url:
         "/api/v1/receptions/9/recordings/101/audio?playback_grant=signed",
+      playback_expires_at: "2026-07-23T01:05:00Z",
     },
   ],
   dialogue_units: [
@@ -229,11 +247,22 @@ const WIRE_WORKSPACE: ReceptionWorkspaceApiResponse = {
       truncated: false,
     },
   },
+  active_audio_operation: {
+    id: 901,
+    reception_id: 9,
+    status: "assembling",
+    mode: "both",
+    progress: 0.5,
+    error: null,
+    created_at: "2026-07-23T01:00:31Z",
+    updated_at: "2026-07-23T01:00:32Z",
+  },
 };
 
 describe("reception and tag insight API services", () => {
   beforeEach(() => {
     mockedGet.mockReset();
+    mockedPatch.mockReset();
     mockedPost.mockReset();
   });
 
@@ -249,11 +278,25 @@ describe("reception and tag insight API services", () => {
     expect(result.reception.merged_audio_url).toContain(
       "playback_grant=signed",
     );
+    expect(result.reception.playback_expires_at).toBe(
+      "2026-07-23T01:05:00Z",
+    );
     expect(result.recordings[0]).toMatchObject({
       id: 101,
+      mapping_id: 88,
+      recording_id: 101,
       name: "录音 #101",
       audio_url:
         "/api/v1/receptions/9/recordings/101/audio?playback_grant=signed",
+      playback_expires_at: "2026-07-23T01:05:00Z",
+      source_start_ms: 1_000,
+      source_end_ms: 13_000,
+      timeline_start_ms: 0,
+      timeline_end_ms: 12_000,
+      gap_before_ms: 0,
+      time_origin_ms: -1_000,
+      legal_source_start_ms: 1_000,
+      legal_source_end_ms: 13_000,
     });
     expect(result.transcript_items[0]).toMatchObject({
       id: 77,
@@ -294,6 +337,11 @@ describe("reception and tag insight API services", () => {
       end_sec: 12,
       truncated: false,
       protected_dialogue_units: 1,
+    });
+    expect(result.active_audio_operation).toMatchObject({
+      id: 901,
+      status: "assembling",
+      progress: 0.5,
     });
   });
 
@@ -343,6 +391,108 @@ describe("reception and tag insight API services", () => {
       params: { window_start_sec: 600, window_size_sec: 600 },
     });
     expect(result.window.start_sec).toBe(600);
+  });
+
+  it("uses mapping identities for signed audio plans and polls idempotent operations", async () => {
+    const planBody = {
+      sources: [
+        { mapping_id: 88, gap_before_ms: 0 },
+        { mapping_id: 89, gap_before_ms: 1_500 },
+      ],
+      expected_version: 2,
+    };
+    const plan = {
+      plan_token: "signed-plan",
+      timeline_revision: 4,
+      total_duration_ms: 25_500,
+      physical_eligible: true,
+      warnings: [],
+      sources: [],
+    };
+    const operation = {
+      id: "audio-op-1",
+      reception_id: 9,
+      status: "queued",
+      mode: "both",
+      progress: 0,
+      error: null,
+      created_at: "2026-07-23T01:00:00Z",
+      updated_at: "2026-07-23T01:00:00Z",
+    };
+    mockedPost
+      .mockResolvedValueOnce({ data: plan })
+      .mockResolvedValueOnce({ data: operation })
+      .mockResolvedValueOnce({
+        data: { ...operation, status: "cancelled" },
+      });
+    mockedGet.mockResolvedValueOnce({
+      data: { ...operation, status: "assembling", progress: 0.6 },
+    });
+
+    await expect(createReceptionAudioPlan(9, planBody)).resolves.toEqual(plan);
+    await expect(
+      createReceptionAudioOperation(
+        9,
+        {
+          plan_token: "signed-plan",
+          mode: "both",
+          expected_version: 2,
+        },
+        "workspace-op-9-v2",
+      ),
+    ).resolves.toEqual(operation);
+    await expect(getReceptionAudioOperation(9, "audio-op-1")).resolves.toMatchObject({
+      status: "assembling",
+      progress: 0.6,
+    });
+    await expect(
+      cancelReceptionAudioOperation(9, "audio-op-1"),
+    ).resolves.toMatchObject({ status: "cancelled" });
+
+    expect(mockedPost).toHaveBeenNthCalledWith(
+      1,
+      "/receptions/9/audio-plans",
+      planBody,
+    );
+    expect(mockedPost).toHaveBeenNthCalledWith(
+      2,
+      "/receptions/9/audio-operations",
+      {
+        plan_token: "signed-plan",
+        mode: "both",
+        expected_version: 2,
+      },
+      { headers: { "Idempotency-Key": "workspace-op-9-v2" } },
+    );
+    expect(mockedGet).toHaveBeenCalledWith(
+      "/receptions/9/audio-operations/audio-op-1",
+    );
+    expect(mockedPost).toHaveBeenNthCalledWith(
+      3,
+      "/receptions/9/audio-operations/audio-op-1/cancel",
+    );
+  });
+
+  it("creates a one-time streaming ticket without putting JWT credentials in a URL", async () => {
+    mockedPost.mockResolvedValueOnce({
+      data: {
+        ticket: "one-time-ticket",
+        expires_at: "2026-07-23T01:00:30Z",
+        ws_url: "wss://audio.example/ws/stream?ticket=one-time-ticket",
+      },
+    });
+
+    const result = await createStreamingTicket({
+      recording_id: 101,
+      consent_token: "consent-proof",
+    });
+
+    expect(mockedPost).toHaveBeenCalledWith("/ws/tickets", {
+      recording_id: 101,
+      consent_token: "consent-proof",
+    });
+    expect(result.ws_url).toContain("ticket=one-time-ticket");
+    expect(result.ws_url).not.toContain("token=");
   });
 
   it("uses the exact optimistic-locking split and adjacent-merge contracts", async () => {
@@ -588,6 +738,30 @@ describe("reception and tag insight API services", () => {
 
     expect(mockedPost).toHaveBeenCalledWith(
       "/receptions/9/dialogue-tags/derive",
+      body,
+    );
+  });
+
+  it("submits a versioned, evidence-bound manual tag correction", async () => {
+    const body = {
+      expected_reception_version: 2,
+      expected_group_version: "v1",
+      label_value: "high",
+      reason: "复核录音后确认价格异议强烈",
+      evidence_ref_ids: ["segment:77"],
+    };
+    mockedPatch.mockResolvedValueOnce({
+      data: {
+        reception_id: 9,
+        reception_version: 3,
+        assignment: WIRE_WORKSPACE.tag_assignments[0],
+      },
+    });
+
+    await correctReceptionDialogueTag(9, 701, body);
+
+    expect(mockedPatch).toHaveBeenCalledWith(
+      "/receptions/9/dialogue-tags/701",
       body,
     );
   });

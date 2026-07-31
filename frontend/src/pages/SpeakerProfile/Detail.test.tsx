@@ -139,4 +139,14 @@ describe("SpeakerProfileDetailPage", () => {
       await screen.findByText("说话人不存在或加载失败"),
     ).toBeInTheDocument();
   });
+
+  // GD-006: "在图谱中查看" button
+  it("renders a link to view the speaker in the knowledge graph", async () => {
+    mockedGetSpeaker.mockResolvedValueOnce(MOCK_DETAIL);
+    renderDetailWithId("7");
+    expect(await screen.findByText("Carol")).toBeInTheDocument();
+    expect(
+      screen.getByText("在图谱中查看"),
+    ).toBeInTheDocument();
+  });
 });

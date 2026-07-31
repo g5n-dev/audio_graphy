@@ -15,12 +15,29 @@ import type {
   QueryResponse,
   RecordingListResponse,
   RecordingResponse,
+  RecordingStatus,
   SegmentListResponse,
   StatsResponse,
   TagsListResponse,
   TokenResponse,
   AnalyzeTagInsightsRequest,
   AnalyzeTagInsightsResponse,
+  CreateReceptionAudioOperationRequest,
+  CreateTagDeploymentRequest,
+  CreateTagEvaluationRequest,
+  CreateTagEvaluationResponse,
+  CreateTagGoldSetRequest,
+  CreateTagJobRequest,
+  CreateTagOptimizationRunRequest,
+  CreateTagReviewBatchRequest,
+  CreateTagReviewBatchResponse,
+  CreateTagSchemaRequest,
+  CreateTagSchemaVersionRequest,
+  CreateTaggerVersionRequest,
+  CorrectDialogueTagRequest,
+  CorrectDialogueTagResponse,
+  DecideTagReviewRequest,
+  DecideTagReviewResponse,
   DeriveDialogueTagsRequest,
   DeriveDialogueTagsResponse,
   EntityId,
@@ -29,6 +46,9 @@ import type {
   MergeReceptionRecordingsRequest,
   ProvenanceListApiResponse,
   ReceptionAuditEvent,
+  ReceptionAudioOperation,
+  ReceptionAudioPlanRequest,
+  ReceptionAudioPlanResponse,
   ReceptionAutomationRequest,
   ReceptionAutomationResponse,
   ReceptionDialogueUnit,
@@ -51,6 +71,34 @@ import type {
   ReceptionWorkspaceResponse,
   SegmentReceptionRequest,
   SplitDialogueUnitRequest,
+  StreamingTicketRequest,
+  StreamingTicketResponse,
+  FreezeTagGoldSetRequest,
+  OptimizeTaggerVersionRequest,
+  OptimizeTaggerVersionResponse,
+  TagAuditEventListResponse,
+  TagBadcaseListResponse,
+  TagDeployment,
+  TagDeploymentListResponse,
+  TagDeploymentObservationListResponse,
+  TagEvaluationListResponse,
+  TagEvolutionOverview,
+  TagFactLineageResponse,
+  TagGoldSet,
+  TagGoldSetVersion,
+  TagGoldSetListResponse,
+  TagJob,
+  TagJobListResponse,
+  TagOptimizationCandidateComparison,
+  TagOptimizationRun,
+  TagOptimizationRunListResponse,
+  TagReviewListResponse,
+  TagReviewTask,
+  TagSchema,
+  TagSchemaListResponse,
+  TagSchemaVersion,
+  TaggerVersion,
+  TaggerVersionListResponse,
 } from "@/types/api";
 
 // ============================================================
@@ -81,7 +129,7 @@ export async function listRecordings(params?: {
   page?: number;
   page_size?: number;
   store_id?: string;
-  status?: string;
+  status?: RecordingStatus;
   agent_name?: string;
 }): Promise<RecordingListResponse> {
   const { data } = await httpClient.get<RecordingListResponse>("/recordings", {
@@ -114,6 +162,7 @@ export async function exploreGraph(params?: {
   node_type?: string;
   min_degree?: number;
   limit?: number;
+  edge_limit?: number;
 }): Promise<ExploreResponse> {
   const { data } = await httpClient.get<ExploreResponse>("/graph/explore", {
     params,
@@ -132,9 +181,15 @@ export async function getSubgraph(
   entity: string,
   maxHops: number = 1,
   limit: number = 50,
+  edgeLimit: number = 5_000,
 ): Promise<ExploreResponse> {
   const { data } = await httpClient.get<ExploreResponse>("/graph/subgraph", {
-    params: { entity, max_hops: maxHops, limit },
+    params: {
+      entity,
+      max_hops: maxHops,
+      limit,
+      edge_limit: edgeLimit,
+    },
   });
   return data;
 }
@@ -285,6 +340,11 @@ function normalizeDialogueEvidence(
     ref_id: refId,
     kind,
     recording_id: recordingId,
+    segment_id:
+      typeof value.segment_id === "string" ||
+      typeof value.segment_id === "number"
+        ? value.segment_id
+        : null,
     coordinate_space: coordinateSpace,
     start_ms:
       explicitStartMs ??
@@ -431,6 +491,7 @@ function normalizeTags(
         confidence: tag.confidence,
         source: tag.source,
         is_manual: tag.source.toLocaleLowerCase() === "manual",
+        model_run_id: tag.model_run_id,
         evidence_refs: tag.evidence_refs
           .map((evidence, index) =>
             normalizeDialogueEvidence(
@@ -497,18 +558,30 @@ function normalizeReceptionWorkspace(
       ended_at: data.reception.ended_at,
       duration_sec: recordingDuration || wallDuration,
       merged_audio_url: data.reception.audio_url,
+      playback_expires_at: data.reception.playback_expires_at,
       version: data.reception.version,
     },
     recordings: data.recordings.map((recording) => ({
       id: recording.recording_id,
+      mapping_id: recording.id,
+      recording_id: recording.recording_id,
       name: `录音 #${recording.recording_id}`,
       sequence_no: recording.sequence_no,
       timeline_start_sec: recording.timeline_start_sec,
       timeline_end_sec: recording.timeline_end_sec,
       source_start_sec: recording.source_start_sec,
       source_end_sec: recording.source_end_sec,
+      source_start_ms: recording.source_start_ms,
+      source_end_ms: recording.source_end_ms,
+      timeline_start_ms: recording.timeline_start_ms,
+      timeline_end_ms: recording.timeline_end_ms,
+      gap_before_ms: recording.gap_before_ms,
+      time_origin_ms: recording.time_origin_ms,
+      legal_source_start_ms: recording.legal_source_start_ms,
+      legal_source_end_ms: recording.legal_source_end_ms,
       gap_before_sec: recording.gap_before_sec,
       audio_url: recording.audio_url,
+      playback_expires_at: recording.playback_expires_at,
       decision_source: recording.decision_source,
       merge_confidence: recording.merge_confidence,
     })),
@@ -538,6 +611,18 @@ function normalizeReceptionWorkspace(
       detail: event.payload,
     })),
     window: data.window,
+    capabilities: data.capabilities,
+    neighbors: data.neighbors
+      ? {
+          previous_dialogue_unit: data.neighbors.previous_dialogue_unit
+            ? normalizeUnit(data.neighbors.previous_dialogue_unit)
+            : null,
+          next_dialogue_unit: data.neighbors.next_dialogue_unit
+            ? normalizeUnit(data.neighbors.next_dialogue_unit)
+            : null,
+        }
+      : undefined,
+    active_audio_operation: data.active_audio_operation ?? null,
   };
 }
 
@@ -617,6 +702,60 @@ export async function mergeReceptionRecordings(
   return data;
 }
 
+export async function createReceptionAudioPlan(
+  receptionId: EntityId,
+  body: ReceptionAudioPlanRequest,
+): Promise<ReceptionAudioPlanResponse> {
+  const { data } = await httpClient.post<ReceptionAudioPlanResponse>(
+    `/receptions/${encodeURIComponent(String(receptionId))}/audio-plans`,
+    body,
+  );
+  return data;
+}
+
+export async function createReceptionAudioOperation(
+  receptionId: EntityId,
+  body: CreateReceptionAudioOperationRequest,
+  idempotencyKey: string,
+): Promise<ReceptionAudioOperation> {
+  const { data } = await httpClient.post<ReceptionAudioOperation>(
+    `/receptions/${encodeURIComponent(String(receptionId))}/audio-operations`,
+    body,
+    { headers: { "Idempotency-Key": idempotencyKey } },
+  );
+  return data;
+}
+
+export async function getReceptionAudioOperation(
+  receptionId: EntityId,
+  operationId: EntityId,
+): Promise<ReceptionAudioOperation> {
+  const { data } = await httpClient.get<ReceptionAudioOperation>(
+    `/receptions/${encodeURIComponent(String(receptionId))}/audio-operations/${encodeURIComponent(String(operationId))}`,
+  );
+  return data;
+}
+
+export async function cancelReceptionAudioOperation(
+  receptionId: EntityId,
+  operationId: EntityId,
+): Promise<ReceptionAudioOperation> {
+  const { data } = await httpClient.post<ReceptionAudioOperation>(
+    `/receptions/${encodeURIComponent(String(receptionId))}/audio-operations/${encodeURIComponent(String(operationId))}/cancel`,
+  );
+  return data;
+}
+
+export async function createStreamingTicket(
+  body: StreamingTicketRequest,
+): Promise<StreamingTicketResponse> {
+  const { data } = await httpClient.post<StreamingTicketResponse>(
+    "/ws/tickets",
+    body,
+  );
+  return data;
+}
+
 export async function segmentReception(
   receptionId: EntityId,
   body: SegmentReceptionRequest,
@@ -687,6 +826,18 @@ export async function deriveReceptionDialogueTags(
 ): Promise<DeriveDialogueTagsResponse> {
   const { data } = await httpClient.post<DeriveDialogueTagsResponse>(
     `/receptions/${encodeURIComponent(String(receptionId))}/dialogue-tags/derive`,
+    body,
+  );
+  return data;
+}
+
+export async function correctReceptionDialogueTag(
+  receptionId: EntityId,
+  assignmentId: EntityId,
+  body: CorrectDialogueTagRequest,
+): Promise<CorrectDialogueTagResponse> {
+  const { data } = await httpClient.patch<CorrectDialogueTagResponse>(
+    `/receptions/${encodeURIComponent(String(receptionId))}/dialogue-tags/${encodeURIComponent(String(assignmentId))}`,
     body,
   );
   return data;
@@ -781,5 +932,355 @@ export async function analyzeTagInsights(
     "/tag-insights/analyze",
     body,
   );
+  return data;
+}
+
+// ============================================================
+// Tag governance closed loop
+// ============================================================
+
+export async function listTagSchemas(): Promise<TagSchemaListResponse> {
+  const { data } =
+    await httpClient.get<TagSchemaListResponse>("/tag-schemas");
+  return data;
+}
+
+export async function getTagSchema(id: number): Promise<TagSchema> {
+  const { data } = await httpClient.get<TagSchema>(`/tag-schemas/${id}`);
+  return data;
+}
+
+export async function createTagSchema(
+  body: CreateTagSchemaRequest,
+): Promise<TagSchema> {
+  const { data } = await httpClient.post<TagSchema>("/tag-schemas", body);
+  return data;
+}
+
+export async function createTagSchemaVersion(
+  schemaId: number,
+  body: CreateTagSchemaVersionRequest,
+): Promise<TagSchemaVersion> {
+  const { data } = await httpClient.post<TagSchemaVersion>(
+    `/tag-schemas/${schemaId}/versions`,
+    body,
+  );
+  return data;
+}
+
+export async function publishTagSchemaVersion(
+  schemaId: number,
+  versionId: number,
+): Promise<TagSchemaVersion> {
+  const { data } = await httpClient.post<TagSchemaVersion>(
+    `/tag-schemas/${schemaId}/versions/${versionId}/publish`,
+  );
+  return data;
+}
+
+export async function listTaggerVersions(): Promise<TaggerVersionListResponse> {
+  const { data } =
+    await httpClient.get<TaggerVersionListResponse>("/tagger-versions");
+  return data;
+}
+
+export async function createTaggerVersion(
+  body: CreateTaggerVersionRequest,
+): Promise<TaggerVersion> {
+  const { data } = await httpClient.post<TaggerVersion>(
+    "/tagger-versions",
+    body,
+  );
+  return data;
+}
+
+export async function optimizeTaggerVersion(
+  body: OptimizeTaggerVersionRequest,
+): Promise<OptimizeTaggerVersionResponse> {
+  const { data } = await httpClient.post<OptimizeTaggerVersionResponse>(
+    "/tagger-versions/optimize",
+    body,
+  );
+  return data;
+}
+
+export async function getTagEvolutionOverview(): Promise<TagEvolutionOverview> {
+  const { data } =
+    await httpClient.get<TagEvolutionOverview>("/tag-evolution/overview");
+  return data;
+}
+
+export async function listTagBadcases(params?: {
+  status?: string;
+  failure_stage?: string;
+  tag_key?: string;
+  limit?: number;
+}): Promise<TagBadcaseListResponse> {
+  const { data } = await httpClient.get<TagBadcaseListResponse>(
+    "/tag-badcases",
+    { params },
+  );
+  return data;
+}
+
+export async function listTagOptimizationRuns(): Promise<TagOptimizationRunListResponse> {
+  const { data } =
+    await httpClient.get<TagOptimizationRunListResponse>(
+      "/tag-optimization-runs",
+    );
+  return data;
+}
+
+export async function getTagOptimizationRun(
+  id: number,
+): Promise<TagOptimizationRun> {
+  const { data } = await httpClient.get<TagOptimizationRun>(
+    `/tag-optimization-runs/${id}`,
+  );
+  return data;
+}
+
+export async function compareTagOptimizationTrials(
+  runId: number,
+  leftTrialId: number,
+  rightTrialId: number,
+): Promise<TagOptimizationCandidateComparison> {
+  const { data } =
+    await httpClient.post<TagOptimizationCandidateComparison>(
+      `/tag-optimization-runs/${runId}/compare`,
+      {
+        left_trial_id: leftTrialId,
+        right_trial_id: rightTrialId,
+      },
+    );
+  return data;
+}
+
+export async function cancelTagOptimizationRun(
+  runId: number,
+): Promise<TagOptimizationRun> {
+  const { data } = await httpClient.post<TagOptimizationRun>(
+    `/tag-optimization-runs/${runId}/cancel`,
+  );
+  return data;
+}
+
+export async function createTagOptimizationRun(
+  body: CreateTagOptimizationRunRequest,
+): Promise<TagOptimizationRun> {
+  const { data } = await httpClient.post<TagOptimizationRun>(
+    "/tag-optimization-runs",
+    body,
+  );
+  return data;
+}
+
+export async function listTagJobs(): Promise<TagJobListResponse> {
+  const { data } = await httpClient.get<TagJobListResponse>("/tag-jobs");
+  return data;
+}
+
+export async function createTagJob(
+  body: CreateTagJobRequest,
+  idempotencyKey: string,
+): Promise<TagJob> {
+  const { data } = await httpClient.post<TagJob>("/tag-jobs", body, {
+    headers: { "Idempotency-Key": idempotencyKey },
+  });
+  return data;
+}
+
+export async function getTagJob(id: number): Promise<TagJob> {
+  const { data } = await httpClient.get<TagJob>(`/tag-jobs/${id}`);
+  return data;
+}
+
+export async function getTagFactLineage(
+  id: number,
+): Promise<TagFactLineageResponse> {
+  const { data } = await httpClient.get<TagFactLineageResponse>(
+    `/tag-facts/${id}/lineage`,
+  );
+  return data;
+}
+
+export async function retryTagJob(id: number): Promise<TagJob> {
+  const { data } = await httpClient.post<TagJob>(`/tag-jobs/${id}/retry`);
+  return data;
+}
+
+export async function cancelTagJob(id: number): Promise<TagJob> {
+  const { data } = await httpClient.post<TagJob>(`/tag-jobs/${id}/cancel`);
+  return data;
+}
+
+export async function listTagReviews(params?: {
+  status?: string;
+}): Promise<TagReviewListResponse> {
+  const { data } = await httpClient.get<TagReviewListResponse>(
+    "/tag-reviews",
+    { params },
+  );
+  return data;
+}
+
+export async function createTagReviewBatch(
+  body: CreateTagReviewBatchRequest,
+): Promise<CreateTagReviewBatchResponse> {
+  const { data } = await httpClient.post<CreateTagReviewBatchResponse>(
+    "/tag-reviews/create-batch",
+    body,
+  );
+  return data;
+}
+
+export async function claimTagReview(id: number): Promise<TagReviewTask> {
+  const { data } = await httpClient.post<TagReviewTask>(
+    `/tag-reviews/${id}/claim`,
+  );
+  return data;
+}
+
+export async function releaseTagReview(id: number): Promise<TagReviewTask> {
+  const { data } = await httpClient.post<TagReviewTask>(
+    `/tag-reviews/${id}/release`,
+    { force: false },
+  );
+  return data;
+}
+
+export async function decideTagReview(
+  id: number,
+  body: DecideTagReviewRequest,
+): Promise<DecideTagReviewResponse> {
+  const { data } = await httpClient.post<DecideTagReviewResponse>(
+    `/tag-reviews/${id}/decide`,
+    body,
+  );
+  return data;
+}
+
+export async function adjudicateTagReview(
+  id: number,
+  body: DecideTagReviewRequest,
+): Promise<DecideTagReviewResponse> {
+  const { data } = await httpClient.post<DecideTagReviewResponse>(
+    `/tag-reviews/${id}/adjudicate`,
+    body,
+  );
+  return data;
+}
+
+export async function listTagGoldSets(): Promise<TagGoldSetListResponse> {
+  const { data } =
+    await httpClient.get<TagGoldSetListResponse>("/tag-gold-sets");
+  return data;
+}
+
+export async function createTagGoldSet(
+  body: CreateTagGoldSetRequest,
+): Promise<TagGoldSet> {
+  const { data } = await httpClient.post<TagGoldSet>("/tag-gold-sets", body);
+  return data;
+}
+
+export async function freezeTagGoldSet(
+  id: number,
+  body: FreezeTagGoldSetRequest,
+): Promise<TagGoldSetVersion> {
+  const { data } = await httpClient.post<TagGoldSetVersion>(
+    `/tag-gold-sets/${id}/freeze`,
+    body,
+  );
+  return data;
+}
+
+export async function listTagEvaluations(): Promise<TagEvaluationListResponse> {
+  const { data } =
+    await httpClient.get<TagEvaluationListResponse>("/tag-evaluations");
+  return data;
+}
+
+export async function createTagEvaluation(
+  body: CreateTagEvaluationRequest,
+  idempotencyKey: string,
+): Promise<CreateTagEvaluationResponse> {
+  const { data } = await httpClient.post<CreateTagEvaluationResponse>(
+    "/tag-evaluations",
+    body,
+    { headers: { "Idempotency-Key": idempotencyKey } },
+  );
+  return data;
+}
+
+export async function listTagDeployments(): Promise<TagDeploymentListResponse> {
+  const { data } =
+    await httpClient.get<TagDeploymentListResponse>("/tag-deployments");
+  return data;
+}
+
+export async function createTagDeployment(
+  body: CreateTagDeploymentRequest,
+): Promise<TagDeployment> {
+  const { data } = await httpClient.post<TagDeployment>(
+    "/tag-deployments",
+    body,
+  );
+  return data;
+}
+
+export async function listTagDeploymentObservations(
+  id: number,
+  limit = 200,
+): Promise<TagDeploymentObservationListResponse> {
+  const { data } =
+    await httpClient.get<TagDeploymentObservationListResponse>(
+      `/tag-deployments/${id}/observations`,
+      { params: { limit } },
+    );
+  return data;
+}
+
+export async function approveTagDeployment(
+  id: number,
+  revision: number,
+): Promise<TagDeployment> {
+  const { data } = await httpClient.post<TagDeployment>(
+    `/tag-deployments/${id}/approve`,
+    undefined,
+    { headers: { "If-Match": String(revision) } },
+  );
+  return data;
+}
+
+export async function rollbackTagDeployment(
+  id: number,
+  reason: string,
+  revision: number,
+): Promise<TagDeployment> {
+  const { data } = await httpClient.post<TagDeployment>(
+    `/tag-deployments/${id}/rollback`,
+    { reason },
+    { headers: { "If-Match": String(revision) } },
+  );
+  return data;
+}
+
+export async function resumeTagDeployment(
+  id: number,
+  reason: string,
+  revision: number,
+): Promise<TagDeployment> {
+  const { data } = await httpClient.post<TagDeployment>(
+    `/tag-deployments/${id}/resume`,
+    { reason },
+    { headers: { "If-Match": String(revision) } },
+  );
+  return data;
+}
+
+export async function listTagAuditEvents(): Promise<TagAuditEventListResponse> {
+  const { data } =
+    await httpClient.get<TagAuditEventListResponse>("/tag-audit-events");
   return data;
 }

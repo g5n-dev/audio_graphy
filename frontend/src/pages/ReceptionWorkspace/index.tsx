@@ -1,16 +1,26 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  Link,
   useLocation,
   useParams,
   useSearchParams,
 } from "react-router-dom";
 import {
+  cancelReceptionAudioOperation,
+  createTagJob,
+  createTagReviewBatch,
+  createReceptionAudioOperation,
+  createReceptionAudioPlan,
+  decideTagReview,
   deriveReceptionDialogueTags,
   getReceptionAutomation,
+  getReceptionAudioOperation,
+  getTagFactLineage,
   getReceptionWorkspace,
   mergeDialogueUnits,
   mergeReceptionRecordings,
+  listTagSchemas,
   runReceptionAutomation,
   segmentReception,
   splitDialogueUnit,
@@ -18,13 +28,25 @@ import {
 import { EvidenceAuditPanel } from "@/components/dialogue/EvidenceAuditPanel";
 import { formatClock, formatPercent } from "@/components/dialogue/format";
 import { MultiTrackTimeline } from "@/components/dialogue/MultiTrackTimeline";
+import { LiveAudioCapturePanel } from "./LiveAudioCapturePanel";
+import {
+  TagAssignmentEditor,
+  type TagCorrectionDraft,
+} from "@/components/dialogue/TagAssignmentEditor";
+import { TagFactLineageDrawer } from "@/components/dialogue/TagFactLineageDrawer";
 import { ReceptionContextTabs } from "@/components/navigation/ContextNavigation";
+import { useAuthStore } from "@/stores/auth";
 import type {
   DialogueEvidenceRef,
   DialogueTargetLabel,
   EntityId,
+  ReceptionAudioPlanResponse,
   ReceptionDialogueUnit,
   ReceptionMergeMode,
+  ReceptionRecordingItem,
+  ReceptionTagAssignment,
+  TagDefinition,
+  TagJob,
 } from "@/types/api";
 
 type AudioSourceId = string | null;
@@ -34,9 +56,25 @@ interface PendingSeek {
   second: number;
 }
 
+interface SilenceGapPlayback {
+  timelineStartSec: number;
+  timelineEndSec: number;
+  nextSourceId: string;
+  nextSourceSecond: number;
+  startedAtMs: number;
+  resumeAfterGap: boolean;
+}
+
+type GeometryMutation =
+  | "automation"
+  | "audio"
+  | "segmentation"
+  | "dialogue-split"
+  | "dialogue-merge";
+
 const WORKSPACE_WINDOW_SIZE_SEC = 600;
 
-const TARGET_LABELS: Array<{
+const LEGACY_TARGET_LABELS: Array<{
   key: DialogueTargetLabel;
   label: string;
 }> = [
@@ -47,13 +85,121 @@ const TARGET_LABELS: Array<{
   { key: "compliance_risk", label: "合规风险" },
 ];
 
+function stableJobKey(parts: string[]): string {
+  let hash = 0x811c9dc5;
+  for (const character of parts.join("|")) {
+    hash ^= character.charCodeAt(0);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return `workspace-tag-${(hash >>> 0).toString(16)}`;
+}
+
 function errorMessage(error: unknown): string {
   if (error instanceof Error && error.message) return error.message;
   return "接口暂不可用";
 }
 
+function errorStatus(error: unknown): number | null {
+  return typeof error === "object" &&
+    error !== null &&
+    "response" in error &&
+    typeof error.response === "object" &&
+    error.response !== null &&
+    "status" in error.response
+    ? Number(error.response.status)
+    : null;
+}
+
+function recordingId(recording: ReceptionRecordingItem): EntityId {
+  return recording.recording_id ?? recording.id;
+}
+
+function mappingId(recording: ReceptionRecordingItem): EntityId {
+  return recording.mapping_id ?? recording.id;
+}
+
+function recordingKey(recording: ReceptionRecordingItem): string {
+  return String(recordingId(recording));
+}
+
+function mappingKey(recording: ReceptionRecordingItem): string {
+  return String(mappingId(recording));
+}
+
+function sourceEnd(recording: ReceptionRecordingItem): number {
+  return (
+    recording.source_end_sec ??
+    recording.source_start_sec +
+      Math.max(recording.timeline_end_sec - recording.timeline_start_sec, 0)
+  );
+}
+
+function clampSourceSecond(
+  recording: ReceptionRecordingItem,
+  second: number,
+): number {
+  return Math.min(
+    Math.max(second, recording.source_start_sec),
+    sourceEnd(recording),
+  );
+}
+
+function windowStartForTimeline(second: number, duration: number): number {
+  if (duration <= WORKSPACE_WINDOW_SIZE_SEC) return 0;
+  const bounded = Math.min(
+    Math.max(second, 0),
+    Math.max(duration - Number.EPSILON, 0),
+  );
+  return (
+    Math.floor(bounded / WORKSPACE_WINDOW_SIZE_SEC) *
+    WORKSPACE_WINDOW_SIZE_SEC
+  );
+}
+
+function audioOperationKey(
+  receptionId: EntityId,
+  version: number,
+  planToken: string,
+): string {
+  return `workspace-audio-${String(receptionId)}-${version}-${stableJobKey([
+    planToken,
+  ]).replace("workspace-tag-", "")}`;
+}
+
+function tagCorrectionErrorMessage(error: unknown): string {
+  const status =
+    typeof error === "object" &&
+    error !== null &&
+    "response" in error &&
+    typeof error.response === "object" &&
+    error.response !== null &&
+    "status" in error.response
+      ? Number(error.response.status)
+      : null;
+  if (status === 409) {
+    return "标签已被其他人更新。你的草稿仍保留，请刷新对照最新版本后再次确认。";
+  }
+  if (status === 403) {
+    return "当前账号没有人工更正权限。草稿已保留，可复制后交由质检员处理。";
+  }
+  if (status === 422) {
+    return "标签值、原因或证据不符合服务端规则，请检查标记字段。";
+  }
+  return `保存失败，草稿未丢失：${errorMessage(error)}`;
+}
+
 function idEquals(left: EntityId, right: EntityId): boolean {
   return String(left) === String(right);
+}
+
+function positiveNumericId(value: EntityId): number | null {
+  const numeric = typeof value === "number" ? value : Number(value);
+  return Number.isSafeInteger(numeric) && numeric > 0 ? numeric : null;
+}
+
+function canonicalFactId(modelRunId: string | null | undefined): number | null {
+  if (!modelRunId?.startsWith("fact:")) return null;
+  return positiveNumericId(modelRunId.slice("fact:".length));
 }
 
 export default function ReceptionWorkspacePage() {
@@ -61,25 +207,73 @@ export default function ReceptionWorkspacePage() {
   const location = useLocation();
   const [searchParams] = useSearchParams();
   const queryClient = useQueryClient();
+  const currentUser = useAuthStore((state) => state.user);
   const audioRef = useRef<HTMLAudioElement>(null);
   const deepLinkAppliedRef = useRef(false);
   const initializedReceptionRef = useRef<string | null>(null);
   const initializedWindowRef = useRef<string | null>(null);
+  const initializedAudioDraftRef = useRef<string | null>(null);
   const playbackGrantRefreshRef = useRef(false);
+  const pendingAutoPlayRef = useRef(false);
+  const silenceGapRef = useRef<SilenceGapPlayback | null>(null);
+  const geometryMutationRef = useRef<GeometryMutation | null>(null);
+  const draggedMappingRef = useRef<string | null>(null);
+  const previousAutomationStatusRef = useRef<string | null>(null);
   const [activeSourceId, setActiveSourceId] = useState<AudioSourceId>(null);
   const [pendingSeek, setPendingSeek] = useState<PendingSeek | null>(null);
   const [timelineTime, setTimelineTime] = useState(0);
+  const [silenceGap, setSilenceGap] =
+    useState<SilenceGapPlayback | null>(null);
   const [windowStartSec, setWindowStartSec] = useState(0);
   const [selectedUnitIds, setSelectedUnitIds] = useState<Set<string>>(
     new Set(),
   );
+  const [selectedTagId, setSelectedTagId] = useState<EntityId | null>(null);
+  const [tagCorrectionError, setTagCorrectionError] = useState<string | null>(
+    null,
+  );
+  const [lineageFactId, setLineageFactId] = useState<number | null>(null);
   const [mergeMode, setMergeMode] = useState<ReceptionMergeMode>("both");
   const [editReason, setEditReason] = useState("");
   const [operationStatus, setOperationStatus] = useState<string | null>(null);
+  const [activeGeometryMutation, setActiveGeometryMutation] =
+    useState<GeometryMutation | null>(null);
+  const [sourceOrder, setSourceOrder] = useState<string[]>([]);
+  const [sourceGapMs, setSourceGapMs] = useState<Record<string, number>>({});
+  const [audioPlan, setAudioPlan] =
+    useState<ReceptionAudioPlanResponse | null>(null);
+  const [activeAudioOperationId, setActiveAudioOperationId] =
+    useState<EntityId | null>(null);
   const [tagGroupKey, setTagGroupKey] = useState("reception-rules");
   const [tagGroupVersion, setTagGroupVersion] = useState("rules-v1");
-  const [targetLabels, setTargetLabels] = useState<Set<DialogueTargetLabel>>(
-    new Set(TARGET_LABELS.map((item) => item.key)),
+  const [schemaVersionId, setSchemaVersionId] = useState<number | null>(null);
+  const [targetLabels, setTargetLabels] = useState<Set<string>>(new Set());
+  const [tagJob, setTagJob] = useState<TagJob | null>(null);
+  const initializedSchemaRef = useRef<number | null>(null);
+  const initializedLegacyRef = useRef(false);
+
+  const withGeometryMutation = useCallback(
+    async <T,>(
+      mutation: GeometryMutation,
+      task: () => Promise<T>,
+    ): Promise<T> => {
+      if (geometryMutationRef.current !== null) {
+        throw new Error(
+          `已有${geometryMutationRef.current}操作进行中，请等待完成后再试`,
+        );
+      }
+      geometryMutationRef.current = mutation;
+      setActiveGeometryMutation(mutation);
+      try {
+        return await task();
+      } finally {
+        if (geometryMutationRef.current === mutation) {
+          geometryMutationRef.current = null;
+          setActiveGeometryMutation(null);
+        }
+      }
+    },
+    [],
   );
 
   const workspaceQuery = useQuery({
@@ -91,18 +285,157 @@ export default function ReceptionWorkspacePage() {
       }),
     enabled: Boolean(id),
     retry: false,
+    placeholderData: (previous) => previous,
   });
   const automationQuery = useQuery({
     queryKey: ["reception-automation", id],
     queryFn: () => getReceptionAutomation(id ?? ""),
     enabled: Boolean(id),
     retry: false,
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      return status === "pending" || status === "running" ? 3_000 : false;
+    },
+  });
+  const audioOperationQuery = useQuery({
+    queryKey: [
+      "reception-audio-operation",
+      id,
+      activeAudioOperationId,
+    ],
+    queryFn: () =>
+      getReceptionAudioOperation(id ?? "", activeAudioOperationId ?? ""),
+    enabled: Boolean(id && activeAudioOperationId !== null),
+    retry: false,
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      return status &&
+        !["succeeded", "failed", "cancelled"].includes(status)
+        ? 1_500
+        : false;
+    },
+  });
+  const schemasQuery = useQuery({
+    queryKey: ["tag-schemas", "published"],
+    queryFn: listTagSchemas,
+    retry: false,
+  });
+  const lineageQuery = useQuery({
+    queryKey: ["tag-fact-lineage", lineageFactId],
+    queryFn: () => getTagFactLineage(lineageFactId ?? 0),
+    enabled: lineageFactId !== null,
+    retry: false,
   });
   const workspace = workspaceQuery.data;
+  const publishedSchemaVersions = useMemo(
+    () =>
+      (schemasQuery.data?.items ?? []).flatMap((schema) =>
+        (schema.versions ?? [])
+          .filter((version) => version.status === "published")
+          .map((version) => ({
+            schemaName: schema.name,
+            schemaActive: schema.active_version_id === version.id,
+            version,
+          })),
+      ),
+    [schemasQuery.data],
+  );
+  const activeSchemaVersion = useMemo(
+    () =>
+      publishedSchemaVersions.find(
+        (item) => item.version.id === schemaVersionId,
+      ) ??
+      publishedSchemaVersions.find((item) => item.schemaActive) ??
+      publishedSchemaVersions[0] ??
+      null,
+    [publishedSchemaVersions, schemaVersionId],
+  );
+  const activeDefinitions = useMemo(
+    () =>
+      (activeSchemaVersion?.version.definitions ?? []).filter(
+        (definition) =>
+          definition.scenarios.length === 0 ||
+          definition.scenarios.includes(
+            workspace?.reception.scenario ?? "custom",
+          ),
+      ),
+    [activeSchemaVersion, workspace?.reception.scenario],
+  );
+  const selectedTag = useMemo(
+    () =>
+      workspace?.tag_assignments.find(
+        (tag) =>
+          selectedTagId !== null &&
+          String(tag.id) === String(selectedTagId),
+      ) ?? null,
+    [selectedTagId, workspace?.tag_assignments],
+  );
+  const selectedTagDefinition = useMemo(
+    () =>
+      selectedTag
+        ? activeDefinitions.find(
+            (definition) => definition.key === selectedTag.label_key,
+          )
+        : undefined,
+    [activeDefinitions, selectedTag],
+  );
+  const hasLegacyWriteRole =
+    currentUser?.role === "admin" || currentUser?.role === "inspector";
+  const canManageAudio =
+    workspace?.capabilities?.can_manage_audio ?? hasLegacyWriteRole;
+  const canRunSegmentation =
+    workspace?.capabilities?.can_run_segmentation ?? hasLegacyWriteRole;
+  const canEditDialogue =
+    workspace?.capabilities?.can_edit_dialogue ?? hasLegacyWriteRole;
+  const canEditTags =
+    workspace?.capabilities?.can_edit_tags ?? hasLegacyWriteRole;
+  const supportsAudioPlans =
+    workspace?.capabilities?.supports_audio_plans ?? false;
+  const supportsAudioOperations =
+    workspace?.capabilities?.supports_audio_operations ?? false;
+  const canCancelAudioOperation =
+    workspace?.capabilities?.can_cancel_audio_operation ?? false;
+  const canStreamAudio =
+    workspace?.capabilities?.can_stream_audio ?? false;
+  const legacyFallback =
+    schemasQuery.isSuccess && publishedSchemaVersions.length === 0;
+
+  useEffect(() => {
+    const nextVersionId = activeSchemaVersion?.version.id ?? null;
+    if (nextVersionId === null) {
+      initializedSchemaRef.current = null;
+      setSchemaVersionId(null);
+      setTargetLabels(new Set());
+      return;
+    }
+    if (schemaVersionId !== nextVersionId) {
+      setSchemaVersionId(nextVersionId);
+    }
+    if (initializedSchemaRef.current !== nextVersionId) {
+      initializedSchemaRef.current = nextVersionId;
+      setTargetLabels(
+        new Set(activeDefinitions.map((definition) => definition.key)),
+      );
+    }
+  }, [activeDefinitions, activeSchemaVersion, schemaVersionId]);
+
+  useEffect(() => {
+    if (!legacyFallback) {
+      initializedLegacyRef.current = false;
+      return;
+    }
+    if (!initializedLegacyRef.current) {
+      initializedLegacyRef.current = true;
+      setTargetLabels(
+        new Set(LEGACY_TARGET_LABELS.map((definition) => definition.key)),
+      );
+    }
+  }, [legacyFallback]);
 
   useEffect(() => {
     setWindowStartSec(0);
     initializedWindowRef.current = null;
+    previousAutomationStatusRef.current = null;
   }, [id]);
 
   useEffect(() => {
@@ -114,12 +447,49 @@ export default function ReceptionWorkspacePage() {
 
   useEffect(() => {
     const automation = automationQuery.data;
+    const previousStatus = previousAutomationStatusRef.current;
+    previousAutomationStatusRef.current = automation?.status ?? null;
     if (automation?.status === "failed") {
       setOperationStatus(
         `自动处理停在${automation.stage}阶段：${automation.last_error_message ?? "修复源数据后可从检查点重试"}`,
       );
+    } else if (
+      automation?.status === "ready" &&
+      (previousStatus === "pending" || previousStatus === "running")
+    ) {
+      void queryClient.invalidateQueries({
+        queryKey: ["reception-workspace", id],
+      });
     }
-  }, [automationQuery.data]);
+  }, [automationQuery.data, id, queryClient]);
+
+  useEffect(() => {
+    const operation = audioOperationQuery.data;
+    if (!operation) return;
+    const percent = Math.round(Math.min(Math.max(operation.progress, 0), 1) * 100);
+    if (operation.status === "succeeded") {
+      setOperationStatus("音频任务已完成，活动时间线与播放产物正在刷新。");
+      setAudioPlan(null);
+      void queryClient.invalidateQueries({
+        queryKey: ["reception-workspace", id],
+      });
+    } else if (operation.status === "failed") {
+      setOperationStatus(
+        `音频任务失败，源顺序草稿仍保留：${
+          operation.error_message ??
+          operation.error ??
+          operation.error_code ??
+          "请检查媒体兼容性后重试"
+        }`,
+      );
+    } else if (operation.status === "cancelled") {
+      setOperationStatus("音频任务已取消，当前活动时间线未改变。");
+    } else {
+      setOperationStatus(
+        `音频任务 ${operation.status} · ${percent}%（可安全离开后返回查看）`,
+      );
+    }
+  }, [audioOperationQuery.data, id, queryClient]);
 
   useEffect(() => {
     if (!workspace) return;
@@ -132,9 +502,28 @@ export default function ReceptionWorkspacePage() {
         workspace.reception.merged_audio_url
           ? null
           : workspace.recordings[0]
-            ? String(workspace.recordings[0].id)
+            ? recordingKey(workspace.recordings[0])
             : null,
       );
+    }
+    if (initializedAudioDraftRef.current !== receptionIdentity) {
+      initializedAudioDraftRef.current = receptionIdentity;
+      const ordered = [...workspace.recordings].sort(
+        (left, right) => left.sequence_no - right.sequence_no,
+      );
+      setSourceOrder(ordered.map(mappingKey));
+      setSourceGapMs(
+        Object.fromEntries(
+          ordered.map((recording, index) => [
+            mappingKey(recording),
+            index === 0
+              ? 0
+              : Math.max(Math.round(recording.gap_before_sec * 1_000), 0),
+          ]),
+        ),
+      );
+      setAudioPlan(null);
+      setActiveAudioOperationId(workspace.active_audio_operation?.id ?? null);
     }
     const windowIdentity = `${receptionIdentity}:${workspace.window.start_sec}`;
     if (initializedWindowRef.current !== windowIdentity) {
@@ -150,19 +539,76 @@ export default function ReceptionWorkspacePage() {
   const activeRecording = useMemo(
     () =>
       workspace?.recordings.find(
-        (recording) => String(recording.id) === activeSourceId,
+        (recording) => recordingKey(recording) === activeSourceId,
       ) ?? null,
     [activeSourceId, workspace],
   );
   const audioUrl =
     activeRecording?.audio_url ??
     (activeSourceId === null ? workspace?.reception.merged_audio_url : null);
+  const orderedRecordings = useMemo(() => {
+    if (!workspace) return [];
+    const byMapping = new Map(
+      workspace.recordings.map((recording) => [
+        mappingKey(recording),
+        recording,
+      ]),
+    );
+    const ordered = sourceOrder
+      .map((key) => byMapping.get(key))
+      .filter(
+        (recording): recording is ReceptionRecordingItem =>
+          recording !== undefined,
+      );
+    const included = new Set(ordered.map(mappingKey));
+    return [
+      ...ordered,
+      ...workspace.recordings
+        .filter((recording) => !included.has(mappingKey(recording)))
+        .sort((left, right) => left.sequence_no - right.sequence_no),
+    ];
+  }, [sourceOrder, workspace]);
+  const committedRecordings = useMemo(
+    () =>
+      [...(workspace?.recordings ?? [])].sort(
+        (left, right) => left.sequence_no - right.sequence_no,
+      ),
+    [workspace?.recordings],
+  );
+  const operationRecordings =
+    mergeMode === "physical" ? committedRecordings : orderedRecordings;
+  const draftTimelineDurationSec = useMemo(
+    () =>
+      operationRecordings.reduce((duration, recording, index) => {
+        const sourceDuration = Math.max(
+          sourceEnd(recording) - recording.source_start_sec,
+          0,
+        );
+        const gap =
+          index === 0
+            ? 0
+            : mergeMode === "physical"
+              ? Math.max(recording.gap_before_sec, 0)
+              : Math.max(sourceGapMs[mappingKey(recording)] ?? 0, 0) /
+                1_000;
+        return duration + gap + sourceDuration;
+      }, 0),
+    [mergeMode, operationRecordings, sourceGapMs],
+  );
 
   const applyPendingSeek = useCallback(() => {
     if (playbackGrantRefreshRef.current) return;
     if (!pendingSeek || pendingSeek.sourceId !== activeSourceId) return;
     if (audioRef.current) {
       audioRef.current.currentTime = Math.max(pendingSeek.second, 0);
+      if (pendingAutoPlayRef.current) {
+        pendingAutoPlayRef.current = false;
+        void audioRef.current.play().catch(() => {
+          setOperationStatus(
+            "已切换到下一段源录音；浏览器阻止自动续播，请点击播放继续。",
+          );
+        });
+      }
     }
     setPendingSeek(null);
   }, [activeSourceId, pendingSeek]);
@@ -173,7 +619,17 @@ export default function ReceptionWorkspacePage() {
 
   const seekSource = useCallback(
     (sourceId: AudioSourceId, second: number) => {
-      const safeSecond = Math.max(second, 0);
+      silenceGapRef.current = null;
+      setSilenceGap(null);
+      const targetRecording =
+        sourceId === null
+          ? null
+          : workspace?.recordings.find(
+              (recording) => recordingKey(recording) === sourceId,
+            ) ?? null;
+      const safeSecond = targetRecording
+        ? clampSourceSecond(targetRecording, second)
+        : Math.max(second, 0);
       if (sourceId === activeSourceId && audioRef.current) {
         audioRef.current.currentTime = safeSecond;
         return;
@@ -181,8 +637,53 @@ export default function ReceptionWorkspacePage() {
       setPendingSeek({ sourceId, second: safeSecond });
       setActiveSourceId(sourceId);
     },
-    [activeSourceId],
+    [activeSourceId, workspace?.recordings],
   );
+
+  const ensureTimelineWindow = useCallback(
+    (second: number) => {
+      if (!workspace) return;
+      const targetStart = windowStartForTimeline(
+        second,
+        workspace.reception.duration_sec,
+      );
+      if (targetStart !== workspace.window.start_sec) {
+        setWindowStartSec(targetStart);
+      }
+    },
+    [workspace],
+  );
+
+  useEffect(() => {
+    if (!silenceGap) return;
+    let frameId = 0;
+    const tick = (timestamp: number) => {
+      if (silenceGapRef.current !== silenceGap) return;
+      const elapsedSec = Math.max(
+        (timestamp - silenceGap.startedAtMs) / 1_000,
+        0,
+      );
+      const nextTimelineTime = Math.min(
+        silenceGap.timelineStartSec + elapsedSec,
+        silenceGap.timelineEndSec,
+      );
+      setTimelineTime(nextTimelineTime);
+      ensureTimelineWindow(nextTimelineTime);
+      if (nextTimelineTime >= silenceGap.timelineEndSec) {
+        silenceGapRef.current = null;
+        setSilenceGap(null);
+        pendingAutoPlayRef.current = silenceGap.resumeAfterGap;
+        seekSource(
+          silenceGap.nextSourceId,
+          silenceGap.nextSourceSecond,
+        );
+        return;
+      }
+      frameId = requestAnimationFrame(tick);
+    };
+    frameId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frameId);
+  }, [ensureTimelineWindow, seekSource, silenceGap]);
 
   const seekTimeline = useCallback(
     (second: number) => {
@@ -192,22 +693,26 @@ export default function ReceptionWorkspacePage() {
         workspace.reception.duration_sec,
       );
       setTimelineTime(safeSecond);
+      ensureTimelineWindow(safeSecond);
       if (workspace.reception.merged_audio_url) {
         seekSource(null, safeSecond);
         return;
       }
-      const source = workspace.recordings.find(
-        (recording) =>
+      const source = workspace.recordings.find((recording, index, items) => {
+        const isLast = index === items.length - 1;
+        return (
           safeSecond >= recording.timeline_start_sec &&
-          safeSecond <= recording.timeline_end_sec,
-      );
+          (safeSecond < recording.timeline_end_sec ||
+            (isLast && safeSecond === recording.timeline_end_sec))
+        );
+      });
       if (source) {
         const sourceSecond =
           source.source_start_sec + safeSecond - source.timeline_start_sec;
-        seekSource(String(source.id), sourceSecond);
+        seekSource(recordingKey(source), sourceSecond);
       }
     },
-    [seekSource, workspace],
+    [ensureTimelineWindow, seekSource, workspace],
   );
 
   const seekEvidence = useCallback(
@@ -219,9 +724,11 @@ export default function ReceptionWorkspacePage() {
       }
       if (evidence.start_ms === null) return;
       const source = workspace.recordings.find((recording) =>
-        idEquals(recording.id, evidence.recording_id),
+        idEquals(recordingId(recording), evidence.recording_id),
       );
-      const sourceSecond = evidence.start_ms / 1000;
+      const sourceSecond = source
+        ? clampSourceSecond(source, evidence.start_ms / 1000)
+        : evidence.start_ms / 1000;
       if (workspace.reception.merged_audio_url && source) {
         const mergedSecond =
           source.timeline_start_sec + sourceSecond - source.source_start_sec;
@@ -233,7 +740,7 @@ export default function ReceptionWorkspacePage() {
         setTimelineTime(
           source.timeline_start_sec + sourceSecond - source.source_start_sec,
         );
-        seekSource(String(source.id), sourceSecond);
+        seekSource(recordingKey(source), sourceSecond);
       }
     },
     [seekSource, seekTimeline, workspace],
@@ -241,40 +748,96 @@ export default function ReceptionWorkspacePage() {
 
   useEffect(() => {
     if (!workspace || deepLinkAppliedRef.current) return;
-    const recordingId = searchParams.get("recording");
+    const recordingIdParam = searchParams.get("recording");
     const rawMilliseconds = searchParams.get("at");
-    if (!recordingId || rawMilliseconds === null) return;
+    if (!recordingIdParam || rawMilliseconds === null) return;
     const milliseconds = Number(rawMilliseconds);
     if (!Number.isFinite(milliseconds) || milliseconds < 0) return;
     const source = workspace.recordings.find((recording) =>
-      idEquals(recording.id, recordingId),
+      idEquals(recordingId(recording), recordingIdParam),
     );
     if (!source) return;
     deepLinkAppliedRef.current = true;
-    const sourceSecond = milliseconds / 1000;
+    const sourceSecond = clampSourceSecond(source, milliseconds / 1000);
     if (workspace.reception.merged_audio_url) {
       const mergedSecond =
         source.timeline_start_sec + sourceSecond - source.source_start_sec;
       setTimelineTime(Math.max(mergedSecond, 0));
+      ensureTimelineWindow(mergedSecond);
       seekSource(null, mergedSecond);
     } else {
-      setTimelineTime(
-        source.timeline_start_sec + sourceSecond - source.source_start_sec,
-      );
-      seekSource(String(source.id), sourceSecond);
+      const timelineSecond =
+        source.timeline_start_sec + sourceSecond - source.source_start_sec;
+      setTimelineTime(timelineSecond);
+      ensureTimelineWindow(timelineSecond);
+      seekSource(recordingKey(source), sourceSecond);
     }
-  }, [searchParams, seekSource, workspace]);
+  }, [ensureTimelineWindow, searchParams, seekSource, workspace]);
 
-  const handleTimeUpdate = () => {
+  const handleTimeUpdate = (resumeAfterBoundary: boolean) => {
+    if (silenceGapRef.current) return;
     const sourceTime = audioRef.current?.currentTime ?? 0;
     if (activeRecording) {
-      setTimelineTime(
+      const end = sourceEnd(activeRecording);
+      if (sourceTime >= end - 0.001) {
+        const audio = audioRef.current;
+        const shouldResume =
+          resumeAfterBoundary || Boolean(audio && !audio.paused);
+        if (audio && audio.currentTime !== end) {
+          audio.currentTime = end;
+        }
+        const boundaryTimeline = activeRecording.timeline_end_sec;
+        setTimelineTime(boundaryTimeline);
+        ensureTimelineWindow(boundaryTimeline);
+        const next = [...(workspace?.recordings ?? [])]
+          .sort(
+            (left, right) =>
+              left.timeline_start_sec - right.timeline_start_sec,
+          )
+          .find(
+            (recording) =>
+              recordingKey(recording) !== recordingKey(activeRecording) &&
+              recording.timeline_start_sec >=
+                activeRecording.timeline_end_sec - 0.001,
+        );
+        if (next) {
+          const gapDurationSec = Math.max(
+            next.timeline_start_sec -
+              activeRecording.timeline_end_sec,
+            0,
+          );
+          if (shouldResume && gapDurationSec > 0.001) {
+            audio?.pause();
+            const gap: SilenceGapPlayback = {
+              timelineStartSec: activeRecording.timeline_end_sec,
+              timelineEndSec: next.timeline_start_sec,
+              nextSourceId: recordingKey(next),
+              nextSourceSecond: next.source_start_sec,
+              startedAtMs: performance.now(),
+              resumeAfterGap: true,
+            };
+            silenceGapRef.current = gap;
+            setSilenceGap(gap);
+            return;
+          }
+          pendingAutoPlayRef.current = shouldResume;
+          setTimelineTime(next.timeline_start_sec);
+          ensureTimelineWindow(next.timeline_start_sec);
+          seekSource(recordingKey(next), next.source_start_sec);
+        } else if (audio) {
+          audio.pause();
+        }
+        return;
+      }
+      const nextTimelineTime =
         activeRecording.timeline_start_sec +
           sourceTime -
-          activeRecording.source_start_sec,
-      );
+        activeRecording.source_start_sec;
+      setTimelineTime(nextTimelineTime);
+      ensureTimelineWindow(nextTimelineTime);
     } else {
       setTimelineTime(sourceTime);
+      ensureTimelineWindow(sourceTime);
     }
   };
   const handleAudioError = async () => {
@@ -293,7 +856,7 @@ export default function ReceptionWorkspacePage() {
       return;
     }
     const refreshedRecording = result.data?.recordings.find(
-      (recording) => String(recording.id) === activeSourceId,
+      (recording) => recordingKey(recording) === activeSourceId,
     );
     const refreshedUrl =
       refreshedRecording?.audio_url ??
@@ -319,15 +882,31 @@ export default function ReceptionWorkspacePage() {
     });
   };
 
+  const handleGeometryFailure = async (
+    operation: string,
+    error: unknown,
+  ) => {
+    if (errorStatus(error) === 409) {
+      setOperationStatus(
+        `${operation}发生版本冲突；源顺序与编辑原因草稿已保留，正在刷新最新版本供你核对后重试。`,
+      );
+      await workspaceQuery.refetch();
+      return;
+    }
+    setOperationStatus(`${operation}失败：${errorMessage(error)}`);
+  };
+
   const automationMutation = useMutation({
     mutationFn: async () => {
       if (!id) throw new Error("接待 ID 不可用");
-      return runReceptionAutomation(id);
+      return withGeometryMutation("automation", () =>
+        runReceptionAutomation(id),
+      );
     },
     onSuccess: async (result) => {
       setOperationStatus(
         result.status === "ready"
-          ? "自动处理完成：录音合并、对话切分与五维目标标签均已就绪。"
+          ? "兼容自动处理完成：录音合并、对话切分与旧规则标签均已就绪。"
           : `自动处理停在${result.stage}阶段：${result.last_error_message ?? "请检查源数据后重试"}`,
       );
       await Promise.all([
@@ -345,40 +924,119 @@ export default function ReceptionWorkspacePage() {
   const recordingMergeMutation = useMutation({
     mutationFn: async () => {
       if (!workspace || !id) throw new Error("接待数据尚未加载");
-      const recordingIds = workspace.recordings.map(
-        (recording) => recording.id,
+      const recordingIds = operationRecordings.map(
+        (recording) => recordingId(recording),
       );
-      return mergeReceptionRecordings(id, {
-        recording_ids: recordingIds,
-        mode: mergeMode,
-        expected_version: workspace.reception.version,
-      });
+      return withGeometryMutation("audio", () =>
+        mergeReceptionRecordings(id, {
+          recording_ids: recordingIds,
+          mode: mergeMode,
+          expected_version: workspace.reception.version,
+        }),
+      );
     },
     onSuccess: async () => {
       setOperationStatus("录音合并任务已提交，正在刷新接待版本。");
       await refreshWorkspace();
     },
+    onError: (error) => handleGeometryFailure("录音合并", error),
+  });
+
+  const audioPlanMutation = useMutation({
+    mutationFn: async () => {
+      if (!workspace || !id) throw new Error("接待数据尚未加载");
+      return createReceptionAudioPlan(id, {
+        sources: operationRecordings.map((recording, index) => ({
+          mapping_id: mappingId(recording),
+          gap_before_ms:
+            index === 0
+              ? 0
+              : mergeMode === "physical"
+                ? Math.max(
+                    Math.round(recording.gap_before_sec * 1_000),
+                    0,
+                  )
+                : Math.max(
+                    sourceGapMs[mappingKey(recording)] ?? 0,
+                    0,
+                  ),
+        })),
+        expected_version: workspace.reception.version,
+      });
+    },
+    onSuccess: (plan) => {
+      setAudioPlan(plan);
+      setOperationStatus(
+        "服务端已验证时间线计划；提交前仍可调整顺序或空档。",
+      );
+    },
+    onError: (error) => handleGeometryFailure("音频计划预览", error),
+  });
+
+  const audioOperationMutation = useMutation({
+    mutationFn: async () => {
+      if (!workspace || !id || !audioPlan) {
+        throw new Error("请先生成有效的音频计划");
+      }
+      return withGeometryMutation("audio", () =>
+        createReceptionAudioOperation(
+          id,
+          {
+            plan_token: audioPlan.plan_token,
+            mode: mergeMode,
+            expected_version: workspace.reception.version,
+          },
+          audioOperationKey(
+            workspace.reception.id,
+            workspace.reception.version,
+            audioPlan.plan_token,
+          ),
+        ),
+      );
+    },
+    onSuccess: (operation) => {
+      setActiveAudioOperationId(operation.id);
+      setOperationStatus(
+        `音频任务 #${operation.id} 已入队，当前活动版本在任务提交成功前保持不变。`,
+      );
+    },
+    onError: (error) => handleGeometryFailure("音频任务提交", error),
+  });
+
+  const cancelAudioOperationMutation = useMutation({
+    mutationFn: async () => {
+      if (!id || activeAudioOperationId === null) {
+        throw new Error("没有可取消的音频任务");
+      }
+      return cancelReceptionAudioOperation(id, activeAudioOperationId);
+    },
+    onSuccess: (operation) => {
+      queryClient.setQueryData(
+        ["reception-audio-operation", id, activeAudioOperationId],
+        operation,
+      );
+    },
     onError: (error) => {
-      setOperationStatus(`录音合并失败：${errorMessage(error)}`);
+      setOperationStatus(`取消音频任务失败：${errorMessage(error)}`);
     },
   });
 
   const segmentationMutation = useMutation({
     mutationFn: async () => {
       if (!workspace || !id) throw new Error("接待数据尚未加载");
-      return segmentReception(id, {
-        expected_version: workspace.reception.version,
-        replace_auto: workspace.window.total_dialogue_units > 0,
-        algorithm_version: "dialogue-hybrid-v1",
-      });
+      return withGeometryMutation("segmentation", () =>
+        segmentReception(id, {
+          expected_version: workspace.reception.version,
+          replace_auto: workspace.window.total_dialogue_units > 0,
+          algorithm_version: "dialogue-hybrid-v2",
+        }),
+      );
     },
     onSuccess: async () => {
       setOperationStatus("自动对话切分已完成，状态轨与溯源链正在刷新。");
       await refreshWorkspace();
     },
-    onError: (error) => {
-      setOperationStatus(`自动对话切分失败：${errorMessage(error)}`);
-    },
+    onError: (error) => handleGeometryFailure("自动对话切分", error),
   });
 
   const splitMutation = useMutation({
@@ -390,21 +1048,21 @@ export default function ReceptionWorkspacePage() {
       splitAt: number;
     }) => {
       if (!workspace || !id) throw new Error("接待数据尚未加载");
-      return splitDialogueUnit(id, unit.id, {
-        split_at_sec: splitAt,
-        expected_reception_version: workspace.reception.version,
-        expected_unit_version: unit.version,
-        reason: editReason.trim(),
-      });
+      return withGeometryMutation("dialogue-split", () =>
+        splitDialogueUnit(id, unit.id, {
+          split_at_sec: splitAt,
+          expected_reception_version: workspace.reception.version,
+          expected_unit_version: unit.version,
+          reason: editReason.trim(),
+        }),
+      );
     },
     onSuccess: async () => {
       setOperationStatus("对话切分已保存，并写入审计记录。");
       setSelectedUnitIds(new Set());
       await refreshWorkspace();
     },
-    onError: (error) => {
-      setOperationStatus(`对话切分失败：${errorMessage(error)}`);
-    },
+    onError: (error) => handleGeometryFailure("对话切分", error),
   });
 
   const unitMergeMutation = useMutation({
@@ -416,21 +1074,66 @@ export default function ReceptionWorkspacePage() {
       otherUnit: ReceptionDialogueUnit;
     }) => {
       if (!workspace || !id) throw new Error("接待数据尚未加载");
-      return mergeDialogueUnits(id, unit.id, {
-        other_unit_id: otherUnit.id,
-        expected_reception_version: workspace.reception.version,
-        expected_unit_version: unit.version,
-        expected_other_unit_version: otherUnit.version,
-        reason: editReason.trim(),
-      });
+      return withGeometryMutation("dialogue-merge", () =>
+        mergeDialogueUnits(id, unit.id, {
+          other_unit_id: otherUnit.id,
+          expected_reception_version: workspace.reception.version,
+          expected_unit_version: unit.version,
+          expected_other_unit_version: otherUnit.version,
+          reason: editReason.trim(),
+        }),
+      );
     },
     onSuccess: async () => {
       setOperationStatus("相邻对话单元已合并，并写入审计记录。");
       setSelectedUnitIds(new Set());
       await refreshWorkspace();
     },
+    onError: (error) => handleGeometryFailure("对话单元合并", error),
+  });
+
+  const tagJobMutation = useMutation({
+    mutationFn: async () => {
+      if (!workspace || !id) throw new Error("接待数据尚未加载");
+      if (!activeSchemaVersion || schemaVersionId === null) {
+        throw new Error("当前没有可用的已发布标签体系版本");
+      }
+      const availableKeys = new Set(
+        activeDefinitions.map((definition) => definition.key),
+      );
+      const selectedLabels = [...targetLabels]
+        .filter((key) => availableKeys.has(key))
+        .sort();
+      if (selectedLabels.length === 0) {
+        throw new Error("至少选择一个已发布标签维度");
+      }
+      const receptionScopeId = /^\d+$/.test(id) ? Number(id) : id;
+      return createTagJob(
+        {
+          job_type: "recompute",
+          scope: {
+            reception_ids: [receptionScopeId],
+            label_keys: selectedLabels,
+            schema_version_id: schemaVersionId,
+            trigger: "manual_workspace_rerun",
+          },
+        },
+        stableJobKey([
+          "recompute",
+          id,
+          String(schemaVersionId),
+          ...selectedLabels,
+        ]),
+      );
+    },
+    onSuccess: (job) => {
+      setTagJob(job);
+      setOperationStatus(
+        `标签重算任务 #${job.id} 已入队；抽取、写入与重试由后台 worker 执行。`,
+      );
+    },
     onError: (error) => {
-      setOperationStatus(`对话单元合并失败：${errorMessage(error)}`);
+      setOperationStatus(`标签重算任务创建失败：${errorMessage(error)}`);
     },
   });
 
@@ -442,7 +1145,7 @@ export default function ReceptionWorkspacePage() {
       if (!groupKey || !groupVersion) {
         throw new Error("标签组与规则版本不能为空");
       }
-      const selectedLabels = TARGET_LABELS.map((item) => item.key).filter(
+      const selectedLabels = LEGACY_TARGET_LABELS.map((item) => item.key).filter(
         (label) => targetLabels.has(label),
       );
       if (selectedLabels.length === 0) {
@@ -468,6 +1171,166 @@ export default function ReceptionWorkspacePage() {
     },
   });
 
+  const tagCorrectionMutation = useMutation({
+    mutationFn: async (draft: TagCorrectionDraft) => {
+      if (!workspace || !id || !selectedTag) {
+        throw new Error("标签或接待数据尚未加载");
+      }
+      if (!activeSchemaVersion || !selectedTagDefinition) {
+        throw new Error("该标签不属于当前已发布 Schema，不能写入治理事实");
+      }
+      const receptionId = positiveNumericId(workspace.reception.id);
+      const dialogueUnitId = positiveNumericId(selectedTag.dialogue_unit_id);
+      const proposedFactId = canonicalFactId(selectedTag.model_run_id);
+      if (receptionId === null || dialogueUnitId === null) {
+        throw new Error("接待或对话单元缺少可追溯的持久化 ID");
+      }
+      const evidenceRefs = selectedTag.evidence_refs
+        .filter((evidence) => draft.evidenceRefIds.includes(evidence.ref_id))
+        .map((evidence) => ({
+          ref_id: evidence.ref_id,
+          kind: evidence.kind,
+          recording_id: evidence.recording_id,
+          segment_id: evidence.segment_id ?? undefined,
+          start_sec:
+            (evidence.timeline_start_ms ??
+              evidence.start_ms ??
+              evidence.source_start_ms ??
+              0) / 1_000,
+          end_sec:
+            (evidence.timeline_end_ms ??
+              evidence.end_ms ??
+              evidence.source_end_ms ??
+              0) / 1_000,
+          text_excerpt: evidence.text_excerpt ?? undefined,
+        }));
+      const batch = await createTagReviewBatch({
+        reason: selectedTagDefinition.critical ? "critical" : "random",
+        subjects: [
+          {
+            subject_type: "dialogue_unit",
+            subject_id: dialogueUnitId,
+            reception_id: receptionId,
+            tag_key: selectedTag.label_key,
+            proposed_value: selectedTag.label_value,
+            proposed_fact_id: proposedFactId ?? undefined,
+            schema_version_id: activeSchemaVersion.version.id,
+            confidence: selectedTag.confidence ?? undefined,
+            evidence_refs: evidenceRefs,
+            priority: selectedTagDefinition.critical ? 100 : 50,
+          },
+        ],
+      });
+      const task = batch.items[0];
+      if (!task) throw new Error("人工复核任务未创建");
+      return decideTagReview(task.id, {
+        action: "correct",
+        corrected_value: draft.labelValue,
+        reason_code: "manual_workspace_correction",
+        note: draft.reason,
+        evidence_refs: evidenceRefs,
+      });
+    },
+    onSuccess: async () => {
+      setTagCorrectionError(null);
+      setSelectedTagId(null);
+      setLineageFactId(null);
+      setOperationStatus(
+        "标签人工更正已写入治理事实，时间轴、证据、图谱与洞察正在同步。",
+      );
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: ["reception-workspace", id],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["reception-tag-insights"],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["reception-state-insights"],
+        }),
+        queryClient.invalidateQueries({ queryKey: ["graph"] }),
+      ]);
+    },
+    onError: (error) => {
+      const message = tagCorrectionErrorMessage(error);
+      setTagCorrectionError(message);
+      setOperationStatus(message);
+    },
+  });
+
+  const audioOperationIsActive = Boolean(
+    activeAudioOperationId !== null &&
+      !["succeeded", "failed", "cancelled"].includes(
+        audioOperationQuery.data?.status ?? "queued",
+      ),
+  );
+  const geometryIsBusy =
+    activeGeometryMutation !== null || audioOperationIsActive;
+
+  const moveSource = useCallback(
+    (key: string, delta: -1 | 1) => {
+      const currentOrder =
+        sourceOrder.length > 0
+          ? sourceOrder
+          : orderedRecordings.map(mappingKey);
+      const index = currentOrder.indexOf(key);
+      const nextIndex = index + delta;
+      if (index < 0 || nextIndex < 0 || nextIndex >= currentOrder.length) {
+        return;
+      }
+      const next = [...currentOrder];
+      [next[index], next[nextIndex]] = [next[nextIndex], next[index]];
+      setSourceOrder(next);
+      setAudioPlan(null);
+    },
+    [orderedRecordings, sourceOrder],
+  );
+
+  const moveSourceBefore = useCallback(
+    (sourceKey: string, targetKey: string) => {
+      if (sourceKey === targetKey) return;
+      const currentOrder =
+        sourceOrder.length > 0
+          ? sourceOrder
+          : orderedRecordings.map(mappingKey);
+      const withoutSource = currentOrder.filter((key) => key !== sourceKey);
+      const targetIndex = withoutSource.indexOf(targetKey);
+      if (targetIndex < 0) return;
+      withoutSource.splice(targetIndex, 0, sourceKey);
+      setSourceOrder(withoutSource);
+      setAudioPlan(null);
+    },
+    [orderedRecordings, sourceOrder],
+  );
+
+  const availableDialogueUnits = useMemo(() => {
+    if (!workspace) return [];
+    const candidates = [
+      workspace.neighbors?.previous_dialogue_unit ?? null,
+      ...workspace.dialogue_units,
+      workspace.neighbors?.next_dialogue_unit ?? null,
+    ].filter(
+      (unit): unit is ReceptionDialogueUnit => unit !== null,
+    );
+    const byId = new Map(
+      candidates.map((unit) => [String(unit.id), unit]),
+    );
+    return [...byId.values()].sort(
+      (left, right) => left.unit_index - right.unit_index,
+    );
+  }, [workspace]);
+
+  const selectTagForEditing = useCallback(
+    (tag: ReceptionTagAssignment) => {
+      setSelectedTagId(tag.id);
+      setTagCorrectionError(null);
+      setSelectedUnitIds(new Set([String(tag.dialogue_unit_id)]));
+      const firstEvidence = tag.evidence_refs[0];
+      if (firstEvidence) seekEvidence(firstEvidence);
+    },
+    [seekEvidence],
+  );
+
   const toggleUnit = useCallback((unit: ReceptionDialogueUnit) => {
     setSelectedUnitIds((current) => {
       const next = new Set(current);
@@ -484,7 +1347,7 @@ export default function ReceptionWorkspacePage() {
       setOperationStatus("请先填写人工编辑原因，原因会进入溯源审计链。");
       return;
     }
-    const selectedUnits = workspace.dialogue_units.filter((unit) =>
+    const selectedUnits = availableDialogueUnits.filter((unit) =>
       selectedUnitIds.has(String(unit.id)),
     );
     const target =
@@ -507,7 +1370,7 @@ export default function ReceptionWorkspacePage() {
       setOperationStatus("请先填写人工编辑原因，原因会进入溯源审计链。");
       return;
     }
-    const selected = workspace.dialogue_units.filter((unit) =>
+    const selected = availableDialogueUnits.filter((unit) =>
       selectedUnitIds.has(String(unit.id)),
     );
     const adjacent = selected.every(
@@ -525,6 +1388,7 @@ export default function ReceptionWorkspacePage() {
   };
   const runAutomaticSegmentation = () => {
     if (!workspace) return;
+    if (!canRunSegmentation || geometryIsBusy) return;
     if (
       workspace.window.total_dialogue_units > 0 &&
       !window.confirm(
@@ -539,6 +1403,8 @@ export default function ReceptionWorkspacePage() {
   const navigateWindow = (startSec: number | null) => {
     if (startSec === null) return;
     setSelectedUnitIds(new Set());
+    setSelectedTagId(null);
+    setTagCorrectionError(null);
     setTimelineTime(startSec);
     setWindowStartSec(startSec);
   };
@@ -601,18 +1467,20 @@ export default function ReceptionWorkspacePage() {
               {automationQuery.data.attempt_count} 次
             </span>
           )}
-          {automationQuery.data?.status !== "ready" && (
+          {canRunSegmentation &&
+            (automationQuery.data?.status === "failed" ||
+              automationQuery.isError) && (
             <button
               type="button"
               className="ag-header-action"
-              disabled={automationMutation.isPending}
+              disabled={geometryIsBusy || automationMutation.isPending}
               onClick={() => automationMutation.mutate()}
             >
               {automationMutation.isPending
-                ? "自动处理中…"
+                ? "正在提交兼容重跑…"
                 : automationQuery.data?.status === "failed"
-                  ? "从检查点重试"
-                  : "运行自动分析"}
+                  ? "手工从检查点重试（兼容）"
+                  : "手工启动旧自动化（兼容）"}
             </button>
           )}
           <span
@@ -657,13 +1525,48 @@ export default function ReceptionWorkspacePage() {
           )}
 
           <ol className="ag-recording-list">
-            {workspace.recordings.map((recording) => {
-              const key = String(recording.id);
+            {operationRecordings.map((recording, index) => {
+              const key = recordingKey(recording);
+              const sourceMappingKey = mappingKey(recording);
               const active = activeSourceId === key;
               return (
-                <li key={key} className={active ? "is-active" : undefined}>
+                <li
+                  key={sourceMappingKey}
+                  className={active ? "is-active" : undefined}
+                  draggable={
+                    canManageAudio &&
+                    mergeMode !== "physical" &&
+                    !geometryIsBusy
+                  }
+                  onDragStart={() => {
+                    draggedMappingRef.current = sourceMappingKey;
+                  }}
+                  onDragEnd={() => {
+                    draggedMappingRef.current = null;
+                  }}
+                  onDragOver={(event) => {
+                    if (
+                      canManageAudio &&
+                      mergeMode !== "physical" &&
+                      !geometryIsBusy
+                    ) {
+                      event.preventDefault();
+                    }
+                  }}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    const dragged =
+                      mergeMode === "physical"
+                        ? null
+                        : draggedMappingRef.current;
+                    if (dragged) {
+                      moveSourceBefore(dragged, sourceMappingKey);
+                    }
+                    draggedMappingRef.current = null;
+                  }}
+                >
                   <span className="ag-recording-list__sequence">
-                    <span>{recording.sequence_no + 1}</span>
+                    <span>{index + 1}</span>
                   </span>
                   <button
                     type="button"
@@ -680,41 +1583,206 @@ export default function ReceptionWorkspacePage() {
                       {recording.decision_source} ·{" "}
                       {formatPercent(recording.merge_confidence)}
                     </em>
+                    <em>
+                      映射 #{sourceMappingKey} · 源 #{String(recordingId(recording))}
+                    </em>
                   </button>
+                  {canManageAudio && (
+                    <div
+                      className="ag-recording-list__order"
+                      aria-label={`${recording.name}顺序与空档`}
+                    >
+                      <button
+                        type="button"
+                        aria-label={`将${recording.name}上移`}
+                        disabled={
+                          index === 0 ||
+                          mergeMode === "physical" ||
+                          geometryIsBusy
+                        }
+                        onClick={() => moveSource(sourceMappingKey, -1)}
+                      >
+                        ↑
+                      </button>
+                      <button
+                        type="button"
+                        aria-label={`将${recording.name}下移`}
+                        disabled={
+                          index === operationRecordings.length - 1 ||
+                          mergeMode === "physical" ||
+                          geometryIsBusy
+                        }
+                        onClick={() => moveSource(sourceMappingKey, 1)}
+                      >
+                        ↓
+                      </button>
+                      <label>
+                        前置空档
+                        <input
+                          type="number"
+                          min={0}
+                          step={100}
+                          value={
+                            index === 0
+                              ? 0
+                              : mergeMode === "physical"
+                                ? Math.max(
+                                    Math.round(
+                                      recording.gap_before_sec * 1_000,
+                                    ),
+                                    0,
+                                  )
+                                : sourceGapMs[sourceMappingKey] ?? 0
+                          }
+                          disabled={
+                            index === 0 ||
+                            mergeMode === "physical" ||
+                            geometryIsBusy ||
+                            !supportsAudioPlans
+                          }
+                          aria-label={`${recording.name}前静音空档（毫秒）`}
+                          onChange={(event) => {
+                            const gap = Math.max(
+                              Number(event.target.value) || 0,
+                              0,
+                            );
+                            setSourceGapMs((current) => ({
+                              ...current,
+                              [sourceMappingKey]: Math.round(gap),
+                            }));
+                            setAudioPlan(null);
+                          }}
+                        />
+                        ms
+                      </label>
+                    </div>
+                  )}
                 </li>
               );
             })}
           </ol>
 
-          <div className="ag-merge-controls">
-            <label>
-              录音合并模式
-              <select
-                aria-label="录音合并模式"
-                value={mergeMode}
-                onChange={(event) =>
-                  setMergeMode(event.target.value as ReceptionMergeMode)
-                }
+          {canManageAudio ? (
+            <div className="ag-merge-controls">
+              <div className="ag-merge-controls__row">
+                <label>
+                  录音合并模式
+                  <select
+                    aria-label="录音合并模式"
+                    value={mergeMode}
+                    disabled={geometryIsBusy}
+                    onChange={(event) => {
+                      setMergeMode(
+                        event.target.value as ReceptionMergeMode,
+                      );
+                      setAudioPlan(null);
+                    }}
+                  >
+                    <option value="logical">仅逻辑合并</option>
+                    <option value="physical">仅生成物理音频</option>
+                    <option value="both">逻辑 + 物理合并</option>
+                  </select>
+                </label>
+                {supportsAudioPlans && supportsAudioOperations ? (
+                  <button
+                    type="button"
+                    disabled={
+                      operationRecordings.length < 1 ||
+                      geometryIsBusy ||
+                      audioPlanMutation.isPending
+                    }
+                    onClick={() => audioPlanMutation.mutate()}
+                  >
+                    {audioPlanMutation.isPending
+                      ? "正在验证计划…"
+                      : mergeMode === "physical"
+                        ? "验证当前时间线物理产物"
+                        : "生成合并预览"}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={
+                      operationRecordings.length < 2 ||
+                      geometryIsBusy ||
+                      recordingMergeMutation.isPending
+                    }
+                    onClick={() => recordingMergeMutation.mutate()}
+                  >
+                    按当前顺序重新合并全部 {operationRecordings.length} 段
+                  </button>
+                )}
+              </div>
+              <strong className="ag-merge-controls__duration">
+                预计时间线 {formatClock(draftTimelineDurationSec)}
+              </strong>
+              <small
+                className="ag-merge-controls__hint"
+                title="顺序编辑使用映射 ID，播放和证据仍使用不可变源录音 ID。"
               >
-                <option value="logical">仅逻辑合并</option>
-                <option value="physical">仅生成物理音频</option>
-                <option value="both">逻辑 + 物理合并</option>
-              </select>
-            </label>
-            <button
-              type="button"
-              disabled={
-                workspace.recordings.length < 2 ||
-                recordingMergeMutation.isPending
-              }
-              onClick={() => recordingMergeMutation.mutate()}
-            >
-              按当前顺序重新合并全部 {workspace.recordings.length} 段
-            </button>
-            <small>
-              此操作会重建完整源录音映射，不会静默移除队列中的录音。
-            </small>
-          </div>
+                {mergeMode === "physical"
+                  ? "仅按当前已提交时间线重建物理产物；来源顺序与空档在此模式下不可修改。"
+                  : supportsAudioPlans
+                    ? "提交前由服务端重新验证切片、空档和物理兼容性。"
+                  : "兼容服务仅支持来源顺序；空档只读并沿用当前映射。"}
+              </small>
+              {audioPlan && (
+                <div className="ag-audio-plan" role="status">
+                  <strong>
+                    计划总时长{" "}
+                    {formatClock(audioPlan.total_duration_ms / 1_000)}
+                  </strong>
+                  <span>
+                    时间线 revision {audioPlan.timeline_revision} ·{" "}
+                    {audioPlan.physical_eligible
+                      ? "可生成物理音频"
+                      : "仅支持逻辑时间线"}
+                  </span>
+                  {audioPlan.warnings.length > 0 && (
+                    <ul>
+                      {audioPlan.warnings.map((warning) => (
+                        <li key={warning}>{warning}</li>
+                      ))}
+                    </ul>
+                  )}
+                  <button
+                    type="button"
+                    disabled={
+                      geometryIsBusy ||
+                      audioOperationMutation.isPending ||
+                      ((mergeMode === "physical" || mergeMode === "both") &&
+                        !audioPlan.physical_eligible)
+                    }
+                    onClick={() => audioOperationMutation.mutate()}
+                  >
+                    提交音频任务
+                  </button>
+                </div>
+              )}
+              {activeAudioOperationId !== null && audioOperationQuery.data && (
+                <div className="ag-audio-operation" role="status">
+                  <span>
+                    任务 #{activeAudioOperationId} ·{" "}
+                    {audioOperationQuery.data.status} ·{" "}
+                    {Math.round(audioOperationQuery.data.progress * 100)}%
+                  </span>
+                  {canCancelAudioOperation && audioOperationIsActive && (
+                    <button
+                      type="button"
+                      disabled={cancelAudioOperationMutation.isPending}
+                      onClick={() => cancelAudioOperationMutation.mutate()}
+                    >
+                      取消未提交任务
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          ) : (
+            <p className="ag-merge-controls__readonly" role="note">
+              当前账号仅可调听与查看证据
+            </p>
+          )}
         </aside>
 
         <section
@@ -726,7 +1794,9 @@ export default function ReceptionWorkspacePage() {
             <div className="ag-player__meta">
               <div>
                 <span>
-                  {activeRecording
+                  {silenceGap
+                    ? `静音空档 ${formatClock(silenceGap.timelineStartSec)}–${formatClock(silenceGap.timelineEndSec)}`
+                    : activeRecording
                     ? `源录音 · ${activeRecording.name}`
                     : "接待合并音轨"}
                 </span>
@@ -744,13 +1814,21 @@ export default function ReceptionWorkspacePage() {
               controls
               preload="metadata"
               onLoadedMetadata={handleAudioMetadata}
-              onTimeUpdate={handleTimeUpdate}
+              onTimeUpdate={() => handleTimeUpdate(false)}
+              onEnded={() => handleTimeUpdate(true)}
               onError={handleAudioError}
               aria-label="接待录音播放器"
             >
               您的浏览器不支持音频播放。
             </audio>
           </div>
+
+          {canStreamAudio && (
+            <LiveAudioCapturePanel
+              recordings={operationRecordings}
+              disabled={geometryIsBusy}
+            />
+          )}
 
           {(workspace.window.has_previous ||
             workspace.window.has_next ||
@@ -808,129 +1886,332 @@ export default function ReceptionWorkspacePage() {
             workspace={workspace}
             currentTime={timelineTime}
             selectedUnitIds={selectedUnitIds}
+            selectedTagId={selectedTagId}
             onSeek={seekTimeline}
             onToggleUnit={toggleUnit}
+            onSelectTag={selectTagForEditing}
           />
 
-          <div className="ag-dialogue-toolbar">
-            <div>
-              <strong>对话编辑</strong>
-              <span>已选 {selectedUnitIds.size} 个语义单元</span>
-            </div>
-            <button
-              type="button"
-              disabled={
-                segmentationMutation.isPending ||
-                workspace.window.protected_dialogue_units > 0
-              }
-              title={
-                workspace.window.protected_dialogue_units > 0
-                  ? "已有标签、人工编辑或锁定单元，自动替换已受保护"
-                  : undefined
-              }
-              onClick={runAutomaticSegmentation}
-            >
-              {workspace.window.total_dialogue_units > 0
-                ? "重新运行自动切分"
-                : "运行自动对话切分"}
-            </button>
-            <label>
-              <span>编辑原因</span>
-              <input
-                value={editReason}
-                maxLength={500}
-                placeholder="必填，将写入溯源审计"
-                aria-label="对话编辑原因"
-                onChange={(event) => setEditReason(event.target.value)}
-              />
-            </label>
-            <button
-              type="button"
-              disabled={splitMutation.isPending || !editReason.trim()}
-              onClick={splitAtCurrentTime}
-            >
-              在当前播放点切分
-            </button>
-            <button
-              type="button"
-              disabled={
-                selectedUnitIds.size !== 2 ||
-                unitMergeMutation.isPending ||
-                !editReason.trim()
-              }
-              onClick={mergeSelectedUnits}
-            >
-              合并相邻对话
-            </button>
-          </div>
+          {selectedTag && canEditTags && (
+            <TagAssignmentEditor
+              tag={selectedTag}
+              definition={selectedTagDefinition}
+              isSaving={tagCorrectionMutation.isPending}
+              error={tagCorrectionError}
+              onCancel={() => {
+                if (tagCorrectionMutation.isPending) return;
+                setSelectedTagId(null);
+                setTagCorrectionError(null);
+                setLineageFactId(null);
+              }}
+              onSeekEvidence={seekEvidence}
+              onViewLineage={setLineageFactId}
+              onSubmit={(draft) => tagCorrectionMutation.mutate(draft)}
+            />
+          )}
+          {lineageFactId !== null && (
+            <TagFactLineageDrawer
+              factId={lineageFactId}
+              data={lineageQuery.data}
+              pending={lineageQuery.isPending}
+              error={lineageQuery.error}
+              onRetry={() => void lineageQuery.refetch()}
+              onClose={() => setLineageFactId(null)}
+            />
+          )}
 
-          <section
-            className="ag-tag-derive-panel"
-            aria-labelledby="derive-target-tags-title"
-          >
+          {(canRunSegmentation || canEditDialogue) && (
+            <div className="ag-dialogue-toolbar">
+              <div>
+                <strong>对话编辑</strong>
+                <span>已选 {selectedUnitIds.size} 个语义单元</span>
+              </div>
+              {canEditDialogue && (
+                <label>
+                  <span>编辑原因</span>
+                  <input
+                    value={editReason}
+                    maxLength={500}
+                    placeholder="必填，将写入溯源审计"
+                    aria-label="对话编辑原因"
+                    disabled={geometryIsBusy}
+                    onChange={(event) => setEditReason(event.target.value)}
+                  />
+                </label>
+              )}
+              {(workspace.neighbors?.previous_dialogue_unit ||
+                workspace.neighbors?.next_dialogue_unit) &&
+                canEditDialogue && (
+                  <div
+                    className="ag-dialogue-neighbors"
+                    aria-label="跨窗口相邻对话单元"
+                  >
+                    {[
+                      workspace.neighbors?.previous_dialogue_unit,
+                      workspace.neighbors?.next_dialogue_unit,
+                    ]
+                      .filter(
+                        (unit): unit is ReceptionDialogueUnit =>
+                          unit !== null && unit !== undefined,
+                      )
+                      .map((unit) => (
+                        <button
+                          type="button"
+                          key={String(unit.id)}
+                          aria-pressed={selectedUnitIds.has(String(unit.id))}
+                          onClick={() => toggleUnit(unit)}
+                        >
+                          选择相邻单元 #{unit.unit_index + 1}
+                        </button>
+                      ))}
+                  </div>
+                )}
+              <div className="ag-dialogue-toolbar__actions">
+                {canRunSegmentation && (
+                  <button
+                    type="button"
+                    disabled={
+                      geometryIsBusy ||
+                      segmentationMutation.isPending ||
+                      workspace.window.protected_dialogue_units > 0
+                    }
+                    title={
+                      workspace.window.protected_dialogue_units > 0
+                        ? "已有标签、人工编辑或锁定单元，自动替换已受保护"
+                        : undefined
+                    }
+                    onClick={runAutomaticSegmentation}
+                  >
+                    {workspace.window.total_dialogue_units > 0
+                      ? "重新运行自动切分"
+                      : "运行自动对话切分"}
+                  </button>
+                )}
+                {canEditDialogue && (
+                  <>
+                    <button
+                      type="button"
+                      disabled={
+                        geometryIsBusy ||
+                        splitMutation.isPending ||
+                        !editReason.trim()
+                      }
+                      onClick={splitAtCurrentTime}
+                    >
+                      在当前播放点切分
+                    </button>
+                    <button
+                      type="button"
+                      disabled={
+                        geometryIsBusy ||
+                        selectedUnitIds.size !== 2 ||
+                        unitMergeMutation.isPending ||
+                        !editReason.trim()
+                      }
+                      onClick={mergeSelectedUnits}
+                    >
+                      合并相邻对话
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+
+          {canEditTags && (
+            <section
+              className="ag-tag-derive-panel"
+              aria-labelledby="derive-target-tags-title"
+            >
             <div className="ag-tag-derive-panel__heading">
               <div>
                 <strong id="derive-target-tags-title">目标对话标签</strong>
-                <span>基于已验证对话证据，按不可变规则版本写入数据库。</span>
+                <span>
+                  主链读取已发布 Schema 定义，使用达标抽取版本创建持久化后台任务。
+                </span>
               </div>
-              <button
-                type="button"
-                disabled={
-                  workspace.window.total_dialogue_units === 0 ||
-                  targetLabels.size === 0 ||
-                  !tagGroupKey.trim() ||
-                  !tagGroupVersion.trim() ||
-                  deriveTagsMutation.isPending
-                }
-                onClick={() => deriveTagsMutation.mutate()}
-              >
-                {deriveTagsMutation.isPending ? "正在派生…" : "派生目标标签"}
-              </button>
+              {activeSchemaVersion ? (
+                <button
+                  type="button"
+                  disabled={
+                    workspace.window.total_dialogue_units === 0 ||
+                    targetLabels.size === 0 ||
+                    tagJobMutation.isPending
+                  }
+                  onClick={() => tagJobMutation.mutate()}
+                >
+                  {tagJobMutation.isPending
+                    ? "正在创建任务…"
+                    : "创建标签重算任务"}
+                </button>
+              ) : legacyFallback ? (
+                <button
+                  type="button"
+                  disabled={
+                    workspace.window.total_dialogue_units === 0 ||
+                    targetLabels.size === 0 ||
+                    !tagGroupKey.trim() ||
+                    !tagGroupVersion.trim() ||
+                    deriveTagsMutation.isPending
+                  }
+                  onClick={() => deriveTagsMutation.mutate()}
+                >
+                  {deriveTagsMutation.isPending
+                    ? "正在派生…"
+                    : "使用旧规则派生（兼容）"}
+                </button>
+              ) : null}
             </div>
-            <div className="ag-tag-derive-panel__controls">
-              <label>
-                标签组
-                <input
-                  aria-label="目标标签组"
-                  value={tagGroupKey}
-                  maxLength={64}
-                  pattern="[\w.-]+"
-                  onChange={(event) => setTagGroupKey(event.target.value)}
-                />
-              </label>
-              <label>
-                规则版本
-                <input
-                  aria-label="目标标签规则版本"
-                  value={tagGroupVersion}
-                  maxLength={64}
-                  pattern="[\w.-]+"
-                  onChange={(event) => setTagGroupVersion(event.target.value)}
-                />
-              </label>
-              <fieldset>
-                <legend>派生维度</legend>
-                {TARGET_LABELS.map((item) => (
-                  <label key={item.key}>
-                    <input
-                      type="checkbox"
-                      checked={targetLabels.has(item.key)}
-                      aria-label={`派生${item.label}标签`}
-                      onChange={() =>
-                        setTargetLabels((current) => {
-                          const next = new Set(current);
-                          if (next.has(item.key)) next.delete(item.key);
-                          else next.add(item.key);
-                          return next;
-                        })
+            {schemasQuery.isPending && (
+              <p className="ag-tag-governance-state" role="status">
+                正在读取已发布标签体系…
+              </p>
+            )}
+            {schemasQuery.isError && (
+              <p className="ag-tag-governance-state is-error" role="alert">
+                标签治理资产加载失败。为避免写入未受治理的标签，本次不自动降级到旧规则。
+              </p>
+            )}
+            {activeSchemaVersion && (
+              <>
+                <div className="ag-tag-derive-panel__controls is-canonical">
+                  <label>
+                    已发布标签体系
+                    <select
+                      aria-label="已发布标签体系版本"
+                      value={activeSchemaVersion.version.id}
+                      onChange={(event) =>
+                        setSchemaVersionId(Number(event.target.value))
                       }
-                    />
-                    {item.label}
+                    >
+                      {publishedSchemaVersions.map((item) => (
+                        <option
+                          key={item.version.id}
+                          value={item.version.id}
+                        >
+                          {item.schemaName} · {item.version.version}
+                        </option>
+                      ))}
+                    </select>
                   </label>
-                ))}
-              </fieldset>
-            </div>
-            {deriveTagsMutation.data && (
+                  <p
+                    className="ag-tag-derive-panel__hint"
+                    role="note"
+                  >
+                    抽取版本由服务端按当前租户与所选 Schema 原子绑定。
+                  </p>
+                </div>
+                <fieldset className="ag-tag-derive-panel__schema">
+                  <legend>Schema 标签定义</legend>
+                  {activeDefinitions.map((definition: TagDefinition) => (
+                    <label
+                      key={definition.key}
+                      className="ag-canonical-definition"
+                      title={definition.key}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={targetLabels.has(definition.key)}
+                        aria-label={`派生${definition.name}标签`}
+                        onChange={() =>
+                          setTargetLabels((current) => {
+                            const next = new Set(current);
+                            if (next.has(definition.key)) {
+                              next.delete(definition.key);
+                            } else {
+                              next.add(definition.key);
+                            }
+                            return next;
+                          })
+                        }
+                      />
+                      <span className="ag-canonical-definition__label">
+                        {definition.name}
+                        {definition.critical && <b>关键</b>}
+                        {definition.evidence_required && (
+                          <span className="ag-canonical-definition__evidence">
+                            需证据
+                          </span>
+                        )}
+                      </span>
+                    </label>
+                  ))}
+                </fieldset>
+              </>
+            )}
+            {legacyFallback && (
+              <>
+                <p className="ag-legacy-tag-warning" role="note">
+                  <strong>旧规则兼容模式</strong>
+                  当前租户尚无已发布 Schema。以下固定五维仅用于旧数据兼容，不作为新标签主链。
+                </p>
+                <div className="ag-tag-derive-panel__controls is-legacy">
+                  <label>
+                    旧标签组
+                    <input
+                      aria-label="目标标签组"
+                      value={tagGroupKey}
+                      maxLength={64}
+                      pattern="[\w.-]+"
+                      onChange={(event) => setTagGroupKey(event.target.value)}
+                    />
+                  </label>
+                  <label>
+                    旧规则版本
+                    <input
+                      aria-label="目标标签规则版本"
+                      value={tagGroupVersion}
+                      maxLength={64}
+                      pattern="[\w.-]+"
+                      onChange={(event) => setTagGroupVersion(event.target.value)}
+                    />
+                  </label>
+                  <fieldset>
+                    <legend>旧五维派生</legend>
+                    {LEGACY_TARGET_LABELS.map((item) => (
+                      <label key={item.key}>
+                        <input
+                          type="checkbox"
+                          checked={targetLabels.has(item.key)}
+                          aria-label={`派生${item.label}标签`}
+                          onChange={() =>
+                            setTargetLabels((current) => {
+                              const next = new Set(current);
+                              if (next.has(item.key)) next.delete(item.key);
+                              else next.add(item.key);
+                              return next;
+                            })
+                          }
+                        />
+                        {item.label}
+                      </label>
+                    ))}
+                  </fieldset>
+                </div>
+              </>
+            )}
+            {tagJob && (
+              <div
+                className="ag-tag-derive-result"
+                role="status"
+                aria-live="polite"
+              >
+                <div>
+                  <strong>后台标签任务已入队</strong>
+                  <span>Schema #{schemaVersionId}</span>
+                  <span>
+                    {tagJob.tagger_version_id === null ||
+                    tagJob.tagger_version_id === undefined
+                      ? "服务端路由待绑定"
+                      : `服务端已绑定 Tagger #${tagJob.tagger_version_id}`}
+                  </span>
+                </div>
+                <Link to={`/tag-runs/${tagJob.id}`}>
+                  查看标签任务 #{tagJob.id}
+                </Link>
+              </div>
+            )}
+            {legacyFallback && deriveTagsMutation.data && (
               <div
                 className="ag-tag-derive-result"
                 role="status"
@@ -962,7 +2243,8 @@ export default function ReceptionWorkspacePage() {
                 )}
               </div>
             )}
-          </section>
+            </section>
+          )}
 
           <div className="ag-transcript" aria-label="对话转写">
             {workspace.transcript_items.length === 0 ? (
@@ -993,6 +2275,9 @@ export default function ReceptionWorkspacePage() {
           <EvidenceAuditPanel
             workspace={workspace}
             onSeekEvidence={seekEvidence}
+            selectedTagId={selectedTagId}
+            canEdit={canEditTags}
+            onEditTag={selectTagForEditing}
           />
         </aside>
       </main>

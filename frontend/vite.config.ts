@@ -103,10 +103,17 @@ export default defineConfig(async ({ mode }) => {
     const { cloudflare } = await import("@cloudflare/vite-plugin");
     plugins.push(
       cloudflare({
+        persistState: false,
         config: {
           name: "server",
           main: "./worker/index.ts",
           compatibility_flags: ["nodejs_compat"],
+          d1_databases: [
+            {
+              binding: "DB",
+              database_name: "audiography-sites-demo",
+            },
+          ],
         },
       }),
     );

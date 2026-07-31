@@ -25,6 +25,7 @@ import type {
   TagMergeStrategy,
   TrendGranularity,
 } from "@/types/api";
+import { GovernanceActions } from "./GovernanceActions";
 import { InsightVisuals } from "./InsightVisuals";
 import { TagInsightGraph } from "./TagInsightGraph";
 import { TagMatrix } from "./TagMatrix";
@@ -889,6 +890,27 @@ export default function TagInsightsPage() {
   const activeResult =
     activeSource === "snapshot" ? analysisMutation.data : persisted?.insights;
 
+  const compareExactVersions = (groupIds: string[]) => {
+    if (groupIds.length < 2) return;
+    setDatabaseFilters((current) => ({
+      ...current,
+      groupKeys: "",
+      groupIds: groupIds.join(", "),
+    }));
+    setDatabaseRequest((current) => {
+      const rest = { ...current };
+      delete rest.group_key;
+      return {
+        ...rest,
+        group_id: groupIds,
+        page: 1,
+      };
+    });
+    setDatabaseRevision((value) => value + 1);
+    setDatabaseFilterError(null);
+    setActiveSource("database");
+  };
+
   return (
     <div className="ag-tag-insights-page">
       <InsightContextTabs />
@@ -1139,6 +1161,12 @@ export default function TagInsightsPage() {
 
       {activeSource === "database" && persisted && persisted.insights && (
         <>
+          <GovernanceActions
+            result={persisted.insights}
+            persisted={persisted}
+            request={databaseRequest}
+            onCompareVersions={compareExactVersions}
+          />
           <InsightResult result={persisted.insights} persisted={persisted} />
           <nav className="ag-insight-pagination" aria-label="洞察分页">
             <button
@@ -1351,6 +1379,11 @@ export default function TagInsightsPage() {
               返回数据库结果
             </button>
           </div>
+          <GovernanceActions
+            result={activeResult}
+            request={databaseRequest}
+            onCompareVersions={compareExactVersions}
+          />
           <InsightResult result={activeResult} />
         </>
       )}

@@ -63,7 +63,7 @@ export default function LoginPage() {
           <Title heading={4} style={{ margin: 0 }}>
             AudioGraphy
           </Title>
-          <p style={{ color: "#86909c", fontSize: 13, marginTop: 4 }}>
+          <p style={{ color: "#86909c", fontSize: 14, marginTop: 4 }}>
             门店录音图谱检索与多级打标系统
           </p>
           {IS_SITES_DEMO && (
@@ -76,7 +76,7 @@ export default function LoginPage() {
                 background: "#e8f3ff",
                 border: "1px solid #bedaff",
                 borderRadius: 4,
-                fontSize: 12,
+                fontSize: 14,
               }}
             >
               在线演示数据已就绪，直接点击登录即可体验。

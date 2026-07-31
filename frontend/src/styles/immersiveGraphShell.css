@@ -21,6 +21,11 @@
   font-size: 18px;
 }
 
+.ag-app-nav-toggle,
+.ag-platform-backdrop {
+  display: none;
+}
+
 .ag-app-brand__copy {
   display: flex;
   align-items: baseline;
@@ -46,16 +51,16 @@
 .ag-platform-sider {
   position: relative;
   z-index: 12;
-  flex: 0 0 208px !important;
-  width: 208px !important;
-  min-width: 208px !important;
-  max-width: 208px !important;
+  flex: 0 0 228px !important;
+  width: 228px !important;
+  min-width: 228px !important;
+  max-width: 228px !important;
   overflow-y: auto;
   box-shadow: 4px 0 18px rgb(31 52 82 / 3%);
 }
 
 .ag-platform-navigation {
-  padding: 10px 8px 18px;
+  padding: 12px 10px 20px;
 }
 
 .ag-platform-menu-group {
@@ -64,9 +69,9 @@
 
 .ag-platform-menu-group > h2 {
   margin: 0;
-  padding: 8px 12px 4px;
+  padding: 12px 12px 6px;
   color: #9aa5b7;
-  font-size: 10px;
+  font-size: 13px;
   font-weight: 600;
   letter-spacing: 0.08em;
 }
@@ -80,11 +85,11 @@
 }
 
 .ag-platform-menu .arco-menu-item {
-  height: 36px;
-  margin: 2px 0;
+  height: 42px;
+  margin: 3px 0;
   border-radius: 6px;
   color: #526078;
-  font-size: 12px;
+  font-size: 14px;
 }
 
 .ag-platform-menu .arco-menu-item-selected {
@@ -105,11 +110,70 @@
 }
 
 @media (max-width: 760px) {
+  .ag-app-header {
+    padding-right: 12px !important;
+    padding-left: 12px !important;
+  }
+
+  .ag-app-nav-toggle {
+    display: inline-grid;
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    place-items: center;
+    color: #526078;
+    background: #fff;
+    border: 1px solid #dce3ed;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+
+  .ag-app-nav-toggle svg {
+    font-size: 18px;
+  }
+
+  .ag-app-brand__mark,
+  .ag-demo-data-badge {
+    display: none;
+  }
+
+  .ag-app-body,
+  .ag-app-content {
+    min-width: 0;
+  }
+
+  .ag-app-content {
+    flex: 1 1 100% !important;
+    width: 100%;
+  }
+
   .ag-platform-sider {
-    flex-basis: 172px !important;
-    width: 172px !important;
-    min-width: 172px !important;
-    max-width: 172px !important;
+    position: fixed !important;
+    z-index: 30;
+    top: 56px;
+    bottom: 0;
+    left: 0;
+    flex-basis: min(280px, 84vw) !important;
+    width: min(280px, 84vw) !important;
+    min-width: min(280px, 84vw) !important;
+    max-width: min(280px, 84vw) !important;
+    transform: translateX(-102%);
+    transition: transform 180ms ease;
+  }
+
+  .ag-platform-sider.is-mobile-open {
+    transform: translateX(0);
+  }
+
+  .ag-platform-backdrop {
+    position: fixed;
+    z-index: 29;
+    inset: 56px 0 0 min(280px, 84vw);
+    display: block;
+    padding: 0;
+    background: rgb(15 29 51 / 34%);
+    border: 0;
+    cursor: pointer;
   }
 
   .ag-platform-navigation {

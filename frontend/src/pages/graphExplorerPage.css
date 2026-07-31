@@ -1,0 +1,400 @@
+.ag-global-graph-page {
+  min-width: 0;
+  padding: 22px 24px 28px;
+  background:
+    linear-gradient(180deg, rgba(244, 248, 255, 0.8), transparent 180px),
+    #f7f9fc;
+}
+
+.ag-global-graph-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 16px;
+}
+
+.ag-global-graph-heading__eyebrow {
+  color: #4f78ce;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.15em;
+}
+
+.ag-global-graph-heading h4.arco-typography {
+  margin: 3px 0 2px;
+  color: #18243c;
+  font-size: 24px;
+}
+
+.ag-global-graph-heading > div > .arco-typography {
+  color: #758198;
+  font-size: 14px;
+}
+
+.ag-global-graph-heading__status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  border: 1px solid #dfe7f2;
+  border-radius: 999px;
+  background: #fff;
+  color: #60708c;
+  font-size: 13px;
+  box-shadow: 0 5px 18px rgba(43, 76, 128, 0.05);
+}
+
+.ag-global-graph-heading__status span {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #27a66f;
+  box-shadow: 0 0 0 4px rgba(39, 166, 111, 0.11);
+}
+
+.ag-global-graph-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(220px, 1fr));
+  gap: 8px;
+  max-width: 680px;
+  margin-bottom: 14px;
+  padding: 5px;
+  border: 1px solid #e0e7f2;
+  border-radius: 14px;
+  background: #eef2f8;
+}
+
+.ag-global-graph-tabs button {
+  display: flex;
+  min-height: 52px;
+  align-items: flex-start;
+  justify-content: center;
+  flex-direction: column;
+  padding: 8px 16px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: #52617c;
+  cursor: pointer;
+  text-align: left;
+  transition:
+    background 150ms ease,
+    border-color 150ms ease,
+    box-shadow 150ms ease;
+}
+
+.ag-global-graph-tabs button span {
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.ag-global-graph-tabs button small {
+  margin-top: 2px;
+  color: #8a95a8;
+  font-size: 14px;
+}
+
+.ag-global-graph-tabs button.is-active {
+  border-color: #cddcf7;
+  background: #fff;
+  box-shadow: 0 5px 15px rgba(39, 78, 145, 0.09);
+  color: #2459bc;
+}
+
+.ag-global-graph-tabs button:focus-visible {
+  outline: 3px solid rgba(50, 106, 220, 0.26);
+  outline-offset: 2px;
+}
+
+.ag-global-graph-panel {
+  min-width: 0;
+  outline: none;
+}
+
+.ag-entity-graph-panel > .arco-card {
+  border-color: #e0e7f2;
+  border-radius: 13px;
+  box-shadow: 0 8px 24px rgba(41, 72, 124, 0.05);
+}
+
+/* === Entity relation graph canvas (aligned with topic-cluster design) === */
+.ag-entity-graph-canvas {
+  position: relative;
+  width: 100%;
+  height: 640px;
+  overflow: hidden;
+  border-radius: 13px;
+  background:
+    radial-gradient(circle at 50% 42%, rgba(236, 244, 255, 0.86), rgba(255, 255, 255, 0) 38%),
+    linear-gradient(180deg, #fbfdff 0%, #ffffff 100%);
+}
+
+.ag-entity-graph-canvas::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.55;
+  background-image: radial-gradient(#c8d6ed 1px, transparent 1px);
+  background-size: 24px 24px;
+  -webkit-mask-image: radial-gradient(circle at center, #000, transparent 78%);
+          mask-image: radial-gradient(circle at center, #000, transparent 78%);
+}
+
+.ag-entity-graph-canvas::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 18% 22%, rgba(124, 169, 255, 0.08), transparent 28%),
+    radial-gradient(circle at 82% 78%, rgba(186, 138, 255, 0.06), transparent 30%);
+}
+
+.ag-entity-graph-canvas__grid-fine {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.32;
+  background-image:
+    linear-gradient(to right, rgba(120, 154, 212, 0.08) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(120, 154, 212, 0.08) 1px, transparent 1px);
+  background-size: 96px 96px;
+  -webkit-mask-image: radial-gradient(circle at center, #000, transparent 82%);
+          mask-image: radial-gradient(circle at center, #000, transparent 82%);
+}
+
+.ag-entity-graph-canvas__legend {
+  position: absolute;
+  left: 16px;
+  bottom: 16px;
+  z-index: 4;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid #e3eaf5;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 8px 24px rgba(40, 79, 143, 0.06);
+}
+
+.ag-entity-graph-canvas__legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #5b6a87;
+  font-size: 14px;
+}
+
+.ag-entity-graph-canvas__legend i {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+}
+
+.ag-entity-graph-canvas__meta {
+  position: absolute;
+  right: 16px;
+  top: 16px;
+  z-index: 4;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  border: 1px solid #e3eaf5;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(8px);
+  color: #60708c;
+  font-size: 14px;
+  box-shadow: 0 4px 14px rgba(43, 76, 128, 0.05);
+}
+
+.ag-entity-graph-canvas__meta strong {
+  color: #2457b7;
+  font-weight: 650;
+}
+
+/* Entity detail panel (right side) — match community detail visual weight */
+.ag-entity-detail-panel {
+  border-color: #e3eaf5 !important;
+  border-radius: 13px !important;
+  box-shadow: 0 8px 24px rgba(41, 72, 124, 0.05) !important;
+}
+
+.ag-entity-detail-panel .arco-card-body {
+  padding: 18px 18px 16px !important;
+}
+
+.ag-entity-detail-panel .ag-entity-detail-eyebrow {
+  color: #4274d5;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.ag-entity-detail-panel .ag-entity-detail-name {
+  margin: 6px 0 4px;
+  color: #18243c;
+  font-size: 20px;
+  font-weight: 650;
+  line-height: 1.25;
+}
+
+.ag-entity-detail-panel .ag-entity-detail-desc {
+  margin: 0 0 14px;
+  color: #6b7892;
+  font-size: 14px;
+  line-height: 1.65;
+}
+
+.ag-entity-detail-panel .ag-entity-detail-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin: 14px 0 12px;
+}
+
+.ag-entity-detail-panel .ag-entity-detail-stats > div {
+  display: flex;
+  min-height: 68px;
+  align-items: flex-start;
+  justify-content: center;
+  flex-direction: column;
+  padding: 10px 12px;
+  border: 1px solid #e6ebf4;
+  border-radius: 10px;
+  background: #f8faff;
+}
+
+.ag-entity-detail-panel .ag-entity-detail-stats span {
+  color: #7a869c;
+  font-size: 14px;
+}
+
+.ag-entity-detail-panel .ag-entity-detail-stats strong {
+  color: #2457b7;
+  font-size: 19px;
+  font-weight: 650;
+}
+
+.ag-entity-detail-panel .ag-entity-detail-type-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px 3px 8px;
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.ag-entity-detail-panel .ag-entity-detail-type-badge::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.ag-entity-detail-panel .ag-entity-detail-neighbors {
+  margin-top: 6px;
+}
+
+.ag-entity-detail-panel .ag-entity-detail-neighbors > h4 {
+  margin: 0 0 8px;
+  color: #4b5871;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.ag-entity-detail-panel .ag-entity-detail-neighbor {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  padding: 5px 10px;
+  border: 1px solid #e3eaf5;
+  border-radius: 8px;
+  background: #fff;
+  color: #394967;
+  font-size: 14px;
+  cursor: pointer;
+  transition: border-color 150ms ease, background 150ms ease;
+}
+
+.ag-entity-detail-panel .ag-entity-detail-neighbor:hover {
+  border-color: #cddcf7;
+  background: #f3f8ff;
+  color: #2457b7;
+}
+
+.ag-entity-detail-panel .ag-entity-detail-neighbor i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.7;
+}
+
+/* ── GD-001: Jump-to action button row ── */
+
+.ag-entity-detail-actions {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid #e6ebf4;
+}
+
+.ag-entity-detail-action-link {
+  display: inline-flex;
+  text-decoration: none;
+}
+
+.ag-entity-detail-action-link .arco-btn-text {
+  color: #326ad6 !important;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 0;
+}
+
+.ag-entity-detail-action-link .arco-btn-text:hover {
+  color: #1f4db1 !important;
+  background: transparent !important;
+}
+
+/* ── GD-008: Focus param Alert ── */
+
+.ag-entity-graph-focus-alert {
+  margin-bottom: 12px;
+  border: 1px solid rgba(207, 220, 240, 0.6);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.78);
+  backdrop-filter: blur(14px);
+  box-shadow: 0 8px 24px rgba(41, 72, 124, 0.05);
+}
+
+.ag-entity-graph-focus-alert .arco-alert-content {
+  color: #1d3f80 !important;
+}
+
+@media (max-width: 760px) {
+  .ag-global-graph-page {
+    padding: 16px;
+  }
+
+  .ag-global-graph-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .ag-global-graph-tabs {
+    grid-template-columns: 1fr;
+    max-width: none;
+  }
+}

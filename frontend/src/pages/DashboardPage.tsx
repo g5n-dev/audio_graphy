@@ -5,13 +5,12 @@
  */
 
 import { useQuery } from "@tanstack/react-query";
-import { Card, Grid, Statistic, Spin, Typography, Tag, Table } from "@arco-design/web-react";
+import { Card, Grid, Statistic, Spin, Tag, Table } from "@arco-design/web-react";
 import { useNavigate } from "react-router-dom";
 import { listRecordings, getStats, listPrompts } from "@/api/services";
 import { useAuthStore } from "@/stores/auth";
 
 const { Row, Col } = Grid;
-const { Title, Text } = Typography;
 
 export default function DashboardPage() {
   const navigate = useNavigate();
@@ -40,23 +39,27 @@ export default function DashboardPage() {
     queued: "gray",
     processing: "blue",
     indexed: "green",
+    ready_no_speech: "cyan",
     failed: "red",
     archived: "orange",
   };
 
   return (
-    <div style={{ padding: 24 }}>
-      <Title heading={4} style={{ marginBottom: 16 }}>
-        仪表盘
-        {user && (
-          <Text style={{ fontSize: 13, color: "#86909c", marginLeft: 12 }}>
-            欢迎, {user.name} ({user.role} · {user.tenant_id})
-          </Text>
-        )}
-      </Title>
+    <div>
+      <header className="ag-feature-header">
+        <div>
+          <span className="ag-eyebrow">SYSTEM OVERVIEW · 系统概览</span>
+          <h1>仪表盘</h1>
+          <p>
+            录音、标签与提示词的全局状态一览。
+            {user && ` 欢迎, ${user.name} (${user.role} · ${user.tenant_id})`}
+          </p>
+        </div>
+      </header>
 
+      <div style={{ padding: 24 }}>
       <Spin loading={loadingRec && loadingStats && loadingPrompts} delay={200}>
-        <Row gutter={16} style={{ marginBottom: 16 }}>
+        <Row gutter={24} style={{ marginBottom: 20 }}>
           <Col span={8}>
             <Card>
               <Statistic title="录音总数" value={totalRecordings} />
@@ -74,7 +77,7 @@ export default function DashboardPage() {
           </Col>
         </Row>
 
-        <Row gutter={16}>
+        <Row gutter={24}>
           <Col span={12}>
             <Card
               title="最近录音"
@@ -88,7 +91,7 @@ export default function DashboardPage() {
                 data={recordingsData?.items ?? []}
                 rowKey="id"
                 pagination={false}
-                size="small"
+                size="middle"
                 columns={[
                   {
                     title: "ID",
@@ -130,7 +133,7 @@ export default function DashboardPage() {
                 data={(statsData?.items ?? []).slice(0, 5)}
                 rowKey="group_key"
                 pagination={false}
-                size="small"
+                size="middle"
                 columns={[
                   {
                     title: "标签路径",
@@ -153,6 +156,7 @@ export default function DashboardPage() {
           </Col>
         </Row>
       </Spin>
+      </div>
     </div>
   );
 }
