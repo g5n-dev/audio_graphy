@@ -51,6 +51,8 @@ class GraphBuilder:
         graph_store: NetworkXGraphStore for graph persistence.
         bundle: AdapterBundle (uses embed for entity vectors).
         vector_store: Optional MySQLVectorStore for entity embeddings.
+        strict_persistence: Propagate GraphML checkpoint failures to callers
+            that use the graph as a required, acknowledged projection.
     """
 
     def __init__(
@@ -59,10 +61,12 @@ class GraphBuilder:
         *,
         bundle: AdapterBundle | None = None,
         vector_store: MySQLVectorStore | None = None,
+        strict_persistence: bool = False,
     ) -> None:
         self._graph_store = graph_store
         self._bundle = bundle
         self._vector_store = vector_store
+        self._strict_persistence = strict_persistence
 
     async def build_from_extractions(
         self,
@@ -126,6 +130,8 @@ class GraphBuilder:
         try:
             await self._graph_store.save()
         except Exception as exc:
+            if self._strict_persistence:
+                raise
             logger.warning("GraphML save failed (data preserved in memory): %s", exc)
 
         # Step 6: Embed entities → vector store

@@ -8,7 +8,9 @@ DB + SpeakerMergePending queue is covered by
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -131,6 +133,52 @@ async def test_try_layer2_fuzzy_no_query_name_returns_none() -> None:
     # We can't predict the exact fuzzy score for "spk_0" vs "x" but it's
     # almost certainly below the INFERRED threshold (0.6).
     assert out is None
+
+
+@pytest.mark.asyncio
+async def test_pending_review_does_not_mutate_canonical_speaker() -> None:
+    """A fuzzy proposal is staging data until an inspector applies it."""
+
+    class _AmbiguousMatcher:
+        def match(
+            self,
+            *,
+            query_name: str,
+            candidates: list[SpeakerCandidate],
+            query_voiceprint: tuple[float, ...] | None,
+        ) -> SpeakerFuzzyResult:
+            del query_name, query_voiceprint
+            return SpeakerFuzzyResult(
+                verdict="AMBIGUOUS",
+                matched_candidate=candidates[0],
+                fuzzy_score=0.95,
+                voiceprint_score=None,
+                needs_reconfirm=True,
+            )
+
+    linker = _build_linker(fuzzy_matcher=_AmbiguousMatcher())
+    existing = SimpleNamespace(
+        id=42,
+        display_name="王小姐",
+        recordings_list=[],
+        total_speech_sec=0.0,
+    )
+    linker._load_existing_speakers = AsyncMock(return_value=[existing])  # type: ignore[method-assign]
+    linker._enqueue_reconfirm = AsyncMock()  # type: ignore[method-assign]
+    linker._merge_into_existing = AsyncMock()  # type: ignore[method-assign]
+    linker._create_new_speaker = AsyncMock()  # type: ignore[method-assign]
+
+    report = await linker.run(
+        1,
+        [_make_candidate(display_name="王女士")],
+    )
+
+    linker._enqueue_reconfirm.assert_awaited_once()
+    linker._merge_into_existing.assert_not_awaited()
+    linker._create_new_speaker.assert_not_awaited()
+    assert report.merged_speakers == 0
+    assert report.new_speakers == 0
+    assert report.m9_pending_reconfirm == 1
 
 
 # ============================================================

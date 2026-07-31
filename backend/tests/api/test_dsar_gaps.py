@@ -352,77 +352,123 @@ def test_erase_loads_cold_tenant_graph_and_persists_cleanup(
     assert _str_to_list(persisted.nodes["shared"]["recording_ids"]) == ["99999"]
 
 
-def test_erase_logs_voiceprint_cascade_failure(
+def test_erase_voiceprint_cascade_is_in_the_database_transaction(
     test_client: pytest.fixture,
     auth_headers: pytest.fixture,
     db_session_factory: pytest.fixture,
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """A best-effort voiceprint failure is visible while erase still succeeds."""
-    from audio_graphy.api import dsar
+    """Biometric rows and their canonical node cannot outlive the recording."""
+    from sqlalchemy import select
 
-    async def _raise_cascade_error(*_args: Any, **_kwargs: Any) -> None:
-        raise RuntimeError("voiceprint store unavailable")
+    from audio_graphy.models.speaker_link import SpeakerLink
+    from audio_graphy.models.speaker_node import SpeakerNode
+    from audio_graphy.models.voiceprint_vector import VoiceprintVector
 
-    monkeypatch.setattr(
-        dsar,
-        "_cascade_voiceprint_after_erase",
-        _raise_cascade_error,
-    )
     rec_id = _run_async(_seed_rec_with_audio(db_session_factory, tag_suffix="cascade-log"))
 
-    with caplog.at_level(logging.WARNING, logger="audio_graphy.api.dsar"):
+    async def _seed_voiceprint() -> int:
+        async with db_session_factory() as session, session.begin():
+            speaker = SpeakerNode(
+                tenant_id="chang_an",
+                voiceprint_id="a" * 64,
+                display_name="private speaker",
+                speaker_role="customer",
+                recordings_list=[rec_id],
+                recordings_count=1,
+                total_speech_sec=3,
+                merge_confidence=1,
+                merge_strategy="voiceprint",
+                attrs={},
+            )
+            session.add(speaker)
+            await session.flush()
+            session.add_all(
+                [
+                    VoiceprintVector(
+                        tenant_id="chang_an",
+                        recording_id=rec_id,
+                        speaker_entity_id=speaker.id,
+                        voiceprint_id="b" * 64,
+                        vector_encrypted=b"encrypted-biometric",
+                        encryption_meta={"version": 1},
+                        duration_sec=3,
+                    ),
+                    SpeakerLink(
+                        tenant_id="chang_an",
+                        canonical_speaker_id=speaker.id,
+                        source_speaker_id=speaker.id,
+                        recording_id=rec_id,
+                        merge_confidence=1,
+                        strategy="voiceprint",
+                    ),
+                ]
+            )
+            return speaker.id
+
+    speaker_id = _run_async(_seed_voiceprint())
+    resp = test_client.post(
+        f"/api/v1/dsar/erase/{rec_id}",
+        headers=auth_headers["admin_t1"],  # type: ignore[index]
+    )
+
+    assert resp.status_code == 200, resp.text
+
+    async def _biometric_rows_are_gone() -> bool:
+        async with db_session_factory() as session:
+            speaker = await session.get(SpeakerNode, speaker_id)
+            voiceprint = await session.scalar(
+                select(VoiceprintVector.id).where(
+                    VoiceprintVector.recording_id == rec_id
+                )
+            )
+            link = await session.scalar(
+                select(SpeakerLink.id).where(SpeakerLink.recording_id == rec_id)
+            )
+            return speaker is None and voiceprint is None and link is None
+
+    assert _run_async(_biometric_rows_are_gone()) is True
+
+
+def test_erase_graph_save_failure_is_persisted_for_outbox_retry(
+    test_client: pytest.fixture,
+    auth_headers: pytest.fixture,
+    db_session_factory: pytest.fixture,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Graph failure cannot roll back DB erasure and remains recoverable."""
+    from sqlalchemy import select
+
+    from audio_graphy.models.erasure_outbox import ErasureOutbox
+    from audio_graphy.models.recording import Recording
+
+    class FlakyGraphStore:
+        def __init__(self) -> None:
+            self.graph = nx.MultiDiGraph()
+            self.graph.add_node("pii", recording_ids="[]")
+            self.fail = True
+
+        async def save(self) -> None:
+            if self.fail:
+                raise RuntimeError("graph store unavailable")
+
+        def invalidate_path_projection(self) -> None:
+            return None
+
+    rec_id = _run_async(_seed_rec_with_audio(db_session_factory, tag_suffix="graph-log"))
+    graph_store = FlakyGraphStore()
+    test_client.app.state.graph_stores["chang_an"] = graph_store
+
+    with caplog.at_level(logging.WARNING, logger="audio_graphy.services.erasure_outbox"):
         resp = test_client.post(
             f"/api/v1/dsar/erase/{rec_id}",
             headers=auth_headers["admin_t1"],  # type: ignore[index]
         )
 
     assert resp.status_code == 200, resp.text
-    assert any(
-        f"Voiceprint cascade failed for recording {rec_id}" in record.message
-        and "voiceprint store unavailable" in record.message
-        for record in caplog.records
-    )
 
-
-def test_erase_graph_save_failure_is_not_reported_as_success(
-    test_client: pytest.fixture,
-    auth_headers: pytest.fixture,
-    db_session_factory: pytest.fixture,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """A GraphML persistence failure fails the request before deleting the DB row."""
-
-    class BrokenGraphStore:
-        def __init__(self) -> None:
-            self.graph = nx.MultiDiGraph()
-            self.graph.add_node("pii", recording_ids="[]")
-
-        async def save(self) -> None:
-            raise RuntimeError("graph store unavailable")
-
-        def invalidate_path_projection(self) -> None:
-            return None
-
-    rec_id = _run_async(_seed_rec_with_audio(db_session_factory, tag_suffix="graph-log"))
-    test_client.app.state.graph_stores["chang_an"] = BrokenGraphStore()
-
-    with caplog.at_level(logging.WARNING, logger="audio_graphy.api.dsar"):
-        resp = test_client.post(
-            f"/api/v1/dsar/erase/{rec_id}",
-            headers=auth_headers["admin_t1"],  # type: ignore[index]
-        )
-
-    assert resp.status_code == 500, resp.text
-
-    async def _recording_still_exists() -> bool:
-        from sqlalchemy import select
-
-        from audio_graphy.models.recording import Recording
-
+    async def _state() -> tuple[bool, str, int]:
         async with db_session_factory() as session:
-            row = (
+            recording = (
                 await session.execute(
                     select(Recording).where(
                         Recording.id == rec_id,
@@ -430,9 +476,27 @@ def test_erase_graph_save_failure_is_not_reported_as_success(
                     )
                 )
             ).scalar_one_or_none()
-            return row is not None
+            outbox = (
+                await session.execute(
+                    select(ErasureOutbox).where(
+                        ErasureOutbox.tenant_id == "chang_an",
+                        ErasureOutbox.subject_type == "recording",
+                        ErasureOutbox.subject_id == str(rec_id),
+                    )
+                )
+            ).scalar_one()
+            return recording is None, outbox.status, outbox.attempts
 
-    assert _run_async(_recording_still_exists()) is True
+    assert _run_async(_state()) == (True, "failed", 1)
+    assert any("Erasure outbox cleanup deferred" in row.message for row in caplog.records)
+
+    graph_store.fail = False
+    retried = test_client.post(
+        f"/api/v1/dsar/erase/{rec_id}",
+        headers=auth_headers["admin_t1"],  # type: ignore[index]
+    )
+    assert retried.status_code == 200, retried.text
+    assert _run_async(_state()) == (True, "succeeded", 2)
 
 
 def test_cross_tenant_erase_returns_404(
@@ -460,11 +524,6 @@ def test_export_with_audit_writer_attached(
     from audio_graphy.core.audit import AuditWriter
 
     writer = AuditWriter(db_session_factory, flush_batch_size=10, flush_interval_sec=10.0)
-
-    async def _setup() -> None:
-        await writer.start()
-
-    _run_async(_setup())
     test_client.app.state.audit_writer = writer
 
     try:
@@ -502,9 +561,8 @@ def test_export_with_audit_writer_attached(
 
         assert _run_async(_check()) >= 1
     finally:
-        # Detach the writer without aclose() — TestClient's event loop is
-        # different from our helper loops, so calling aclose would fail.
-        # The TestClient teardown disposes the engine, which is fine for tests.
+        # This endpoint flushes the injected writer synchronously, so the test
+        # deliberately does not start a background task on a short-lived loop.
         test_client.app.state.audit_writer = None
 
 

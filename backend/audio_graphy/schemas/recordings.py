@@ -6,8 +6,18 @@ See: docs/m3-prd.md §4.2.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+RecordingStatusValue = Literal[
+    "queued",
+    "processing",
+    "indexed",
+    "ready_no_speech",
+    "failed",
+    "archived",
+]
 
 
 class RecordingCreate(BaseModel):
@@ -45,11 +55,18 @@ class RecordingResponse(BaseModel):
     agent_name: str | None = None
     agent_user_id: int | None = None
     customer_hash: str | None = None
-    status: str
+    status: RecordingStatusValue
     pipeline_state: str
     recorded_at: datetime | None = None
     prompt_version: str | None = None
     indexed_at: datetime | None = None
+    audio_duration_ms: int | None = None
+    audio_sha256: str | None = None
+    audio_size_bytes: int | None = None
+    audio_sample_rate: int | None = None
+    audio_channels: int | None = None
+    source_revision: int = 1
+    active_pipeline_run_id: int | None = None
     created_at: datetime | None = None
     segments_count: int = 0
     chunks_count: int = 0
@@ -63,11 +80,12 @@ class RecordingListItem(BaseModel):
     store_id: str
     agent_name: str | None = None
     agent_user_id: int | None = None
-    status: str
+    status: RecordingStatusValue
     pipeline_state: str
     recorded_at: datetime | None = None
     indexed_at: datetime | None = None
     prompt_version: str | None = None
+    active_pipeline_run_id: int | None = None
 
 
 class RecordingListResponse(BaseModel):
@@ -84,9 +102,10 @@ class RecordingStatusResponse(BaseModel):
 
     id: int
     agent_user_id: int | None = None
-    status: str
+    status: RecordingStatusValue
     pipeline_state: str
     indexed_at: datetime | None = None
+    active_pipeline_run_id: int | None = None
 
 
 class ReindexRequest(BaseModel):
@@ -99,6 +118,27 @@ class ReindexResponse(BaseModel):
     """POST /recordings/{id}/reindex response."""
 
     id: int
-    status: str
+    status: RecordingStatusValue
     pipeline_state: str
+    operation_id: int
+    generation: int
+    operation_state: str
     message: str = "Reindex triggered"
+
+
+class PipelineRunResponse(BaseModel):
+    """Durable processing operation/checkpoint state."""
+
+    id: int
+    recording_id: int
+    generation: int
+    state: str
+    attempt_count: int
+    required_projections: list[str] = Field(default_factory=list)
+    completed_projections: list[str] = Field(default_factory=list)
+    error_code: str | None = None
+    error_message: str | None = None
+    lease_expires_at: datetime | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    activated_at: datetime | None = None

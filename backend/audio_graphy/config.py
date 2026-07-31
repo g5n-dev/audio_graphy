@@ -19,7 +19,7 @@ import math
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 if TYPE_CHECKING:
@@ -28,6 +28,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 AdapterMode = Literal["mock", "real"]
+LLMRecipeMigrationMode = Literal["shadow", "dual_read", "v2"]
+StructuredOutputCapability = Literal[
+    "strict_json_schema",
+    "json_object",
+    "unsupported",
+]
 
 
 class Settings(BaseSettings):
@@ -65,6 +71,78 @@ class Settings(BaseSettings):
     openai_api_key: str = "dummy"
     llm_strong_model: str = "qwen3.6-27b"
     llm_weak_model: str = "qwen3.6-35b-a3b"
+    # Operational model epochs invalidate result recipes even when a served
+    # model name is reused for new weights. Empty means "same as model".
+    llm_strong_model_epoch: str = ""
+    llm_weak_model_epoch: str = ""
+    # Declared independently because strong/weak endpoints may run different
+    # engines or versions. Unknown values fail Settings validation at startup.
+    llm_strong_structured_output_capability: StructuredOutputCapability = (
+        "strict_json_schema"
+    )
+    llm_weak_structured_output_capability: StructuredOutputCapability = (
+        "strict_json_schema"
+    )
+    # Immutable provider price-card version and per-tier rates. Rates use
+    # micro-currency-units per one million tokens. The snapshot is either
+    # completely absent (all defaults) or complete; partial pricing is rejected.
+    llm_price_version: str = ""
+    llm_strong_input_microunits_per_million_tokens: int | None = Field(
+        default=None,
+        ge=0,
+    )
+    llm_strong_output_microunits_per_million_tokens: int | None = Field(
+        default=None,
+        ge=0,
+    )
+    llm_strong_cached_prefill_microunits_per_million_tokens: int | None = Field(
+        default=None,
+        ge=0,
+    )
+    llm_weak_input_microunits_per_million_tokens: int | None = Field(
+        default=None,
+        ge=0,
+    )
+    llm_weak_output_microunits_per_million_tokens: int | None = Field(
+        default=None,
+        ge=0,
+    )
+    llm_weak_cached_prefill_microunits_per_million_tokens: int | None = Field(
+        default=None,
+        ge=0,
+    )
+
+    # --- LLM multi-level cache ---
+    llm_hot_cache_backend: Literal["auto", "redis", "local"] = "auto"
+    redis_url: SecretStr | None = None
+    llm_local_cache_max_entries: int = 1024
+    llm_local_cache_max_bytes: int = 32 * 1024 * 1024
+    llm_hot_cache_max_item_bytes: int = 1024 * 1024
+    llm_local_cache_ttl_seconds: int = 300
+    llm_redis_cache_ttl_seconds: int = 3600
+    llm_redis_failure_threshold: int = 3
+    llm_redis_circuit_seconds: float = 30.0
+    llm_redis_recovery_successes: int = 2
+    llm_redis_probe_seconds: float = 5.0
+    llm_cache_lease_seconds: float = 120.0
+    llm_cache_cleanup_interval_seconds: int = 3600
+    llm_cache_cleanup_batch_size: int = 500
+    llm_cache_max_entries_per_tenant: int = 50_000
+    llm_cache_max_bytes_per_tenant: int = 256 * 1024 * 1024
+    llm_cache_max_payload_bytes: int = 16 * 1024 * 1024
+    llm_recipe_migration_mode: LLMRecipeMigrationMode = "dual_read"
+    # Deprecated compatibility switch. When the new field was not explicitly
+    # supplied, True maps to shadow and False maps to dual_read.
+    llm_recipe_shadow_mode: bool | None = None
+    enable_llm_exact_cache: bool = True
+    enable_llm_hot_cache: bool = True
+    enable_llm_persistent_cache: bool = True
+    enable_llm_semantic_cache: bool = False
+    enable_llm_batch_judge: bool = False
+    enable_hybrid_rule_short_circuit: bool = True
+    enable_adaptive_gleaning: bool = False
+    llm_strong_concurrency: int = 4
+    llm_weak_concurrency: int = 8
 
     # --- ASR / VAD / Embedding (real mode only) ---
     funasr_url: str = "http://funasr:8000"  # M5: OpenAI-compat endpoint
@@ -89,6 +167,9 @@ class Settings(BaseSettings):
     vector_index_load_max_source_bytes: int = 512 * 1024 * 1024
     vector_index_load_max_memory_bytes: int = 512 * 1024 * 1024
     graph_store_cache_max_entries: int = 64
+    # Maximum induced edges serialized by graph explore/subgraph responses.
+    # Requests may lower this budget but can never exceed the absolute 5k cap.
+    graph_edge_render_budget: int = Field(default=5_000, ge=1, le=5_000)
 
     # --- Multi-tenancy ---
     default_tenant_id: str = "default"
@@ -206,6 +287,10 @@ class Settings(BaseSettings):
     ws_heartbeat_interval_sec: float = 30.0
     ws_max_recv_queue: int = 200
     ws_backpressure_warn: int = 100
+    streaming_ws_ticket_ttl_sec: int = 60
+    # Emergency rollout compatibility only. Production defaults to one-time
+    # tickets so long-lived bearer credentials never appear in WS URLs.
+    streaming_allow_legacy_jwt_query: bool = False
 
     # --- M8 Phase 4 — AMBIGUOUS edge downweight (Q3) ---
     streaming_ambiguous_edge_weight: float = 0.5
@@ -284,6 +369,16 @@ class Settings(BaseSettings):
         """Judge LLM model with fallback to ``llm_strong_model``."""
         return self.judge_llm_model or self.llm_strong_model
 
+    @property
+    def llm_recipe_migration_mode_resolved(self) -> LLMRecipeMigrationMode:
+        """Resolve the new three-state recipe rollout with legacy compatibility."""
+
+        if "llm_recipe_migration_mode" in self.model_fields_set:
+            return self.llm_recipe_migration_mode
+        if self.llm_recipe_shadow_mode is not None:
+            return "shadow" if self.llm_recipe_shadow_mode else "dual_read"
+        return self.llm_recipe_migration_mode
+
     # ----------------------------------------------------------
     # Derived properties
     # ----------------------------------------------------------
@@ -333,6 +428,20 @@ class Settings(BaseSettings):
         "vector_index_load_max_source_bytes",
         "vector_index_load_max_memory_bytes",
         "graph_store_cache_max_entries",
+        "llm_local_cache_max_entries",
+        "llm_local_cache_max_bytes",
+        "llm_hot_cache_max_item_bytes",
+        "llm_local_cache_ttl_seconds",
+        "llm_redis_cache_ttl_seconds",
+        "llm_redis_failure_threshold",
+        "llm_redis_recovery_successes",
+        "llm_cache_cleanup_interval_seconds",
+        "llm_cache_cleanup_batch_size",
+        "llm_cache_max_entries_per_tenant",
+        "llm_cache_max_bytes_per_tenant",
+        "llm_cache_max_payload_bytes",
+        "llm_strong_concurrency",
+        "llm_weak_concurrency",
     )
     @classmethod
     def _validate_positive_cache_resource_integer(cls, v: int) -> int:
@@ -347,6 +456,24 @@ class Settings(BaseSettings):
             raise ValueError("VECTOR_INDEX_CACHE_TTL_SECONDS must be finite and non-negative")
         return v
 
+    @field_validator("redis_url", mode="before")
+    @classmethod
+    def _normalize_redis_url(cls, v: object) -> object:
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
+
+    @field_validator(
+        "llm_redis_circuit_seconds",
+        "llm_redis_probe_seconds",
+        "llm_cache_lease_seconds",
+    )
+    @classmethod
+    def _validate_positive_llm_cache_duration(cls, v: float) -> float:
+        if not math.isfinite(v) or v <= 0:
+            raise ValueError("LLM cache durations must be finite and positive")
+        return v
+
     @model_validator(mode="after")
     def _validate_combinations(self) -> Settings:
         """Cross-field validation / 跨字段校验."""
@@ -359,6 +486,52 @@ class Settings(BaseSettings):
             )
         if self.mock_llm_error_rate < 0 or self.mock_llm_error_rate > 1:
             raise ValueError("MOCK_LLM_ERROR_RATE must be in [0.0, 1.0]")
+
+        price_rates = (
+            self.llm_strong_input_microunits_per_million_tokens,
+            self.llm_strong_output_microunits_per_million_tokens,
+            self.llm_strong_cached_prefill_microunits_per_million_tokens,
+            self.llm_weak_input_microunits_per_million_tokens,
+            self.llm_weak_output_microunits_per_million_tokens,
+            self.llm_weak_cached_prefill_microunits_per_million_tokens,
+        )
+        configured_price_rates = sum(rate is not None for rate in price_rates)
+        price_version = self.llm_price_version.strip()
+        if configured_price_rates not in {0, len(price_rates)}:
+            raise ValueError("LLM price snapshot rates must be configured all-or-none")
+        if bool(price_version) != bool(configured_price_rates):
+            raise ValueError(
+                "LLM_PRICE_VERSION and all LLM tier price rates must be configured together"
+            )
+        if configured_price_rates:
+            strong_input = self.llm_strong_input_microunits_per_million_tokens
+            strong_cached = (
+                self.llm_strong_cached_prefill_microunits_per_million_tokens
+            )
+            weak_input = self.llm_weak_input_microunits_per_million_tokens
+            weak_cached = self.llm_weak_cached_prefill_microunits_per_million_tokens
+            assert strong_input is not None and strong_cached is not None
+            assert weak_input is not None and weak_cached is not None
+            if strong_cached > strong_input or weak_cached > weak_input:
+                raise ValueError(
+                    "LLM cached-prefill rate cannot exceed the regular input rate"
+                )
+            self.llm_price_version = price_version
+
+        if self.redis_url is not None:
+            from urllib.parse import urlsplit
+
+            redis_url = self.redis_url.get_secret_value()
+            if urlsplit(redis_url).scheme not in {"redis", "rediss", "unix"}:
+                raise ValueError("REDIS_URL must use redis://, rediss://, or unix://")
+        if self.llm_hot_cache_backend == "redis" and self.redis_url is None:
+            raise ValueError("REDIS_URL is required when LLM_HOT_CACHE_BACKEND=redis")
+        if self.llm_hot_cache_max_item_bytes > self.llm_local_cache_max_bytes:
+            raise ValueError("LLM hot-cache item limit cannot exceed the local cache byte limit")
+        if self.llm_local_cache_ttl_seconds > 300:
+            raise ValueError("LLM_LOCAL_CACHE_TTL_SECONDS cannot exceed 300")
+        if self.llm_redis_cache_ttl_seconds > 3600:
+            raise ValueError("LLM_REDIS_CACHE_TTL_SECONDS cannot exceed 3600")
 
         # M5 — JWT warning if ANY real adapter mode enabled (now including ASR).
         real_modes = [

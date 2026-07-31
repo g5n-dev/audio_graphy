@@ -31,20 +31,174 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from audio_graphy.adapters.bundle import AdapterBundle
 from audio_graphy.adapters.protocols import EdgeConfidence, LLMResponse
+from audio_graphy.core.language_detection import (
+    detect_semantic_language,
+    semantic_protected_identifiers,
+)
 from audio_graphy.core.retrieval import CandidateSegment
+from audio_graphy.services.llm_gateway import (
+    CachePolicy,
+    LLMProvenance,
+    LLMRequest,
+    execute_llm,
+    lookup_llm_cache,
+    store_validated_llm_cache,
+)
 
 if TYPE_CHECKING:
     from audio_graphy.storage.file_index import FileIndex
     from audio_graphy.storage.graph_networkx import NetworkXGraphStore
 
 logger = logging.getLogger(__name__)
+
+_RELEVANCE_PROMPT_VERSION = "relevance-judge-prefix-v2"
+_RELEVANCE_SCHEMA_VERSION = "yes-no-relevance-v1"
+_RELEVANCE_PARSER_VERSION = "strict-yes-no-v1"
+_RELEVANCE_POSTPROCESSOR_VERSION = "conservative-keep-v1"
+_BATCH_RELEVANCE_SCHEMA_VERSION = "batch-relevance-verdicts-v1"
+_BATCH_RELEVANCE_PARSER_VERSION = "batch-verdict-json-v1"
+_KEYWORD_PROMPT_VERSION = "query-keywords-prefix-v2"
+_KEYWORD_SCHEMA_VERSION = "comma-separated-keywords-v1"
+_KEYWORD_PARSER_VERSION = "keyword-delimiters-v1"
+_KEYWORD_POSTPROCESSOR_VERSION = "keyword-min-length-v1"
+_FINAL_ANSWER_PROMPT_VERSION = "grounded-answer-citations-prefix-v2"
+_FINAL_ANSWER_SCHEMA_VERSION = "answer-with-inline-citations-v1"
+_FINAL_ANSWER_PARSER_VERSION = "plain-text-answer-v1"
+_FINAL_ANSWER_POSTPROCESSOR_VERSION = "answer-failure-sentinel-v1"
+_QUERY_HELPER_TTL_SECONDS = 7 * 24 * 60 * 60
+_RELEVANCE_TTL_SECONDS = 7 * 24 * 60 * 60
+_FINAL_ANSWER_TTL_SECONDS = 5 * 60
+
+
+def _resolved_permission_scope(
+    tenant_id: str,
+    permission_scope: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Return a non-empty authorization snapshot for recipe isolation."""
+
+    return dict(permission_scope) if permission_scope else {"tenant_id": tenant_id}
+
+
+def _query_sha256(query: str) -> str:
+    return hashlib.sha256(query.encode("utf-8")).hexdigest()
+
+
+def _candidate_snapshot(candidate: CandidateSegment) -> dict[str, Any]:
+    """Return stable, content-addressed candidate state for an LLM recipe."""
+
+    return {
+        "recording_id": candidate.recording_id,
+        "chunk_id": candidate.chunk_id,
+        "segment_ids": list(candidate.segment_ids),
+        "recorded_at": candidate.recorded_at.isoformat() if candidate.recorded_at else None,
+        "text_sha256": hashlib.sha256(candidate.text.encode("utf-8")).hexdigest(),
+        "source_channel": candidate.source_channel,
+    }
+
+
+def _request_provenance(
+    query_sha256: str,
+    candidates: Sequence[CandidateSegment] = (),
+) -> tuple[LLMProvenance, ...]:
+    """Build deduplicated query/recording/chunk references for DSAR invalidation."""
+
+    refs: list[LLMProvenance] = [LLMProvenance("query", query_sha256)]
+    seen: set[tuple[str, str]] = {("query", query_sha256)}
+    for candidate in candidates:
+        for source_type, source_id in (
+            ("recording", str(candidate.recording_id)),
+            ("chunk", str(candidate.chunk_id)),
+        ):
+            key = (source_type, source_id)
+            if key not in seen:
+                seen.add(key)
+                refs.append(LLMProvenance(source_type, source_id))
+    return tuple(refs)
+
+
+def _valid_yes_no_response(response: LLMResponse) -> bool:
+    """Accept only one unambiguous relevance verdict for cache writes."""
+
+    return _yes_no_verdict(response) is not None
+
+
+def _yes_no_verdict(response: LLMResponse) -> str | None:
+    """Parse one unambiguous relevance verdict, otherwise fail open."""
+
+    text = response.text.casefold().strip()
+    return text if text in {"yes", "no"} else None
+
+
+def _valid_batch_response(
+    response: LLMResponse,
+    candidate_ids: Sequence[str],
+) -> bool:
+    """Require one schema-valid verdict per candidate before caching a batch."""
+
+    try:
+        payload = json.loads(response.text)
+    except (json.JSONDecodeError, TypeError):
+        return False
+    if not isinstance(payload, dict) or set(payload) != {"verdicts"}:
+        return False
+    verdicts = payload["verdicts"]
+    if not isinstance(verdicts, list) or len(verdicts) != len(candidate_ids):
+        return False
+    expected = set(candidate_ids)
+    seen: set[str] = set()
+    for verdict in verdicts:
+        if not isinstance(verdict, dict) or set(verdict) != {
+            "candidate_id",
+            "verdict",
+            "reason",
+        }:
+            return False
+        candidate_id = verdict["candidate_id"]
+        if not isinstance(candidate_id, str) or candidate_id not in expected:
+            return False
+        if candidate_id in seen:
+            return False
+        if verdict["verdict"] not in {"yes", "no"} or not isinstance(
+            verdict["reason"],
+            str,
+        ):
+            return False
+        seen.add(candidate_id)
+    return seen == expected
+
+
+def _valid_final_answer(response: LLMResponse) -> bool:
+    """Do not persist empty or explicit failure-sentinel final answers."""
+
+    text = response.text.strip()
+    return bool(text) and text != "（生成失败）"
+
+
+def _batch_usage_share(
+    usage: Mapping[str, int],
+    *,
+    part_index: int,
+    part_count: int,
+) -> dict[str, int]:
+    """Deterministically allocate batch token usage across ordered misses."""
+
+    if part_count <= 0 or not 0 <= part_index < part_count:
+        raise ValueError("batch usage share requires a valid part index/count")
+    share: dict[str, int] = {}
+    for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+        total = usage.get(key)
+        if isinstance(total, bool) or not isinstance(total, int) or total < 0:
+            continue
+        quotient, remainder = divmod(total, part_count)
+        share[key] = quotient + int(part_index < remainder)
+    return share
 
 
 # ============================================================
@@ -179,13 +333,18 @@ class Reranker:
 
     Args:
         bundle: AdapterBundle (strong_llm for judge/answer, weak_llm for keywords).
-        file_index: Optional FileIndex for LLM response cache (Layer 2).
+        file_index: Deprecated compatibility argument. LLM results are never
+            read from or written to FileIndex; the centralized gateway owns
+            all result caching.
         graph_store: Optional NetworkXGraphStore for entity/confidence lookup.
         channel_weights: M7 rerank fusion weights (Q1 locked: 0.5 / 0.3 / 0.2).
             When ``None``, defaults to ``ChannelWeights()``. Callers that
             disable the audio channel should pass
             ``ChannelWeights().normalised_for_disabled_audio()`` (or rely
             on ``disable_audio_channel()`` to do it automatically).
+        enable_batch_judge: Opt-in quality-gated batch relevance judging.
+            Defaults to ``False`` so the established per-candidate path is
+            unchanged until an external gold-set gate approves batching.
     """
 
     def __init__(
@@ -195,11 +354,14 @@ class Reranker:
         file_index: FileIndex | None = None,
         graph_store: NetworkXGraphStore | None = None,
         channel_weights: ChannelWeights | None = None,
+        enable_batch_judge: bool = False,
     ) -> None:
         self._bundle = bundle
-        self._file_index = file_index
+        if file_index is not None:
+            logger.debug("Reranker FileIndex LLM cache is disabled; using LLMGateway")
         self._graph_store = graph_store
         self._channel_weights = channel_weights or ChannelWeights()
+        self._enable_batch_judge = enable_batch_judge
 
     @property
     def channel_weights(self) -> ChannelWeights:
@@ -308,6 +470,9 @@ class Reranker:
         candidates: Sequence[CandidateSegment],
         *,
         time_range: tuple[datetime, datetime] | None = None,
+        keywords: Sequence[str] | None = None,
+        tenant_id: str = "default",
+        permission_scope: Mapping[str, Any] | None = None,
     ) -> RerankResult:
         """Execute the full rerank + answer pipeline.
 
@@ -315,6 +480,11 @@ class Reranker:
             query: User query.
             candidates: Retrieval candidates.
             time_range: Optional time range (for context in answer generation).
+            keywords: Keywords already extracted by the retriever. When
+                provided, including an empty sequence, no second LLM keyword
+                extraction is performed.
+            tenant_id: Tenant scope for cache and provider isolation.
+            permission_scope: Authorization scope that constrains result reuse.
 
         Returns:
             RerankResult with answer, citations, and counts.
@@ -329,19 +499,40 @@ class Reranker:
             )
 
         # Step 1: LLM as-judge filter
-        surviving, filtered_count = await self._llm_judge_filter(query, candidates)
+        resolved_scope = _resolved_permission_scope(tenant_id, permission_scope)
+        surviving, filtered_count = await self._llm_judge_filter(
+            query,
+            candidates,
+            tenant_id=tenant_id,
+            permission_scope=resolved_scope,
+        )
 
         # Step 2: Keyword extraction
-        keywords = await self._extract_keywords(query)
+        resolved_keywords = (
+            list(keywords)
+            if keywords is not None
+            else await self._extract_keywords(
+                query,
+                tenant_id=tenant_id,
+                permission_scope=resolved_scope,
+            )
+        )
 
         # Step 3: Refined reranking
-        refined = await self._refine_descriptions(surviving, keywords)
+        refined = await self._refine_descriptions(surviving, resolved_keywords)
 
         # Step 4: Build citations
         citations = await self._build_citations(refined)
 
         # Step 5: Answer generation
-        answer = await self._generate_answer(query, refined, citations, time_range)
+        answer = await self._generate_answer(
+            query,
+            refined,
+            citations,
+            time_range,
+            tenant_id=tenant_id,
+            permission_scope=resolved_scope,
+        )
 
         return RerankResult(
             answer=answer,
@@ -354,10 +545,62 @@ class Reranker:
     # LLM as-judge filter
     # ------------------------------------------------------------------
 
+    def _relevance_request(
+        self,
+        query: str,
+        candidate: CandidateSegment,
+        *,
+        tenant_id: str,
+        permission_scope: Mapping[str, Any] | None,
+    ) -> LLMRequest:
+        """Build the canonical per-candidate recipe used by both judge paths."""
+
+        adapter = self._bundle.strong_llm
+        query_hash = _query_sha256(query)
+        return LLMRequest(
+            tenant_id=tenant_id,
+            purpose="relevance_judge",
+            model_tier="strong",
+            provider=str(getattr(adapter, "provider", "openai-compatible")),
+            model_epoch=str(getattr(adapter, "model_epoch", adapter.model)),
+            messages=(
+                {
+                    "role": "system",
+                    "content": "判断录音段是否与问题相关，只回答 yes 或 no。",
+                },
+                {
+                    "role": "user",
+                    "content": (f"问题: {query}\n段文本: {candidate.text[:500]}"),
+                },
+            ),
+            prompt_version=_RELEVANCE_PROMPT_VERSION,
+            schema_version=_RELEVANCE_SCHEMA_VERSION,
+            parser_version=_RELEVANCE_PARSER_VERSION,
+            postprocessor_version=_RELEVANCE_POSTPROCESSOR_VERSION,
+            temperature=0.0,
+            top_p=1.0,
+            response_schema={"type": "string", "enum": ["yes", "no"]},
+            business_snapshot={
+                "query_sha256": query_hash,
+                "candidate": _candidate_snapshot(candidate),
+            },
+            permission_scope=_resolved_permission_scope(
+                tenant_id,
+                permission_scope,
+            ),
+            provenance=_request_provenance(query_hash, (candidate,)),
+            cache_policy=CachePolicy.EXACT,
+            ttl_seconds=_RELEVANCE_TTL_SECONDS,
+            response_validator=_valid_yes_no_response,
+        )
+
     async def _llm_judge_filter(
         self,
         query: str,
         candidates: Sequence[CandidateSegment],
+        *,
+        tenant_id: str = "default",
+        permission_scope: Mapping[str, Any] | None = None,
     ) -> tuple[list[CandidateSegment], int]:
         """Filter candidates by LLM as-judge (yes/no relevance).
 
@@ -367,27 +610,35 @@ class Reranker:
         Args:
             query: User query.
             candidates: All retrieval candidates.
+            tenant_id: Tenant scope for cache isolation.
+            permission_scope: Authorization scope that constrains reuse.
 
         Returns:
             Tuple of (surviving_candidates, filtered_count).
         """
+        if self._enable_batch_judge:
+            return await self._llm_judge_filter_batch(
+                query,
+                candidates,
+                tenant_id=tenant_id,
+                permission_scope=permission_scope,
+            )
+
         surviving: list[CandidateSegment] = []
         filtered_count = 0
 
         for cand in candidates:
             try:
-                prompt = (
-                    f"请判断以下录音段是否与用户问题相关。\n"
-                    f"问题: {query}\n"
-                    f"段文本: {cand.text[:500]}\n"
-                    f"请回答 yes 或 no。"
+                request = self._relevance_request(
+                    query,
+                    cand,
+                    tenant_id=tenant_id,
+                    permission_scope=permission_scope,
                 )
-                messages: list[dict[str, str]] = [{"role": "user", "content": prompt}]
-                response = await self._cached_complete_strong(messages)
+                adapter = self._bundle.strong_llm
+                response = await execute_llm(adapter, request)
 
-                # Parse yes/no
-                text_lower = response.text.lower().strip()
-                if "no" in text_lower and "yes" not in text_lower:
+                if _yes_no_verdict(response) == "no":
                     filtered_count += 1
                     continue
                 # "yes" or ambiguous → keep
@@ -401,17 +652,291 @@ class Reranker:
 
         return surviving, filtered_count
 
+    @staticmethod
+    def _batch_candidate_ids(candidates: Sequence[CandidateSegment]) -> list[str]:
+        """Build compact, deterministic and unique ids for one ordered batch."""
+
+        occurrences: dict[str, int] = {}
+        candidate_ids: list[str] = []
+        for candidate in candidates:
+            base = f"recording:{candidate.recording_id}/chunk:{candidate.chunk_id}"
+            occurrence = occurrences.get(base, 0) + 1
+            occurrences[base] = occurrence
+            candidate_ids.append(base if occurrence == 1 else f"{base}/occurrence:{occurrence}")
+        return candidate_ids
+
+    async def _llm_judge_filter_batch(
+        self,
+        query: str,
+        candidates: Sequence[CandidateSegment],
+        *,
+        tenant_id: str = "default",
+        permission_scope: Mapping[str, Any] | None = None,
+    ) -> tuple[list[CandidateSegment], int]:
+        """Reuse per-item verdicts and batch only exact-cache misses.
+
+        Candidate order is never derived from cache completion order. Invalid
+        cache values become misses; invalid or failed batch verdicts are kept
+        conservatively.
+        """
+
+        if not candidates:
+            return [], 0
+        adapter = self._bundle.strong_llm
+        candidate_ids = self._batch_candidate_ids(candidates)
+        individual_requests = [
+            self._relevance_request(
+                query,
+                candidate,
+                tenant_id=tenant_id,
+                permission_scope=permission_scope,
+            )
+            for candidate in candidates
+        ]
+        resolved_verdicts: list[str | None] = [None] * len(candidates)
+        miss_indexes: list[int] = []
+        for index, request in enumerate(individual_requests):
+            try:
+                cached = await lookup_llm_cache(adapter, request)
+            except Exception as exc:
+                logger.warning(
+                    "Per-candidate relevance cache lookup failed for chunk %d: %s",
+                    candidates[index].chunk_id,
+                    exc,
+                )
+                cached = None
+            verdict = _yes_no_verdict(cached) if cached is not None else None
+            if verdict is None:
+                miss_indexes.append(index)
+            else:
+                resolved_verdicts[index] = verdict
+
+        if miss_indexes:
+            miss_ids = [candidate_ids[index] for index in miss_indexes]
+            miss_candidates = [candidates[index] for index in miss_indexes]
+            query_hash = _query_sha256(query)
+            output_schema: dict[str, Any] = {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["verdicts"],
+                "properties": {
+                    "verdicts": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "required": ["candidate_id", "verdict", "reason"],
+                            "properties": {
+                                "candidate_id": {
+                                    "type": "string",
+                                    "enum": miss_ids,
+                                },
+                                "verdict": {
+                                    "type": "string",
+                                    "enum": ["yes", "no"],
+                                },
+                                "reason": {"type": "string"},
+                            },
+                        },
+                    }
+                },
+            }
+            output_contract = {
+                "verdicts": [
+                    {
+                        "candidate_id": "one supplied candidate_id",
+                        "verdict": "yes|no",
+                        "reason": "string",
+                    }
+                ]
+            }
+            request_payload = {
+                "query": query,
+                "candidates": [
+                    {
+                        "candidate_id": candidate_id,
+                        "text": candidate.text[:500],
+                    }
+                    for candidate_id, candidate in zip(
+                        miss_ids,
+                        miss_candidates,
+                        strict=True,
+                    )
+                ],
+            }
+            messages: tuple[dict[str, str], ...] = (
+                {
+                    "role": "system",
+                    "content": (
+                        "逐项判断候选录音段是否与问题相关。"
+                        "必须只返回严格 JSON，不得遗漏候选，不得重复 candidate_id。"
+                        "输出契约："
+                        + json.dumps(
+                            output_contract,
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        )
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        request_payload,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
+                },
+            )
+            batch_request = LLMRequest(
+                tenant_id=tenant_id,
+                purpose="relevance_judge",
+                model_tier="strong",
+                provider=str(getattr(adapter, "provider", "openai-compatible")),
+                model_epoch=str(getattr(adapter, "model_epoch", adapter.model)),
+                messages=messages,
+                prompt_version=_RELEVANCE_PROMPT_VERSION,
+                schema_version=_BATCH_RELEVANCE_SCHEMA_VERSION,
+                parser_version=_BATCH_RELEVANCE_PARSER_VERSION,
+                postprocessor_version=_RELEVANCE_POSTPROCESSOR_VERSION,
+                temperature=0.0,
+                top_p=1.0,
+                response_format={"type": "json_object"},
+                response_schema=output_schema,
+                business_snapshot={
+                    "query_sha256": query_hash,
+                    "candidate_ids": miss_ids,
+                    "candidates": [_candidate_snapshot(candidate) for candidate in miss_candidates],
+                },
+                permission_scope=_resolved_permission_scope(
+                    tenant_id,
+                    permission_scope,
+                ),
+                provenance=_request_provenance(query_hash, miss_candidates),
+                cache_policy=CachePolicy.EXACT,
+                ttl_seconds=_RELEVANCE_TTL_SECONDS,
+                response_validator=lambda response: _valid_batch_response(
+                    response,
+                    miss_ids,
+                ),
+            )
+            try:
+                response = await execute_llm(adapter, batch_request)
+                payload = json.loads(response.text)
+                if not isinstance(payload, dict) or set(payload) != {"verdicts"}:
+                    raise ValueError("batch judge response must contain only verdicts")
+                raw_verdicts = payload["verdicts"]
+                if not isinstance(raw_verdicts, list):
+                    raise ValueError("batch judge verdicts must be a list")
+
+                known_ids = set(miss_ids)
+                seen: dict[str, int] = {}
+                duplicate_ids: set[str] = set()
+                valid_verdicts: dict[str, str] = {}
+                for raw in raw_verdicts:
+                    if not isinstance(raw, dict):
+                        continue
+                    candidate_id = raw.get("candidate_id")
+                    if not isinstance(candidate_id, str) or candidate_id not in known_ids:
+                        continue
+                    seen[candidate_id] = seen.get(candidate_id, 0) + 1
+                    if seen[candidate_id] > 1:
+                        duplicate_ids.add(candidate_id)
+                        valid_verdicts.pop(candidate_id, None)
+                        continue
+                    if set(raw) != {"candidate_id", "verdict", "reason"}:
+                        continue
+                    verdict = raw.get("verdict")
+                    reason = raw.get("reason")
+                    if verdict not in {"yes", "no"} or not isinstance(reason, str):
+                        continue
+                    valid_verdicts[candidate_id] = verdict
+
+                for miss_position, (index, candidate_id) in enumerate(
+                    zip(miss_indexes, miss_ids, strict=True)
+                ):
+                    verdict = (
+                        None if candidate_id in duplicate_ids else valid_verdicts.get(candidate_id)
+                    )
+                    if verdict is None:
+                        continue
+                    resolved_verdicts[index] = verdict
+                    derived_response = LLMResponse(
+                        text=verdict,
+                        model=response.model,
+                        prompt_hash=individual_requests[index].recipe_sha256(
+                            model=adapter.model,
+                        ),
+                        cached=False,
+                        usage=_batch_usage_share(
+                            response.usage,
+                            part_index=miss_position,
+                            part_count=len(miss_indexes),
+                        ),
+                        cache_source="batch_derived",
+                        provider_called=response.provider_called,
+                    )
+                    try:
+                        await store_validated_llm_cache(
+                            adapter,
+                            individual_requests[index],
+                            derived_response,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "Per-candidate relevance cache write failed for chunk %d: %s",
+                            candidates[index].chunk_id,
+                            exc,
+                        )
+            except Exception as exc:
+                logger.warning(
+                    "Batch LLM judge failed; conservatively keeping %d misses: %s",
+                    len(miss_indexes),
+                    exc,
+                )
+
+        surviving: list[CandidateSegment] = []
+        filtered_count = 0
+        for verdict, candidate in zip(resolved_verdicts, candidates, strict=True):
+            if verdict == "no":
+                filtered_count += 1
+            else:
+                surviving.append(candidate)
+        return surviving, filtered_count
+
     # ------------------------------------------------------------------
     # Keyword extraction
     # ------------------------------------------------------------------
 
-    async def _extract_keywords(self, query: str) -> list[str]:
+    @staticmethod
+    def _parse_keywords(text: str) -> list[str]:
+        """Parse the exact delimiter format accepted by keyword extraction."""
+
+        import re
+
+        normalized = re.sub(
+            r"^(关键词|keywords?)[:：]?\s*",
+            "",
+            text,
+            flags=re.IGNORECASE,
+        )
+        parts = re.split(r"[,，;；\n、]+", normalized)
+        return [part.strip() for part in parts if len(part.strip()) >= 2]
+
+    async def _extract_keywords(
+        self,
+        query: str,
+        *,
+        tenant_id: str = "default",
+        permission_scope: Mapping[str, Any] | None = None,
+    ) -> list[str]:
         """Extract keywords from query via weak_llm.
 
         Falls back to simple split if LLM fails.
 
         Args:
             query: User query.
+            tenant_id: Tenant scope for cache isolation.
+            permission_scope: Authorization scope that constrains reuse.
 
         Returns:
             List of keyword strings.
@@ -421,15 +946,50 @@ class Reranker:
         try:
             messages: list[dict[str, str]] = [
                 {
-                    "role": "user",
-                    "content": f"请从以下问题中提取关键词，用逗号分隔返回：\n{query}",
-                }
+                    "role": "system",
+                    "content": "从用户问题中提取关键词，只用逗号分隔返回关键词。",
+                },
+                {"role": "user", "content": query},
             ]
-            response = await self._cached_complete_weak(messages)
+            adapter = self._bundle.weak_llm
+            query_hash = _query_sha256(query)
+            semantic_language = detect_semantic_language(query)
+            request = LLMRequest(
+                tenant_id=tenant_id,
+                purpose="keyword_extract",
+                model_tier="weak",
+                provider=str(getattr(adapter, "provider", "openai-compatible")),
+                model_epoch=str(getattr(adapter, "model_epoch", adapter.model)),
+                messages=messages,
+                prompt_version=_KEYWORD_PROMPT_VERSION,
+                schema_version=_KEYWORD_SCHEMA_VERSION,
+                parser_version=_KEYWORD_PARSER_VERSION,
+                postprocessor_version=_KEYWORD_POSTPROCESSOR_VERSION,
+                temperature=0.0,
+                top_p=1.0,
+                response_schema={
+                    "type": "string",
+                    "description": "Comma-separated query keywords",
+                },
+                business_snapshot={
+                    "query_sha256": query_hash,
+                    "language": semantic_language,
+                },
+                permission_scope=_resolved_permission_scope(
+                    tenant_id,
+                    permission_scope,
+                ),
+                semantic_text=query,
+                semantic_language=semantic_language,
+                semantic_protected_values=semantic_protected_identifiers(query),
+                provenance=_request_provenance(query_hash),
+                cache_policy=CachePolicy.QUERY_SEMANTIC,
+                ttl_seconds=_QUERY_HELPER_TTL_SECONDS,
+                response_validator=lambda response: bool(self._parse_keywords(response.text)),
+            )
+            response = await execute_llm(adapter, request)
 
-            text = re.sub(r"^(关键词|keywords?)[:：]?\s*", "", response.text, flags=re.IGNORECASE)
-            parts = re.split(r"[,，;；\n、]+", text)
-            keywords = [p.strip() for p in parts if p.strip() and len(p.strip()) >= 2]
+            keywords = self._parse_keywords(response.text)
             if keywords:
                 return keywords
         except Exception as exc:
@@ -567,6 +1127,9 @@ class Reranker:
         candidates: list[CandidateSegment],
         citations: list[Citation],
         time_range: tuple[datetime, datetime] | None,
+        *,
+        tenant_id: str = "default",
+        permission_scope: Mapping[str, Any] | None = None,
     ) -> str:
         """Generate final answer via strong_llm.
 
@@ -575,6 +1138,8 @@ class Reranker:
             candidates: Refined candidate segments.
             citations: Provenance citations.
             time_range: Optional time range context.
+            tenant_id: Tenant scope for cache isolation.
+            permission_scope: Authorization scope that constrains reuse.
 
         Returns:
             Answer text (or "（生成失败）" on failure).
@@ -594,83 +1159,67 @@ class Reranker:
         if time_range is not None:
             time_context = f"时间范围: {time_range[0].strftime('%Y-%m-%d')} 至 {time_range[1].strftime('%Y-%m-%d')}\n"
 
-        prompt = (
-            f"请根据以下录音段信息回答用户问题。\n"
-            f"{time_context}"
-            f"问题: {query}\n\n"
-            f"相关录音段:\n{context}\n\n"
-            f"请生成回答，并在引用处标注序号 [1] [2] 等。"
-        )
+        prompt = f"{time_context}问题: {query}\n\n相关录音段:\n{context}\n\n请作答。"
 
         try:
-            messages: list[dict[str, str]] = [{"role": "user", "content": prompt}]
-            response = await self._cached_complete_strong(messages)
+            messages: list[dict[str, str]] = [
+                {
+                    "role": "system",
+                    "content": (
+                        "仅依据给定录音证据回答问题；不得臆测，并在引用处标注序号 [1] [2] 等。"
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ]
+            adapter = self._bundle.strong_llm
+            query_hash = _query_sha256(query)
+            request = LLMRequest(
+                tenant_id=tenant_id,
+                purpose="final_answer",
+                model_tier="strong",
+                provider=str(getattr(adapter, "provider", "openai-compatible")),
+                model_epoch=str(getattr(adapter, "model_epoch", adapter.model)),
+                messages=messages,
+                prompt_version=_FINAL_ANSWER_PROMPT_VERSION,
+                schema_version=_FINAL_ANSWER_SCHEMA_VERSION,
+                parser_version=_FINAL_ANSWER_PARSER_VERSION,
+                postprocessor_version=_FINAL_ANSWER_POSTPROCESSOR_VERSION,
+                temperature=0.0,
+                top_p=1.0,
+                response_schema={
+                    "type": "string",
+                    "description": "Grounded answer with inline numeric citations",
+                },
+                business_snapshot={
+                    "query_sha256": query_hash,
+                    "time_range": (
+                        [time_range[0].isoformat(), time_range[1].isoformat()]
+                        if time_range is not None
+                        else None
+                    ),
+                    "evidence": [
+                        {
+                            **_candidate_snapshot(candidate),
+                            "entity": citation.entity,
+                            "confidence": citation.confidence,
+                        }
+                        for candidate, citation in zip(candidates, citations, strict=True)
+                    ],
+                },
+                permission_scope=_resolved_permission_scope(
+                    tenant_id,
+                    permission_scope,
+                ),
+                provenance=_request_provenance(query_hash, candidates),
+                cache_policy=CachePolicy.EXACT,
+                ttl_seconds=_FINAL_ANSWER_TTL_SECONDS,
+                response_validator=_valid_final_answer,
+            )
+            response = await execute_llm(adapter, request)
             return response.text
         except Exception as exc:
             logger.warning("Answer generation failed: %s", exc)
             return "（生成失败）"
-
-    # ------------------------------------------------------------------
-    # LLM cache helpers (dual-layer)
-    # ------------------------------------------------------------------
-
-    async def _cached_complete_strong(self, messages: list[dict[str, str]]) -> LLMResponse:
-        """Call strong_llm with dual-layer cache."""
-        return await self._cached_complete(self._bundle.strong_llm, messages)
-
-    async def _cached_complete_weak(self, messages: list[dict[str, str]]) -> LLMResponse:
-        """Call weak_llm with dual-layer cache."""
-        return await self._cached_complete(self._bundle.weak_llm, messages)
-
-    async def _cached_complete(
-        self,
-        adapter: object,
-        messages: list[dict[str, str]],
-    ) -> LLMResponse:
-        """Call LLM adapter with dual-layer cache (file_index + adapter).
-
-        Args:
-            adapter: LLM adapter (strong or weak).
-            messages: Chat messages.
-
-        Returns:
-            LLMResponse (cached=True if cache hit).
-        """
-        model = adapter.model  # type: ignore[attr-defined]
-        cache_key = self._compute_cache_key(model, messages)
-
-        # Layer 2: Check file_index persistent cache
-        if self._file_index is not None:
-            cached_text = await self._file_index.get_llm_cache(cache_key)
-            if cached_text is not None:
-                return LLMResponse(
-                    text=cached_text,
-                    model=model,
-                    prompt_hash=cache_key,
-                    cached=True,
-                    usage={},
-                )
-
-        # Layer 1 + API: Call adapter
-        response = await adapter.complete(  # type: ignore[attr-defined]
-            messages=messages,
-            cache_key=cache_key,
-        )
-
-        # Store in Layer 2
-        if self._file_index is not None and not response.cached:
-            await self._file_index.set_llm_cache(cache_key, response.text)
-
-        return response  # type: ignore[no-any-return]
-
-    @staticmethod
-    def _compute_cache_key(model: str, messages: Sequence[dict[str, str]]) -> str:
-        """Compute LLM cache key = MD5(model, messages)."""
-        payload = json.dumps(
-            {"model": model, "messages": list(messages)},
-            ensure_ascii=False,
-        )
-        return hashlib.md5(payload.encode("utf-8")).hexdigest()
 
 
 # ============================================================

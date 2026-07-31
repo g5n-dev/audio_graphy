@@ -11,9 +11,9 @@ Design:
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from audio_graphy.core.chunker import SegmentRecord
@@ -49,9 +49,26 @@ class LLMResponse:
 
     text: str
     model: str
-    prompt_hash: str  # MD5 of (model, messages) — used for cache key
+    prompt_hash: str  # SHA-256 of the complete request recipe (or transport prompt)
     cached: bool = False  # True if returned from LLM cache (no API call made)
     usage: dict[str, int] = field(default_factory=dict)  # {prompt_tokens, completion_tokens}
+    cache_source: str = "provider"
+    provider_called: bool = True
+    # Actual provider cost settled against the immutable price snapshot used
+    # by the gateway. Cached responses always reset these fields to zero/None.
+    cost_microunits: int = 0
+    price_version: str | None = None
+    # Provider-native correlation identifier (for example OpenAI's
+    # ``x-request-id``). It is transport metadata, never part of cache
+    # identity, and is cleared when a response is served without Provider I/O.
+    provider_request_id: str | None = None
+    # Number of real Provider attempts represented by this response. Gateway
+    # retries are included; cache and singleflight followers report zero.
+    provider_attempts: int = 1
+    # Conservative upper-bound token count for earlier attempts whose billing
+    # outcome could not be established (commonly a timeout followed by a
+    # successful retry). Cache hits always report zero current uncertainty.
+    unknown_billed_tokens: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,6 +201,12 @@ class LLMAdapter(Protocol):
         temperature: float = 0.0,
         max_tokens: int | None = None,
         cache_key: str | None = None,
+        top_p: float = 1.0,
+        seed: int | None = None,
+        stop: Sequence[str] = (),
+        tools: Sequence[Mapping[str, Any]] = (),
+        response_format: Mapping[str, Any] | None = None,
+        response_schema: Mapping[str, Any] | None = None,
     ) -> LLMResponse: ...
 
 

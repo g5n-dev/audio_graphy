@@ -256,6 +256,7 @@ def register_exception_handlers(app: FastAPI) -> None:
         - Catch-all ``Exception`` → 500 INTERNAL_ERROR (with request_id in detail).
     """
 
+    from fastapi.encoders import jsonable_encoder
     from fastapi.exceptions import RequestValidationError
 
     @app.exception_handler(APIError)
@@ -274,7 +275,9 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def _handle_validation_error(
         request: Request, exc: RequestValidationError
     ) -> JSONResponse:
-        detail: dict[str, Any] = {"errors": exc.errors()}
+        detail: dict[str, Any] = {
+            "errors": jsonable_encoder(exc.errors()),
+        }
         request_id = getattr(request.state, "request_id", None)
         if request_id:
             detail["request_id"] = request_id

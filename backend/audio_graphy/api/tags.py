@@ -5,45 +5,42 @@ See: docs/m3-prd.md §4.6.
 
 from __future__ import annotations
 
-import hashlib
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from audio_graphy.adapters.bundle import AdapterBundle
 from audio_graphy.api.deps import (
     get_adapters,
     get_current_user,
     get_db,
     get_file_index,
     get_session_factory,
-    get_stores,
 )
 from audio_graphy.auth.middleware import AuthUser
 from audio_graphy.auth.roles import require_admin, require_write_access
 from audio_graphy.auth.tenants import get_tenant_id
-from audio_graphy.errors import RecordingNotFoundError, RecordingNotIndexedError
+from audio_graphy.errors import ForbiddenError, RecordingNotFoundError, RecordingNotIndexedError
 from audio_graphy.models.enums import RecordingStatus
 from audio_graphy.models.recording import Recording
 from audio_graphy.schemas.tags import (
-    RecomputeCreateResponse,
-    RecomputeDryRunResponse,
     RecomputeRequest,
-    RecomputeTaskResponse,
-    TagAutoResponse,
-    TagDeltaPreview,
-    TagManualResponse,
-    TagResultItem,
     TagsListResponse,
 )
-from audio_graphy.storage.file_index import FileIndex
+from audio_graphy.services.legacy_tag_compatibility import (
+    LEGACY_RECORDING_DEFAULT_TAG_PATHS,
+    LegacyTagCompatibilityService,
+)
+from audio_graphy.services.tag_governance import (
+    GovernanceConflictError,
+    GovernanceNotFoundError,
+    TagGovernanceService,
+)
 from audio_graphy.tags.current_view import TagCurrentService
 from audio_graphy.tags.facts import TagFactsService
 from audio_graphy.tags.recompute import RecomputeService
-from audio_graphy.tags.stats import TagStatsService
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +105,14 @@ async def get_tags(
         raise RecordingNotFoundError(detail={"recording_id": recording_id})
 
     factory = get_session_factory(request)
+    if not await TagGovernanceService(factory).record_blind_sensitive_access(
+        tenant_id=tenant_id,
+        actor_user_id=user.id,
+        access_kind="legacy_recording_tags",
+    ):
+        raise ForbiddenError(
+            "Blind review isolation forbids tag output access before submission"
+        )
 
     if view == "current":
         svc = TagCurrentService(factory)
@@ -162,6 +167,7 @@ async def get_tags(
 @router.post(
     "/recordings/{recording_id}/tags",
     response_model=Any,
+    status_code=status.HTTP_202_ACCEPTED,
     summary="Tag a recording (auto or manual)",
     dependencies=[Depends(require_write_access())],
 )
@@ -171,14 +177,14 @@ async def post_tags(
     body: dict[str, Any],
     db: AsyncSession = Depends(get_db),
     current_user: AuthUser = Depends(get_current_user),
+    idempotency_key: str | None = Header(
+        default=None,
+        alias="Idempotency-Key",
+        min_length=1,
+        max_length=128,
+    ),
 ) -> Any:
-    """Execute tagging on a recording.
-
-    mode=auto: LLM-based auto tagging.
-    mode=manual: Manual correction.
-
-    Role: admin / inspector.
-    """
+    """Map an unambiguous legacy auto request to one canonical tag job."""
     tenant_id = get_tenant_id(request)
     factory = get_session_factory(request)
 
@@ -198,161 +204,41 @@ async def post_tags(
             detail={"recording_id": recording_id, "status": recording.status}
         )
 
-    mode = body.get("mode", "auto")
-    stores = get_stores(request)
-    bundle = get_adapters(request)
-
-    if mode == "manual":
-        return await _handle_manual_tag(recording, body, current_user, factory, tenant_id, request)
-    return await _handle_auto_tag(recording, body, factory, tenant_id, bundle, stores.file_index)
-
-
-async def _handle_auto_tag(
-    recording: Recording,
-    body: dict[str, Any],
-    factory: async_sessionmaker[AsyncSession],
-    tenant_id: str,
-    bundle: AdapterBundle,
-    file_index: FileIndex,
-) -> TagAutoResponse:
-    """Handle mode=auto LLM tagging."""
-    tag_paths = body.get("tag_paths") or [
-        "quality.greeting",
-        "quality.closing",
-        "sales.product_mention",
-    ]
-    prompt_version = body.get("prompt_version") or recording.prompt_version or "tag_prompt_v1"
-
-    facts_svc = TagFactsService(factory)
-    current_svc = TagCurrentService(factory)
-    stats_svc = TagStatsService(factory)
-
-    results: list[TagResultItem] = []
-    cached_hits = 0
-    llm_calls = 0
-
-    for tag_path in tag_paths:
-        cache_key = hashlib.md5(f"{tag_path}:{recording.id}:{prompt_version}".encode()).hexdigest()
-
-        # Check cache
-        cached = await file_index.get_llm_cache(cache_key)
-        if cached is not None:
-            tag_value = cached
-            cached_hit = True
-            cached_hits += 1
-        else:
-            messages: list[dict[str, str]] = [
-                {
-                    "role": "user",
-                    "content": (
-                        f"请对录音进行质检打标。\n"
-                        f"标签路径: {tag_path}\n"
-                        f"录音ID: {recording.id}\n"
-                        f"请返回 pass 或 fail。"
-                    ),
-                }
-            ]
-            response = await bundle.weak_llm.complete(messages=messages, cache_key=cache_key)
-            tag_value = response.text.strip().split("\n")[0][:255]
-            await file_index.set_llm_cache(cache_key, tag_value)
-            cached_hit = False
-            llm_calls += 1
-
-        # Get old value for delta
-        old_current = await current_svc.get_current_value(recording.id, tag_path, tenant_id)
-        old_value = old_current.tag_value if old_current is not None else None
-
-        # Write fact
-        fact = await facts_svc.append_fact(
-            recording_id=recording.id,
-            tag_path=tag_path,
-            tag_value=tag_value,
-            prompt_version=prompt_version,
-            model_version=bundle.weak_llm.model,
-            input_hash=cache_key,
-            confidence=0.95,
-            source="llm",
-            computed_by=None,
+    if body.get("mode", "auto") == "manual":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "legacy recording-level manual tags have no evidence-bound dialogue "
+                "subject; use the reception review workbench"
+            ),
+        )
+    raw_paths = body.get("tag_paths") or list(LEGACY_RECORDING_DEFAULT_TAG_PATHS)
+    if not isinstance(raw_paths, list) or not all(
+        isinstance(path, str) and path.strip() for path in raw_paths
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "legacy tag paths are not deterministically mapped; use the reception workbench"
+            ),
+        )
+    try:
+        job = await LegacyTagCompatibilityService(factory).enqueue_recordings(
             tenant_id=tenant_id,
+            recording_ids=[recording.id],
+            legacy_paths=raw_paths,
+            actor_user_id=current_user.id,
+            operation="legacy_recording_auto",
+            idempotency_key=idempotency_key,
         )
-        await current_svc.upsert_current(fact, tenant_id)
-        await stats_svc.apply_delta(
-            tenant_id=tenant_id,
-            store_id=recording.store_id,
-            agent_name=recording.agent_name,
-            tag_path=tag_path,
-            old_value=old_value,
-            new_value=tag_value,
-        )
-
-        results.append(
-            TagResultItem(
-                tag_path=tag_path,
-                tag_value=tag_value,
-                version=fact.version,
-                confidence=fact.confidence,
-                cached=cached_hit,
-            )
-        )
-
-    return TagAutoResponse(
-        recording_id=recording.id,
-        tagged=len(results),
-        cached_hits=cached_hits,
-        llm_calls=llm_calls,
-        results=results,
-    )
-
-
-async def _handle_manual_tag(
-    recording: Recording,
-    body: dict[str, Any],
-    current_user: AuthUser,
-    factory: async_sessionmaker[AsyncSession],
-    tenant_id: str,
-    request: Request,
-) -> TagManualResponse:
-    """Handle mode=manual correction."""
-    tag_path = body["tag_path"]
-    tag_value = body["tag_value"]
-
-    facts_svc = TagFactsService(factory)
-    current_svc = TagCurrentService(factory)
-    stats_svc = TagStatsService(factory)
-
-    old_current = await current_svc.get_current_value(recording.id, tag_path, tenant_id)
-    old_value = old_current.tag_value if old_current is not None else None
-
-    fact = await facts_svc.append_fact(
-        recording_id=recording.id,
-        tag_path=tag_path,
-        tag_value=tag_value,
-        prompt_version=recording.prompt_version or "manual",
-        model_version="manual",
-        input_hash=hashlib.md5(f"manual:{recording.id}:{tag_path}".encode()).hexdigest(),
-        confidence=1.0,
-        source="manual",
-        computed_by=current_user.id,
-        tenant_id=tenant_id,
-    )
-    await current_svc.upsert_current(fact, tenant_id)
-    await stats_svc.apply_delta(
-        tenant_id=tenant_id,
-        store_id=recording.store_id,
-        agent_name=recording.agent_name,
-        tag_path=tag_path,
-        old_value=old_value,
-        new_value=tag_value,
-    )
-
-    return TagManualResponse(
-        recording_id=recording.id,
-        tag_path=tag_path,
-        tag_value=tag_value,
-        version=fact.version,
-        source="manual",
-        computed_by=current_user.id,
-    )
+    except GovernanceConflictError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    return {
+        "job_id": job.id,
+        "status": job.status,
+        "recording_id": recording.id,
+        "successor": f"/api/v1/tag-jobs/{job.id}",
+    }
 
 
 @router.post(
@@ -364,6 +250,7 @@ async def _handle_manual_tag(
 async def recompute(
     request: Request,
     body: RecomputeRequest,
+    response: Response,
     current_user: AuthUser = Depends(get_current_user),
 ) -> Any:
     """Trigger batch tag recompute (prompt version switch).
@@ -372,35 +259,38 @@ async def recompute(
     """
     tenant_id = get_tenant_id(request)
     factory = get_session_factory(request)
-    bundle = get_adapters(request)
-    file_index = get_file_index(request)
-
-    svc = RecomputeService(factory, bundle, file_index)
 
     if body.dry_run:
-        result = await svc.dry_run(
-            tenant_id,
-            body.prompt_version,
-            body.tag_paths,
-            body.recording_ids,
-        )
-        return RecomputeDryRunResponse(
-            dry_run=True,
-            affected_count=result["affected_count"],
-            changed_count=result["changed_count"],
-            unchanged_count=result["unchanged_count"],
-            changes_preview=[TagDeltaPreview(**c) for c in result["changes_preview"]],
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "legacy recording-level dry-run is read-only but not comparable to "
+                "DialogueUnit extraction; use /tag-evaluations for a versioned preview"
+            ),
         )
 
-    task = await svc.create_task(
-        tenant_id,
-        body.prompt_version,
-        body.tag_paths,
-        body.recording_ids,
-    )
-
-    # Execute inline (in production, this would be async via scheduler)
-    await svc.execute_task(task.task_id)
+    recording_ids = body.recording_ids
+    if recording_ids is None:
+        async with factory() as session:
+            recording_ids = list(
+                (
+                    await session.execute(
+                        select(Recording.id).where(Recording.tenant_id == tenant_id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+    try:
+        job = await LegacyTagCompatibilityService(factory).enqueue_recordings(
+            tenant_id=tenant_id,
+            recording_ids=recording_ids,
+            legacy_paths=body.tag_paths or list(LEGACY_RECORDING_DEFAULT_TAG_PATHS),
+            actor_user_id=current_user.id,
+            operation="legacy_recompute",
+        )
+    except GovernanceConflictError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
     # ---- Audit log (fire-and-forget; Q2 quick win PIPL §14.3) ----
     await _write_audit(
@@ -408,32 +298,33 @@ async def recompute(
         tenant_id=tenant_id,
         user_id=current_user.id,
         action="tags.recompute",
-        target=f"task:{task.task_id}",
+        target=f"tag_job:{job.id}",
         after={
             "prompt_version": body.prompt_version,
-            "total": task.total,
-            "changed": task.changed,
+            "recording_ids": recording_ids,
+            "tag_paths": body.tag_paths or [],
         },
     )
-
-    return RecomputeCreateResponse(
-        dry_run=False,
-        task_id=task.task_id,
-        status=task.status,
-        affected_count=task.total,
-    )
+    response.status_code = status.HTTP_202_ACCEPTED
+    return {
+        "dry_run": False,
+        "job_id": job.id,
+        "status": job.status,
+        "affected_count": job.total_items,
+        "successor": f"/api/v1/tag-jobs/{job.id}",
+    }
 
 
 @router.get(
     "/tags/recompute/{task_id}",
-    response_model=RecomputeTaskResponse,
+    response_model=Any,
     summary="Get recompute task status",
 )
 async def get_recompute_task(
     task_id: str,
     request: Request,
     _user: AuthUser = Depends(require_admin()),
-) -> RecomputeTaskResponse:
+) -> Any:
     """Get recompute task status by ID.
 
     Role: admin only.
@@ -443,19 +334,47 @@ async def get_recompute_task(
     bundle = get_adapters(request)
     file_index = get_file_index(request)
 
-    svc = RecomputeService(factory, bundle, file_index)
-    task = await svc.get_task_status(task_id, tenant_id)
-
-    return RecomputeTaskResponse(
-        task_id=task.task_id,
-        status=task.status,
-        prompt_version=task.prompt_version,
-        total=task.total,
-        processed=task.processed,
-        changed=task.changed,
-        cached_hits=task.cached_hits,
-        llm_calls=task.llm_calls,
-        started_at=task.started_at,
-        finished_at=task.finished_at,
-        error_message=task.error_message,
+    if task_id.isdigit():
+        try:
+            job = await TagGovernanceService(factory).get_job(
+                tenant_id=tenant_id,
+                job_id=int(task_id),
+            )
+        except GovernanceNotFoundError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=str(exc),
+            ) from exc
+        return {
+            "task_id": str(job.id),
+            "job_id": job.id,
+            "status": job.status,
+            "prompt_version": None,
+            "total": job.total_items,
+            "processed": job.completed_items + job.failed_items,
+            "changed": job.completed_items,
+            "cached_hits": 0,
+            "llm_calls": 0,
+            "started_at": job.created_at,
+            "finished_at": job.finished_at,
+            "error_message": job.last_error_message,
+            "successor": f"/api/v1/tag-jobs/{job.id}",
+        }
+    task = await RecomputeService(factory, bundle, file_index).get_task_status(
+        task_id,
+        tenant_id,
     )
+    return {
+        "task_id": task.task_id,
+        "status": task.status,
+        "prompt_version": task.prompt_version,
+        "total": task.total,
+        "processed": task.processed,
+        "changed": task.changed,
+        "cached_hits": task.cached_hits,
+        "llm_calls": task.llm_calls,
+        "started_at": task.started_at,
+        "finished_at": task.finished_at,
+        "error_message": task.error_message,
+        "successor": "/api/v1/tag-jobs",
+    }

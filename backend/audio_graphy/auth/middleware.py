@@ -159,9 +159,12 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
     """
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+        from audio_graphy.services.llm_gateway import llm_request_memo_scope
+
         request_id = request.headers.get(REQUEST_ID_HEADER) or str(uuid.uuid4())
         request.state.request_id = request_id
-        response = await call_next(request)
+        with llm_request_memo_scope():
+            response = await call_next(request)
         response.headers[REQUEST_ID_HEADER] = request_id
         return response
 
@@ -245,6 +248,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     tenant_id=claims.tenant_id,
                 )
                 request.state.tenant_id = claims.tenant_id
+                request.state.playback_grant_claims = claims
                 if claims.role == "agent":
                     request.state.agent_filter = None
                 return await call_next(request)

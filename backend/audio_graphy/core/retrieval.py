@@ -28,10 +28,9 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
-import json
 import logging
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
@@ -40,9 +39,19 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from audio_graphy.adapters.bundle import AdapterBundle
+from audio_graphy.core.language_detection import (
+    detect_semantic_language,
+    semantic_protected_identifiers,
+)
 from audio_graphy.core.types import GraphNode
 from audio_graphy.models.chunk import Chunk
 from audio_graphy.models.recording import Recording
+from audio_graphy.services.llm_gateway import (
+    CachePolicy,
+    LLMProvenance,
+    LLMRequest,
+    execute_llm,
+)
 
 if TYPE_CHECKING:
     from audio_graphy.storage.file_index import FileIndex
@@ -51,6 +60,21 @@ if TYPE_CHECKING:
     from audio_graphy.storage.mysql_vector import MySQLVectorStore
 
 logger = logging.getLogger(__name__)
+
+_KEYWORD_PROMPT_VERSION = "query-keywords-prefix-v2"
+_KEYWORD_SCHEMA_VERSION = "comma-separated-keywords-v1"
+_KEYWORD_PARSER_VERSION = "keyword-delimiters-v1"
+_KEYWORD_POSTPROCESSOR_VERSION = "keyword-min-length-v1"
+_QUERY_HELPER_TTL_SECONDS = 7 * 24 * 60 * 60
+
+
+def _resolved_permission_scope(
+    tenant_id: str,
+    permission_scope: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Return a non-empty, canonical permission scope for cache recipes."""
+
+    return dict(permission_scope) if permission_scope else {"tenant_id": tenant_id}
 
 
 # ============================================================
@@ -92,6 +116,8 @@ class RetrievalResult:
         graph_hits: Number of candidates from the graph channel.
         filtered_by_time: Number of candidates removed by time filter.
         audio_hits: Number of candidates from the audio channel (M7, default 0).
+        keywords: Keywords already extracted for graph retrieval. Downstream
+            reranking reuses this exact tuple to avoid a duplicate LLM call.
     """
 
     query: str
@@ -100,6 +126,7 @@ class RetrievalResult:
     graph_hits: int
     filtered_by_time: int
     audio_hits: int = 0
+    keywords: tuple[str, ...] = ()
 
 
 # ============================================================
@@ -140,6 +167,7 @@ class DualChannelRetriever:
         tenant_id: str = "default",
         top_k: int = 10,
         time_range: tuple[datetime, datetime] | None = None,
+        permission_scope: Mapping[str, Any] | None = None,
     ) -> RetrievalResult:
         """Execute dual-channel retrieval.
 
@@ -148,6 +176,7 @@ class DualChannelRetriever:
             tenant_id: Tenant scope.
             top_k: Max candidates per channel.
             time_range: Optional (start, end) for recorded_at filtering.
+            permission_scope: Authorization scope that constrains result reuse.
 
         Returns:
             RetrievalResult with merged, filtered, and sorted candidates.
@@ -156,7 +185,11 @@ class DualChannelRetriever:
         query_vec = await self._embed_query(query)
 
         # Step 2: Extract keywords for graph channel
-        keywords = await self._extract_keywords(query)
+        keywords = await self._extract_keywords(
+            query,
+            tenant_id=tenant_id,
+            permission_scope=permission_scope,
+        )
 
         # Step 3: Dual-channel retrieval (parallel)
         naive_candidates = await self._naive_channel(query_vec, tenant_id, top_k)
@@ -177,6 +210,7 @@ class DualChannelRetriever:
             naive_hits=len(naive_candidates),
             graph_hits=len(graph_candidates),
             filtered_by_time=removed_count,
+            keywords=tuple(keywords),
         )
 
     # ------------------------------------------------------------------
@@ -462,13 +496,21 @@ class DualChannelRetriever:
     # Keyword extraction
     # ------------------------------------------------------------------
 
-    async def _extract_keywords(self, query: str) -> list[str]:
+    async def _extract_keywords(
+        self,
+        query: str,
+        *,
+        tenant_id: str = "default",
+        permission_scope: Mapping[str, Any] | None = None,
+    ) -> list[str]:
         """Extract keywords from query for graph channel entity matching.
 
         Tries weak_llm first, falls back to simple Chinese text segmentation.
 
         Args:
             query: Natural language query.
+            tenant_id: Tenant scope for cache isolation.
+            permission_scope: Authorization scope that constrains reuse.
 
         Returns:
             List of keyword strings.
@@ -477,23 +519,45 @@ class DualChannelRetriever:
         try:
             messages: list[dict[str, str]] = [
                 {
-                    "role": "user",
-                    "content": f"请从以下问题中提取关键词，用逗号分隔返回：\n{query}",
-                }
+                    "role": "system",
+                    "content": "从用户问题中提取关键词，只用逗号分隔返回关键词。",
+                },
+                {"role": "user", "content": query},
             ]
-            cache_key = self._compute_cache_key(self._bundle.weak_llm.model, messages)
-
-            # Check file_index cache (Layer 2)
-            if self._file_index is not None:
-                cached = await self._file_index.get_llm_cache(cache_key)
-                if cached is not None:
-                    return self._parse_keywords(cached)
-
-            response = await self._bundle.weak_llm.complete(messages=messages, cache_key=cache_key)
-
-            # Store in file_index
-            if self._file_index is not None and not response.cached:
-                await self._file_index.set_llm_cache(cache_key, response.text)
+            adapter = self._bundle.weak_llm
+            query_sha256 = hashlib.sha256(query.encode("utf-8")).hexdigest()
+            semantic_language = detect_semantic_language(query)
+            request = LLMRequest(
+                tenant_id=tenant_id,
+                purpose="keyword_extract",
+                model_tier="weak",
+                provider=str(getattr(adapter, "provider", "openai-compatible")),
+                model_epoch=str(getattr(adapter, "model_epoch", adapter.model)),
+                messages=messages,
+                prompt_version=_KEYWORD_PROMPT_VERSION,
+                schema_version=_KEYWORD_SCHEMA_VERSION,
+                parser_version=_KEYWORD_PARSER_VERSION,
+                postprocessor_version=_KEYWORD_POSTPROCESSOR_VERSION,
+                temperature=0.0,
+                top_p=1.0,
+                response_schema={
+                    "type": "string",
+                    "description": "Comma-separated query keywords",
+                },
+                business_snapshot={
+                    "query_sha256": query_sha256,
+                    "language": semantic_language,
+                },
+                permission_scope=_resolved_permission_scope(tenant_id, permission_scope),
+                provenance=(LLMProvenance("query", query_sha256),),
+                cache_policy=CachePolicy.QUERY_SEMANTIC,
+                ttl_seconds=_QUERY_HELPER_TTL_SECONDS,
+                semantic_text=query,
+                semantic_language=semantic_language,
+                semantic_protected_values=semantic_protected_identifiers(query),
+                response_validator=lambda response: bool(self._parse_keywords(response.text)),
+            )
+            response = await execute_llm(adapter, request)
 
             keywords = self._parse_keywords(response.text)
             if keywords:
@@ -656,15 +720,6 @@ class DualChannelRetriever:
                 return None
         return None
 
-    @staticmethod
-    def _compute_cache_key(model: str, messages: Sequence[dict[str, str]]) -> str:
-        """Compute LLM cache key = MD5(model, messages)."""
-        payload = json.dumps(
-            {"model": model, "messages": list(messages)},
-            ensure_ascii=False,
-        )
-        return hashlib.md5(payload.encode("utf-8")).hexdigest()
-
 
 # ============================================================
 # Three-channel retriever (M7 — §10.1)
@@ -720,6 +775,7 @@ class ThreeChannelRetriever(DualChannelRetriever):
         top_k: int = 10,
         time_range: tuple[datetime, datetime] | None = None,
         audio_query_path: str | None = None,
+        permission_scope: Mapping[str, Any] | None = None,
     ) -> RetrievalResult:
         """Execute three-channel retrieval in parallel.
 
@@ -733,6 +789,7 @@ class ThreeChannelRetriever(DualChannelRetriever):
                 embeds this file with CLAP and runs cosine search against
                 ``vectors_audio``. When ``None`` or audio disabled, audio
                 channel returns empty.
+            permission_scope: Authorization scope that constrains result reuse.
 
         Returns:
             RetrievalResult with merged, filtered, and sorted candidates.
@@ -742,7 +799,11 @@ class ThreeChannelRetriever(DualChannelRetriever):
         # Step 1: Query embedding + keyword extraction (sequential — both
         # feed the parallel stage).
         query_vec = await self._embed_query(query)
-        keywords = await self._extract_keywords(query)
+        keywords = await self._extract_keywords(
+            query,
+            tenant_id=tenant_id,
+            permission_scope=permission_scope,
+        )
 
         # Step 2: Three channels in parallel. Failed channels return [].
         naive_task = self._naive_channel(query_vec, tenant_id, top_k)
@@ -771,6 +832,7 @@ class ThreeChannelRetriever(DualChannelRetriever):
             graph_hits=len(graph_candidates),
             filtered_by_time=removed_count,
             audio_hits=len(audio_candidates),
+            keywords=tuple(keywords),
         )
 
     # ------------------------------------------------------------------

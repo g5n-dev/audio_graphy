@@ -44,6 +44,7 @@ async def query(
         stores.vector_store,
         stores.graph_store,
         stores.file_index,
+        enable_batch_judge=request.app.state.settings.enable_llm_batch_judge,
     )
 
     time_range = None
@@ -55,6 +56,14 @@ async def query(
         query=body.query,
         time_range=time_range,
         top_k=body.top_k,
+        user_id=_user.id,
+        permission_scope={
+            "role": _user.role,
+            "store_id": body.store_id,
+            # Agent permissions may be identity-specific; managers/admins
+            # with the same role can safely share tenant-scoped results.
+            "agent_user_id": _user.id if _user.role == "agent" else None,
+        },
     )
 
     from audio_graphy.schemas.query import Citation, RetrievalStats

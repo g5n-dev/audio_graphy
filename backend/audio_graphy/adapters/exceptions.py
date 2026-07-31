@@ -14,6 +14,8 @@ Design:
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 
 def _redact(url: str) -> str:
     """Strip the query string from a URL for safe logging.
@@ -84,19 +86,48 @@ class LLMAdapterError(Exception):
 
 
 class LLMBadRequest(LLMAdapterError):
-    """HTTP 400 — malformed messages / unsupported model."""
+    """Permanent HTTP 4xx — malformed, unauthorized, missing, or invalid request."""
 
     __module__ = "audio_graphy.adapters.exceptions"
 
 
+class LLMTruncatedResponseError(LLMBadRequest):
+    """Provider completed billing but stopped generation before a valid result."""
+
+    __module__ = "audio_graphy.adapters.exceptions"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        finish_reason: str,
+        usage: Mapping[str, int] | None = None,
+        provider_request_id: str | None = None,
+        url: str | None = None,
+        status_code: int | None = None,
+        model: str | None = None,
+    ) -> None:
+        super().__init__(
+            message,
+            url=url,
+            status_code=status_code,
+            model=model,
+        )
+        self.finish_reason = finish_reason
+        self.usage = dict(usage or {})
+        self.provider_request_id = provider_request_id
+        self.billed_usage_known = usage is not None
+        self.unknown_billed = usage is None
+
+
 class LLMRateLimitError(LLMAdapterError):
-    """HTTP 429 — vLLM rate limit. M4 does NOT retry (PRD §3.2 P1)."""
+    """HTTP 429 — provider rate limit; retry policy belongs to ``LLMGateway``."""
 
     __module__ = "audio_graphy.adapters.exceptions"
 
 
 class LLMServerError(LLMAdapterError):
-    """HTTP 5xx — vLLM inference fault / non-JSON response."""
+    """Retryable transport status (408/425/5xx) or invalid provider response."""
 
     __module__ = "audio_graphy.adapters.exceptions"
 
@@ -482,6 +513,7 @@ __all__ = [
     "LLMRateLimitError",
     "LLMServerError",
     "LLMTimeoutError",
+    "LLMTruncatedResponseError",
     "RequestErrorMixin",
     "ServerErrorMixin",
     "StreamingASRAdapterError",

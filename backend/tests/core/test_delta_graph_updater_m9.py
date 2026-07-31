@@ -57,7 +57,15 @@ class _FakeExtractorShim:
     def __init__(self, extraction: Any) -> None:
         self._extraction = extraction
 
-    async def extract_from_chunk(self, *, chunk_id: int, chunk_text: str, recording_id: int) -> Any:
+    async def extract_from_chunk(
+        self,
+        *,
+        chunk_id: int,
+        chunk_text: str,
+        recording_id: int,
+        tenant_id: str,
+    ) -> Any:
+        assert tenant_id == "t1"
         return self._extraction
 
 

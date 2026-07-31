@@ -66,6 +66,7 @@ class TestGraphRAGParsing:
         extractor = self._make_extractor(scripted_bundle)
         result = await extractor.extract_from_chunk(1, "测试文本", recording_id=1)
 
+        assert strong_llm.response_schemas[-1] is not None
         assert result.parse_success is True
         assert len(result.entities) >= 5  # CS75 Plus, 张敏, 5万元, 36期分期, 哈弗H6
         assert len(result.relations) >= 3  # 推荐, 搭配, 对比
@@ -126,12 +127,18 @@ class TestGleaning:
     """Gleaning supplement round."""
 
     @staticmethod
-    def _make_extractor(bundle: Any, gleaning_rounds: int = 1) -> EntityExtractor:
+    def _make_extractor(
+        bundle: Any,
+        gleaning_rounds: int = 1,
+        *,
+        adaptive_gleaning: bool = False,
+    ) -> EntityExtractor:
         prompt = "抽取实体。{entity_types} {tuple_delimiter} {record_delimiter} {completion_delimiter} {input_text}"
         return EntityExtractor(
             bundle,
             prompt_template=prompt,
             gleaning_rounds=gleaning_rounds,
+            adaptive_gleaning=adaptive_gleaning,
         )
 
     async def test_gleaning_adds_entities(
@@ -199,6 +206,32 @@ class TestGleaning:
         # Should terminate early (gleaning returns same entities)
         assert result.gleaning_rounds <= 3
 
+    async def test_adaptive_gleaning_continues_only_while_new_facts_arrive(
+        self,
+        scripted_bundle: Any,
+    ) -> None:
+        strong_llm = scripted_bundle.strong_llm
+        first_response = (
+            f'("实体"{TUPLE_DELIMITER}CS75 Plus{TUPLE_DELIMITER}车型'
+            f"{TUPLE_DELIMITER}SUV){COMPLETION_DELIMITER}"
+        )
+        gleaning_response = (
+            f'("实体"{TUPLE_DELIMITER}张敏{TUPLE_DELIMITER}坐席'
+            f"{TUPLE_DELIMITER}销售顾问){COMPLETION_DELIMITER}"
+        )
+        strong_llm.set_response("遗漏", gleaning_response)
+        strong_llm.set_response("抽取", first_response)
+        extractor = self._make_extractor(
+            scripted_bundle,
+            gleaning_rounds=1,
+            adaptive_gleaning=True,
+        )
+
+        result = await extractor.extract_from_chunk(1, "测试文本", recording_id=1)
+
+        assert result.gleaning_rounds == 2
+        assert {entity.name for entity in result.entities} >= {"CS75 Plus", "张敏"}
+
 
 @pytest.mark.unit
 class TestEmptyText:
@@ -256,12 +289,12 @@ class TestEntityNormalisation:
 
 @pytest.mark.unit
 class TestLLMCache:
-    """Dual-layer LLM cache (file_index Layer 2)."""
+    """Centralized LLM cache migration."""
 
-    async def test_file_index_cache_hit(
+    async def test_file_index_is_not_used_for_llm_results(
         self, scripted_bundle: Any, file_index: Any, sample_graphrag_response: str
     ) -> None:
-        """Second call with same prompt hits file_index cache."""
+        """Entity extraction never writes the legacy JSON LLM cache."""
         strong_llm = scripted_bundle.strong_llm
         strong_llm.set_default_response(sample_graphrag_response)
 
@@ -272,15 +305,10 @@ class TestLLMCache:
             file_index=file_index,
         )
 
-        # First call: cache miss, stores in file_index
         await extractor.extract_from_chunk(1, "测试文本", recording_id=1)
-        initial_calls = strong_llm.call_count
-
-        # Second call: should hit file_index cache
         await extractor.extract_from_chunk(1, "测试文本", recording_id=1)
 
-        # LLM call count should NOT increase (cache hit)
-        assert strong_llm.call_count == initial_calls
+        assert await file_index.get_all("kv_store_llm_response_cache") == {}
 
     async def test_cache_different_prompts_miss(
         self, scripted_bundle: Any, file_index: Any, sample_graphrag_response: str

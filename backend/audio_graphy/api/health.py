@@ -73,6 +73,14 @@ async def readiness(request: Request) -> JSONResponse:
     # Check file_index
     checks["file_index"] = "ok"
 
+    # Hot caching is optional and deliberately never gates readiness. Expose
+    # the currently active backend so operators can verify Redis failover and
+    # recovery without turning a cache outage into an application outage.
+    llm_cache = getattr(request.app.state, "llm_cache", None)
+    checks["llm_hot_cache"] = (
+        str(getattr(llm_cache, "backend_name", "disabled")) if llm_cache is not None else "disabled"
+    )
+
     version = getattr(request.app.state, "version", "0.3.0")
 
     if all_ok:

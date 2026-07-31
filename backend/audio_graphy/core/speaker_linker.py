@@ -228,6 +228,28 @@ class SpeakerLinker:
                 fuzzy_result = await self._try_layer2_fuzzy(cand, existing, recording_id)
                 if fuzzy_result is not None:
                     node, ambiguity_tag, fuzzy_score, vp_score = fuzzy_result
+                    if ambiguity_tag == "PENDING_REVIEW":
+                        # A fuzzy observation is only a proposal.  Canonical
+                        # node/vector/link state remains untouched until the
+                        # review endpoint applies it transactionally.
+                        pending_reconfirm += 1
+                        audit_written += await self._write_audit(
+                            action="speaker.merge.observed",
+                            target=f"speaker:{node.id}",
+                            before={
+                                "source_speaker_id": cand.speaker_id,
+                                "voiceprint_id": cand.voiceprint_id,
+                                "recording_id": recording_id,
+                                "layer": 2,
+                            },
+                            after={
+                                "proposed_canonical_speaker_id": node.id,
+                                "fuzzy_score": fuzzy_score,
+                                "voiceprint_score": vp_score,
+                                "state": "PENDING_REVIEW",
+                            },
+                        )
+                        continue
                     await self._merge_into_existing(
                         cand,
                         node,
@@ -318,12 +340,8 @@ class SpeakerLinker:
         """Run SpeakerFuzzyMatcher against existing speakers' display names.
 
         L8 decision tree:
-          - CONFIRMED → merge with ambiguity_tag=None (Layer 1 voiceprint
-            reconfirm passed).
-          - AMBIGUOUS  → merge with ambiguity_tag="AMBIGUOUS" AND enqueue
-            a SpeakerMergePending row for human review.
-          - INFERRED   → merge with ambiguity_tag="AMBIGUOUS" but lower
-            priority (still considered ambiguous until reviewed).
+          - Any fuzzy hit → enqueue a ``PENDING_REVIEW`` observation without
+            mutating canonical speaker/vector/link state.
           - NO_MATCH   → return None (caller falls through to Layer 3).
 
         Returns:
@@ -377,21 +395,24 @@ class SpeakerLinker:
         if matched_sn is None:
             return None
 
-        ambiguity_tag = None if result.verdict == "CONFIRMED" else "AMBIGUOUS"
-
-        # Q1/L8: AMBIGUOUS verdicts are enqueued for reconfirm.
-        if result.needs_reconfirm:
-            await self._enqueue_reconfirm(
-                recording_id=recording_id,
-                candidate_name=query_name,
-                matched_node=matched_sn,
-                fuzzy_score=result.fuzzy_score,
-                voiceprint_score=result.voiceprint_score,
-            )
+        # Even a fuzzy result supported by a voiceprint stays staged: fuzzy
+        # identity linkage is a human-review policy boundary, not a confidence
+        # threshold.  Confirmation is the only path that may mutate canonical
+        # state.
+        enqueued = await self._enqueue_reconfirm(
+            recording_id=recording_id,
+            candidate_name=query_name,
+            matched_node=matched_sn,
+            fuzzy_score=result.fuzzy_score,
+            voiceprint_score=result.voiceprint_score,
+            candidate=candidate,
+        )
+        if not enqueued:
+            return None
 
         return (
             matched_sn,
-            ambiguity_tag or "",
+            "PENDING_REVIEW",
             result.fuzzy_score,
             result.voiceprint_score,
         )
@@ -417,7 +438,8 @@ class SpeakerLinker:
         matched_node: SpeakerNode,
         fuzzy_score: float,
         voiceprint_score: float | None,
-    ) -> None:
+        candidate: _NewSpeakerCandidate | None = None,
+    ) -> bool:
         """Insert a SpeakerMergePending row for human/voiceprint reconfirm.
 
         Best-effort: any DB failure is logged + swallowed so that Layer 2
@@ -425,8 +447,41 @@ class SpeakerLinker:
         """
         from audio_graphy.models.speaker_merge_pending import SpeakerMergePending
 
+        vector_encrypted: bytes | None = None
+        encryption_meta: dict[str, Any] | None = None
+        if candidate is not None and self._crypto is not None:
+            try:
+                plaintext = struct.pack(
+                    f"<{len(candidate.voiceprint)}f",
+                    *[float(x) for x in candidate.voiceprint],
+                )
+                vector_encrypted, encryption_meta = self._crypto.encrypt_bytes(
+                    plaintext,
+                    context=f"voiceprint:{candidate.voiceprint_id}",
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Speaker pending payload encryption failed "
+                    "(recording_id=%s, candidate=%s): %s",
+                    recording_id,
+                    candidate_name,
+                    exc,
+                )
+                return False
+
         try:
             async with self._session_factory() as session:
+                if candidate is not None:
+                    existing_stmt = select(SpeakerMergePending.id).where(
+                        SpeakerMergePending.tenant_id == self._tenant_id,
+                        SpeakerMergePending.recording_id == recording_id,
+                        SpeakerMergePending.candidate_speaker_id
+                        == candidate.speaker_id,
+                        SpeakerMergePending.matched_speaker_node_id == matched_node.id,
+                        SpeakerMergePending.status == "pending",
+                    )
+                    if (await session.execute(existing_stmt)).scalar_one_or_none() is not None:
+                        return True
                 row = SpeakerMergePending(
                     tenant_id=self._tenant_id,
                     recording_id=recording_id,
@@ -435,9 +490,28 @@ class SpeakerLinker:
                     fuzzy_score=fuzzy_score,
                     status="pending",
                     voiceprint_score=voiceprint_score,
+                    observation_state="PENDING_REVIEW",
+                    candidate_speaker_id=(
+                        candidate.speaker_id if candidate is not None else None
+                    ),
+                    candidate_voiceprint_id=(
+                        candidate.voiceprint_id if candidate is not None else None
+                    ),
+                    candidate_vector_encrypted=vector_encrypted,
+                    candidate_encryption_meta=encryption_meta,
+                    candidate_speech_sec=(
+                        candidate.speech_sec if candidate is not None else None
+                    ),
+                    candidate_first_seen=(
+                        candidate.first_seen if candidate is not None else None
+                    ),
+                    candidate_role_hint=(
+                        candidate.role_hint if candidate is not None else None
+                    ),
                 )
                 session.add(row)
                 await session.commit()
+                return True
         except Exception as exc:
             logger.warning(
                 "SpeakerMergePending insert failed (recording_id=%s, candidate=%s): %s",
@@ -445,6 +519,7 @@ class SpeakerLinker:
                 candidate_name,
                 exc,
             )
+            return False
 
     # ------------------------------------------------------------------
     # Layer 1 — voiceprint cosine matching

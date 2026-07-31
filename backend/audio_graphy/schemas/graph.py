@@ -35,6 +35,15 @@ class GraphEdgeResponse(BaseModel):
     source_ids: list[str] = Field(default_factory=list)
 
 
+class GraphEdgeWindowResponse(BaseModel):
+    """Explain how many induced edges were available and returned."""
+
+    total: int = Field(ge=0)
+    returned: int = Field(ge=0)
+    truncated: bool
+    render_budget: int = Field(ge=1, le=5_000)
+
+
 class ExploreResponse(BaseModel):
     """GET /graph/explore and /graph/subgraph response."""
 
@@ -42,6 +51,7 @@ class ExploreResponse(BaseModel):
     edges: list[GraphEdgeResponse]
     total_nodes: int
     total_edges: int
+    edge_window: GraphEdgeWindowResponse
 
 
 class NeighborResponse(BaseModel):

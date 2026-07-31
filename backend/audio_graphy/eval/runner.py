@@ -230,6 +230,7 @@ class RAGPipeline:
             vector_store=self._vector_store,
             graph_store=self._graph_store,
             file_index=file_index,
+            enable_batch_judge=self._settings.enable_llm_batch_judge,
         )
 
     async def _extract_answer_entities(
@@ -282,6 +283,7 @@ class RAGPipeline:
                 chunk_id=0,
                 chunk_text=answer_text,
                 recording_id=0,
+                tenant_id=self._tenant_id,
             )
             ents = [(e.name, e.type) for e in result.entities]
             eds = [

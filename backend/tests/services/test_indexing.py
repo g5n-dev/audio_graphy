@@ -83,7 +83,7 @@ class TestIndexingService:
 
         call_count = 0
 
-        async def failing_stage(recording: RecModel) -> None:
+        async def failing_stage(recording: RecModel, _run: object) -> None:
             nonlocal call_count
             call_count += 1
             async with session_factory() as session:

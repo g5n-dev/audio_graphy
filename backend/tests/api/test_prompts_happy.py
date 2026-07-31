@@ -80,7 +80,7 @@ class TestPromptsHappyPath:
         assert body["active"] is False
 
     def test_create_prompt_with_activate(self, test_client: TestClient, auth_headers: dict) -> None:
-        """POST /prompts with activate=True creates and activates."""
+        """Legacy create-and-activate cannot bypass canonical quality gates."""
         resp = test_client.post(
             "/api/v1/prompts",
             json={
@@ -92,9 +92,8 @@ class TestPromptsHappyPath:
             },
             headers=auth_headers["admin_t1"],
         )
-        assert resp.status_code == 201
-        body = resp.json()
-        assert body["active"] is True
+        assert resp.status_code == 409
+        assert "canonical" in resp.json()["detail"]
 
     def test_create_prompt_duplicate(self, test_client: TestClient, auth_headers: dict) -> None:
         """POST /prompts with duplicate (name, version) returns 409."""
@@ -111,15 +110,14 @@ class TestPromptsHappyPath:
         assert resp.status_code == 409
 
     def test_activate_prompt(self, test_client: TestClient, auth_headers: dict) -> None:
-        """POST /prompts/{id}/activate activates a prompt version."""
+        """Changed Prompt without a production candidate fails closed."""
         resp = test_client.post(
             "/api/v1/prompts/2/activate",
             json={"trigger_recompute": False},
             headers=auth_headers["admin_t1"],
         )
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["active"] is True
+        assert resp.status_code == 409
+        assert "candidate_tagger_version_id" in resp.json()["detail"]
 
     def test_activate_prompt_not_found(self, test_client: TestClient, auth_headers: dict) -> None:
         """POST /prompts/{id}/activate with nonexistent ID returns 404."""
@@ -130,32 +128,110 @@ class TestPromptsHappyPath:
         )
         assert resp.status_code == 404
 
+    def test_activate_prompt_is_tenant_scoped(
+        self, test_client: TestClient, auth_headers: dict
+    ) -> None:
+        """A tenant cannot read or deactivate another tenant's legacy prompt."""
+
+        resp = test_client.post(
+            "/api/v1/prompts/2/activate",
+            json={"trigger_recompute": False},
+            headers=auth_headers["admin_t2"],
+        )
+        assert resp.status_code == 404
+        old = test_client.get(
+            "/api/v1/prompts/1",
+            headers=auth_headers["admin_t1"],
+        )
+        candidate = test_client.get(
+            "/api/v1/prompts/2",
+            headers=auth_headers["admin_t1"],
+        )
+        assert old.status_code == 200
+        assert candidate.status_code == 200
+        assert old.json()["active"] is True
+        assert candidate.json()["active"] is False
+
     def test_activate_prompt_dry_run(self, test_client: TestClient, auth_headers: dict) -> None:
-        """POST /prompts/{id}/activate with dry_run=True returns preview."""
+        """Dry-run fails closed when legacy tags have no canonical recipe."""
         resp = test_client.post(
             "/api/v1/prompts/2/activate",
             json={"trigger_recompute": False, "dry_run": True},
             headers=auth_headers["admin_t1"],
         )
+        assert resp.status_code == 409
+        assert "canonical" in resp.json()["detail"].lower()
+
+    def test_activate_prompt_dry_run_same_content_is_zero_call(
+        self,
+        test_client: TestClient,
+        auth_headers: dict,
+    ) -> None:
+        current = test_client.get(
+            "/api/v1/prompts/1",
+            headers=auth_headers["admin_t1"],
+        ).json()
+        created = test_client.post(
+            "/api/v1/prompts",
+            json={
+                "name": current["name"],
+                "version": "same-content-v2",
+                "content": current["content"] + "\r\n",
+            },
+            headers=auth_headers["admin_t1"],
+        )
+        assert created.status_code == 201
+
+        resp = test_client.post(
+            f"/api/v1/prompts/{created.json()['id']}/activate",
+            json={
+                "dry_run": True,
+                "sample_limit": 100,
+                "max_provider_tokens": 0,
+                "max_provider_calls": 0,
+            },
+            headers=auth_headers["admin_t1"],
+        )
+
         assert resp.status_code == 200
         body = resp.json()
-        assert body["active"] is False
-        assert "affected_count" in body
+        assert body["sampled_count"] == 0
+        assert body["estimated_tokens"] == 0
+        assert body["estimated_provider_calls"] == 0
+        assert body["provider_calls"] == 0
+        assert body["quality_gate_status"] == "unchanged_prompt"
 
     def test_activate_prompt_with_recompute(
         self, test_client: TestClient, auth_headers: dict, db_session_factory
     ) -> None:
-        """POST /prompts/{id}/activate with trigger_recompute runs recompute."""
+        """Ambiguous legacy recompute is rejected before prompt activation."""
         from tests.api.conftest import _run_async, seed_recording
 
-        # Seed a recording so recompute has something to process
         _run_async(seed_recording(db_session_factory))
+        before_old = test_client.get(
+            "/api/v1/prompts/1",
+            headers=auth_headers["admin_t1"],
+        ).json()
+        before_candidate = test_client.get(
+            "/api/v1/prompts/2",
+            headers=auth_headers["admin_t1"],
+        ).json()
 
         resp = test_client.post(
             "/api/v1/prompts/2/activate",
             json={"trigger_recompute": True},
             headers=auth_headers["admin_t1"],
         )
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["active"] is True
+        assert resp.status_code == 409
+        assert "candidate_tagger_version_id" in resp.json()["detail"]
+
+        after_old = test_client.get(
+            "/api/v1/prompts/1",
+            headers=auth_headers["admin_t1"],
+        ).json()
+        after_candidate = test_client.get(
+            "/api/v1/prompts/2",
+            headers=auth_headers["admin_t1"],
+        ).json()
+        assert after_old["active"] is before_old["active"] is True
+        assert after_candidate["active"] is before_candidate["active"] is False

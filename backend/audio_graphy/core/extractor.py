@@ -2,7 +2,7 @@
 
 Pipeline per chunk:
     1. Build extraction prompt (with GraphRAG delimiters + entity types + few-shot)
-    2. Call strong_llm.complete() with cache_key
+    2. Execute a tenant-scoped strong-model request through LLMGateway
     3. Parse LLM output: split by delimiters → ExtractedEntity[] + ExtractedRelation[]
     4. Gleaning: ask LLM if anything was missed → supplement extraction
     5. Chinese entity normalisation: alias table + edit-distance clustering
@@ -12,17 +12,15 @@ Parser strategy (architecture §1.4):
     - Fallback: CSV-style quoted fields (for mock LLM compatibility)
     - Lenient regex: extract partial matches, mark parse_success=False
 
-LLM cache (architecture §4.3):
-    - Layer 1: adapter _cache (in-process, managed by adapter)
-    - Layer 2: file_index kv_store_llm_response_cache.json (persistent)
-    - Core module checks Layer 2 before calling adapter
+LLM cache:
+    - Centralized LLMGateway owns hot/persistent caching and transient retries.
+    - FileIndex is never used for LLM result caching.
 """
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import logging
 import re
 from collections.abc import Sequence
@@ -37,12 +35,33 @@ from audio_graphy.core.types import (
     RECORD_DELIMITER,
     TUPLE_DELIMITER,
 )
+from audio_graphy.services.llm_gateway import (
+    CachePolicy,
+    LLMProvenance,
+    LLMRequest,
+    execute_llm,
+)
 
 if TYPE_CHECKING:
     from audio_graphy.core.entity_merger import EntityMerger
     from audio_graphy.storage.file_index import FileIndex
 
 logger = logging.getLogger(__name__)
+
+_EXTRACTION_PROMPT_VERSION = "entity-relation-extract-v1"
+_GLEANING_PROMPT_VERSION = "entity-relation-gleaning-v1"
+_EXTRACTION_PARSER_VERSION = "graphrag-delimiter-parser-v1"
+_EXTRACTION_POSTPROCESSOR_VERSION = "chinese-entity-normalisation-v1"
+_EXTRACTION_TTL_SECONDS = 90 * 24 * 60 * 60
+_EXPLICIT_EMPTY_RESPONSES = frozenset(
+    {
+        COMPLETION_DELIMITER.casefold(),
+        "无",
+        "无新增实体或关系",
+        "none",
+        "no additional entities or relationships",
+    }
+)
 
 # Default alias table for Chinese entity normalisation (DESIGN.md §5.2)
 _DEFAULT_ALIASES: dict[str, str] = {
@@ -141,9 +160,13 @@ class EntityExtractor:
             {record_delimiter} / {completion_delimiter} / {entity_types} /
             {input_text} placeholders.
         gleaning_rounds: Number of Gleaning supplement rounds (default 1).
+        adaptive_gleaning: Opt-in quality-gated mode that continues up to
+            three rounds only while each preceding round finds new facts.
         entity_types: Domain entity types tuple.
-        max_gleaning_retry: Max retries for Gleaning LLM call (default 2).
-        file_index: Optional FileIndex for LLM response cache (Layer 2).
+        max_gleaning_retry: Deprecated compatibility argument. Retry policy is
+            owned by LLMGateway and only covers transient failures.
+        file_index: Deprecated compatibility argument. LLM results are never
+            read from or written to FileIndex.
         aliases: Entity name alias table for Chinese normalisation.
             Used as Layer-3 fallback when ``entity_merger`` is None.
             Ignored when ``entity_merger`` is provided.
@@ -160,6 +183,7 @@ class EntityExtractor:
         *,
         prompt_template: str,
         gleaning_rounds: int = 1,
+        adaptive_gleaning: bool = False,
         entity_types: tuple[str, ...] = DEFAULT_ENTITY_TYPES,
         max_gleaning_retry: int = 2,
         file_index: FileIndex | None = None,
@@ -169,9 +193,14 @@ class EntityExtractor:
         self._bundle = bundle
         self._prompt_template = prompt_template
         self._gleaning_rounds = gleaning_rounds
+        self._adaptive_gleaning = adaptive_gleaning
         self._entity_types = entity_types
-        self._max_gleaning_retry = max_gleaning_retry
-        self._file_index = file_index
+        if max_gleaning_retry != 2:
+            logger.debug(
+                "Ignoring max_gleaning_retry=%d; LLMGateway owns retries", max_gleaning_retry
+            )
+        if file_index is not None:
+            logger.debug("EntityExtractor FileIndex LLM cache is disabled; using LLMGateway")
         self._aliases = aliases if aliases is not None else dict(_DEFAULT_ALIASES)
         self._entity_merger = entity_merger
 
@@ -180,6 +209,8 @@ class EntityExtractor:
         chunk_id: int,
         chunk_text: str,
         recording_id: int,
+        *,
+        tenant_id: str = "default",
     ) -> ExtractionResult:
         """Extract entities and relations from a single chunk.
 
@@ -187,6 +218,7 @@ class EntityExtractor:
             chunk_id: Chunk database ID.
             chunk_text: Chunk text content.
             recording_id: Recording ID for provenance.
+            tenant_id: Tenant scope for cache and persistence isolation.
 
         Returns:
             ExtractionResult with entities, relations, and metadata.
@@ -203,19 +235,52 @@ class EntityExtractor:
             )
 
         # Step 1: First-round extraction
-        prompt = self._build_prompt(chunk_text)
-        response = await self._cached_complete(prompt)
+        response = await self._execute_extraction_request(
+            system_prompt=self._build_prompt(""),
+            user_content=chunk_text,
+            purpose="entity_relation_extract",
+            prompt_version=_EXTRACTION_PROMPT_VERSION,
+            tenant_id=tenant_id,
+            chunk_id=chunk_id,
+            recording_id=recording_id,
+            chunk_text=chunk_text,
+            phase_snapshot={},
+        )
         entities, relations, parse_success = self._parse_llm_output(
             response.text, chunk_id, recording_id
         )
 
         # Step 2: Gleaning rounds
         actual_gleaning_rounds = 0
-        for _round_idx in range(self._gleaning_rounds):
+        # The opt-in adaptive mode permits additional rounds only while the
+        # preceding round keeps finding new facts. This preserves the
+        # established one-round path by default and avoids paying a fixed
+        # three-round cost for already-complete chunks.
+        gleaning_limit = (
+            max(self._gleaning_rounds, 3) if self._adaptive_gleaning else self._gleaning_rounds
+        )
+        for _round_idx in range(gleaning_limit):
             new_entities, new_relations = await self._glean(
-                entities, relations, chunk_text, chunk_id, recording_id
+                entities,
+                relations,
+                chunk_text,
+                chunk_id,
+                recording_id,
+                tenant_id=tenant_id,
             )
             actual_gleaning_rounds += 1
+            existing_entities = {(item.name, item.type) for item in entities}
+            existing_relations = {
+                (item.source_name, item.relation, item.target_name) for item in relations
+            }
+            new_entities = [
+                item for item in new_entities if (item.name, item.type) not in existing_entities
+            ]
+            new_relations = [
+                item
+                for item in new_relations
+                if (item.source_name, item.relation, item.target_name) not in existing_relations
+            ]
 
             if not new_entities and not new_relations:
                 # No new findings — early termination
@@ -242,12 +307,14 @@ class EntityExtractor:
         chunks: Sequence[tuple[int, str, int]],
         *,
         concurrency: int = 4,
+        tenant_id: str = "default",
     ) -> list[ExtractionResult]:
         """Extract from multiple chunks concurrently.
 
         Args:
             chunks: Sequence of (chunk_id, text, recording_id) tuples.
             concurrency: Max concurrent LLM calls.
+            tenant_id: Tenant scope shared by all chunks.
 
         Returns:
             List of ExtractionResult (one per chunk, in input order).
@@ -256,7 +323,12 @@ class EntityExtractor:
 
         async def _extract_with_limit(chunk_id: int, text: str, rec_id: int) -> ExtractionResult:
             async with semaphore:
-                return await self.extract_from_chunk(chunk_id, text, rec_id)
+                return await self.extract_from_chunk(
+                    chunk_id,
+                    text,
+                    rec_id,
+                    tenant_id=tenant_id,
+                )
 
         tasks = [_extract_with_limit(chunk_id, text, rec_id) for chunk_id, text, rec_id in chunks]
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -463,6 +535,8 @@ class EntityExtractor:
         chunk_text: str,
         chunk_id: int,
         recording_id: int,
+        *,
+        tenant_id: str = "default",
     ) -> tuple[list[ExtractedEntity], list[ExtractedRelation]]:
         """Perform one Gleaning supplement round.
 
@@ -475,32 +549,49 @@ class EntityExtractor:
             chunk_text: Original chunk text.
             chunk_id: Current chunk ID.
             recording_id: Current recording ID.
+            tenant_id: Tenant scope for cache isolation.
 
         Returns:
             Tuple of (new_entities, new_relations) from Gleaning.
         """
-        prompt = self._build_gleaning_prompt(entities, relations, chunk_text)
-
-        # Retry logic for Gleaning LLM call
-        response: LLMResponse | None = None
-        for attempt in range(self._max_gleaning_retry + 1):
-            try:
-                response = await self._cached_complete(prompt)
-                break
-            except Exception as exc:
-                if attempt < self._max_gleaning_retry:
-                    logger.warning(
-                        "Gleaning LLM call failed (attempt %d/%d): %s — retrying",
-                        attempt + 1,
-                        self._max_gleaning_retry + 1,
-                        exc,
-                    )
-                    await asyncio.sleep(2**attempt * 0.1)  # Exponential backoff
-                else:
-                    logger.warning("Gleaning LLM call failed after retries: %s", exc)
-                    return [], []
-
-        if response is None:
+        entity_summary = ", ".join(f"{entity.name}({entity.type})" for entity in entities)
+        relation_summary = ", ".join(
+            f"{relation.source_name}-{relation.relation}->{relation.target_name}"
+            for relation in relations
+        )
+        dynamic_input = (
+            f"已抽取实体: {entity_summary}\n"
+            f"已抽取关系: {relation_summary}\n\n"
+            f"原始文本:\n{chunk_text}"
+        )
+        try:
+            response = await self._execute_extraction_request(
+                system_prompt=self._build_gleaning_prompt([], [], ""),
+                user_content=dynamic_input,
+                purpose="entity_relation_gleaning",
+                prompt_version=_GLEANING_PROMPT_VERSION,
+                tenant_id=tenant_id,
+                chunk_id=chunk_id,
+                recording_id=recording_id,
+                chunk_text=chunk_text,
+                phase_snapshot={
+                    "existing_entities": [
+                        {"name": entity.name, "type": entity.type} for entity in entities
+                    ],
+                    "existing_relations": [
+                        {
+                            "source": relation.source_name,
+                            "relation": relation.relation,
+                            "target": relation.target_name,
+                        }
+                        for relation in relations
+                    ],
+                },
+            )
+        except Exception as exc:
+            # Gateway owns bounded retry of transient failures. Gleaning stays
+            # optional and fails open after this single logical request.
+            logger.warning("Gleaning LLM call failed: %s", exc)
             return [], []
 
         new_entities, new_relations, _ = self._parse_llm_output(
@@ -603,64 +694,99 @@ class EntityExtractor:
         return normalised
 
     # ------------------------------------------------------------------
-    # LLM cache (dual-layer)
+    # Centralized LLM execution
     # ------------------------------------------------------------------
 
-    async def _cached_complete(self, prompt: str) -> LLMResponse:
-        """Call LLM with dual-layer cache (file_index Layer 2 + adapter Layer 1).
+    def _valid_extraction_response(
+        self,
+        response: LLMResponse,
+        *,
+        chunk_id: int,
+        recording_id: int,
+    ) -> bool:
+        """Accept parsed GraphRAG records or an explicit legal-empty sentinel."""
 
-        Args:
-            prompt: Formatted prompt string.
+        _entities, _relations, parsed = self._parse_llm_output(
+            response.text,
+            chunk_id,
+            recording_id,
+        )
+        if parsed:
+            return True
+        return response.text.strip().casefold() in _EXPLICIT_EMPTY_RESPONSES
 
-        Returns:
-            LLMResponse (cached=True if cache hit).
-        """
-        messages: list[dict[str, str]] = [{"role": "user", "content": prompt}]
-        model = self._bundle.strong_llm.model
-        cache_key = self._compute_cache_key(model, messages)
+    async def _execute_extraction_request(
+        self,
+        *,
+        system_prompt: str,
+        user_content: str,
+        purpose: str,
+        prompt_version: str,
+        tenant_id: str,
+        chunk_id: int,
+        recording_id: int,
+        chunk_text: str,
+        phase_snapshot: dict[str, object],
+    ) -> LLMResponse:
+        """Execute one extraction/gleaning request through LLMGateway."""
 
-        # Layer 2: Check file_index persistent cache
-        if self._file_index is not None:
-            cached_text = await self._file_index.get_llm_cache(cache_key)
-            if cached_text is not None:
-                return LLMResponse(
-                    text=cached_text,
-                    model=model,
-                    prompt_hash=cache_key,
-                    cached=True,
-                    usage={},
+        adapter = self._bundle.strong_llm
+        messages: list[dict[str, str]] = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content},
+        ]
+        prompt_sha256 = hashlib.sha256(system_prompt.encode("utf-8")).hexdigest()
+        schema_sha256 = hashlib.sha256(
+            "\0".join(
+                (
+                    *self._entity_types,
+                    TUPLE_DELIMITER,
+                    RECORD_DELIMITER,
+                    COMPLETION_DELIMITER,
                 )
-
-        # Layer 1 + API: Call adapter (adapter checks its own _cache)
-        response = await self._bundle.strong_llm.complete(
+            ).encode("utf-8")
+        ).hexdigest()
+        request = LLMRequest(
+            tenant_id=tenant_id,
+            purpose=purpose,
+            model_tier="strong",
+            provider=str(getattr(adapter, "provider", "openai-compatible")),
+            model_epoch=str(getattr(adapter, "model_epoch", adapter.model)),
             messages=messages,
-            cache_key=cache_key,
+            prompt_version=f"{prompt_version}:{prompt_sha256}",
+            schema_version=f"graphrag-entity-schema-v1:{schema_sha256}",
+            parser_version=_EXTRACTION_PARSER_VERSION,
+            postprocessor_version=_EXTRACTION_POSTPROCESSOR_VERSION,
+            temperature=0.0,
+            top_p=1.0,
+            response_schema={
+                "type": "string",
+                "format": "graphrag-delimited-entity-relation-records",
+            },
+            business_snapshot={
+                "recording_id": recording_id,
+                "chunk_id": chunk_id,
+                "chunk_text_sha256": hashlib.sha256(chunk_text.encode("utf-8")).hexdigest(),
+                "phase": purpose,
+                **phase_snapshot,
+            },
+            permission_scope={
+                "tenant_id": tenant_id,
+                "recording_id": recording_id,
+            },
+            provenance=(
+                LLMProvenance("recording", str(recording_id)),
+                LLMProvenance("chunk", str(chunk_id)),
+            ),
+            cache_policy=CachePolicy.EXACT,
+            ttl_seconds=_EXTRACTION_TTL_SECONDS,
+            response_validator=lambda response: self._valid_extraction_response(
+                response,
+                chunk_id=chunk_id,
+                recording_id=recording_id,
+            ),
         )
-
-        # Store in Layer 2 (file_index)
-        if self._file_index is not None and not response.cached:
-            await self._file_index.set_llm_cache(cache_key, response.text)
-
-        return response
-
-    @staticmethod
-    def _compute_cache_key(model: str, messages: Sequence[dict[str, str]]) -> str:
-        """Compute LLM cache key = MD5(model, messages).
-
-        Same formula as MockLLMAdapter.compute_prompt_hash.
-
-        Args:
-            model: LLM model name.
-            messages: Chat messages.
-
-        Returns:
-            MD5 hex digest string.
-        """
-        payload = json.dumps(
-            {"model": model, "messages": list(messages)},
-            ensure_ascii=False,
-        )
-        return hashlib.md5(payload.encode("utf-8")).hexdigest()
+        return await execute_llm(adapter, request)
 
 
 # ============================================================

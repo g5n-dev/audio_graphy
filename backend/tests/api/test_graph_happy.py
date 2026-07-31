@@ -35,8 +35,45 @@ class TestGraphHappyPath:
         body = resp.json()
         assert body["total_nodes"] == 3
         assert body["total_edges"] == 2
+        assert body["edge_window"] == {
+            "total": 2,
+            "returned": 2,
+            "truncated": False,
+            "render_budget": 5000,
+        }
         labels = [n["label"] for n in body["nodes"]]
         assert "长安CS75" in labels
+
+    def test_explore_enforces_requested_edge_budget_with_explainable_metadata(
+        self, test_client: TestClient, auth_headers: dict
+    ) -> None:
+        """The API never serializes more induced edges than the caller's budget."""
+        seed_graph(test_client)
+
+        resp = test_client.get(
+            "/api/v1/graph/explore?edge_limit=1",
+            headers=auth_headers["admin_t1"],
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert len(body["edges"]) == 1
+        assert body["edge_window"] == {
+            "total": 2,
+            "returned": 1,
+            "truncated": True,
+            "render_budget": 1,
+        }
+
+    def test_explore_rejects_edge_budget_above_hard_safety_cap(
+        self, test_client: TestClient, auth_headers: dict
+    ) -> None:
+        resp = test_client.get(
+            "/api/v1/graph/explore?edge_limit=5001",
+            headers=auth_headers["admin_t1"],
+        )
+
+        assert resp.status_code == 422
 
     def test_explore_with_node_type_filter(
         self, test_client: TestClient, auth_headers: dict
@@ -51,6 +88,9 @@ class TestGraphHappyPath:
         body = resp.json()
         assert all(n["type"] == "产品" for n in body["nodes"])
         assert len(body["nodes"]) == 1
+        assert body["edge_window"]["total"] == 0
+        assert body["edge_window"]["returned"] == 0
+        assert body["edge_window"]["truncated"] is False
 
     def test_explore_with_min_degree_filter(
         self, test_client: TestClient, auth_headers: dict

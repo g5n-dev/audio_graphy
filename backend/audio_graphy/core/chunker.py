@@ -25,11 +25,12 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 import tiktoken
+from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from audio_graphy.adapters.bundle import AdapterBundle
 from audio_graphy.adapters.protocols import DiarizationSegment, VADSegment
-from audio_graphy.models.chunk import Chunk
+from audio_graphy.models.chunk import Chunk, ChunkSegment
 from audio_graphy.models.segment import Segment
 
 if TYPE_CHECKING:
@@ -149,6 +150,8 @@ class Chunker:
         recorded_at: datetime | None,
         *,
         tenant_id: str = "default",
+        pipeline_run_id: int | None = None,
+        generation: int = 0,
     ) -> ChunkerOutput:
         """Process a recording: VAD → ASR → chunking → persistence.
 
@@ -157,6 +160,8 @@ class Chunker:
             audio_path: Path to the audio file.
             recorded_at: Recording timestamp (for file_index provenance).
             tenant_id: Tenant scope.
+            pipeline_run_id: Immutable processing attempt owning new rows.
+            generation: Per-recording processing generation.
 
         Returns:
             ChunkerOutput with segments and chunks.
@@ -184,10 +189,23 @@ class Chunker:
 
         # Step 4: Persist to MySQL + file_index
         if self._session_factory is not None:
-            chunks = await self._persist_to_mysql(recording_id, segment_records, chunks, tenant_id)
+            chunks = await self._persist_to_mysql(
+                recording_id,
+                segment_records,
+                chunks,
+                tenant_id,
+                pipeline_run_id=pipeline_run_id,
+                generation=generation,
+            )
 
         if self._file_index is not None:
-            await self._persist_to_file_index(recording_id, segment_records, chunks, recorded_at)
+            await self._persist_to_file_index(
+                recording_id,
+                segment_records,
+                chunks,
+                recorded_at,
+                generation=generation,
+            )
 
         if not chunks:
             logger.warning("Recording %d produced 0 chunks (all ASR failed?)", recording_id)
@@ -435,6 +453,9 @@ class Chunker:
         segments: list[SegmentRecord],
         chunks: list[ChunkRecord],
         tenant_id: str,
+        *,
+        pipeline_run_id: int | None = None,
+        generation: int = 0,
     ) -> list[ChunkRecord]:
         """Write segments and chunks to MySQL.
 
@@ -443,6 +464,8 @@ class Chunker:
             segments: Segment records to insert.
             chunks: Chunk records to insert (chunk_id will be set on return).
             tenant_id: Tenant scope.
+            pipeline_run_id: Immutable processing attempt owning the rows.
+            generation: Per-recording processing generation.
 
         Returns:
             Updated chunk records with chunk_id set.
@@ -451,34 +474,77 @@ class Chunker:
         updated_chunks: list[ChunkRecord] = []
 
         async with self._session_factory() as session:
-            # Insert segments
-            for seg in segments:
-                session.add(
-                    Segment(
-                        tenant_id=tenant_id,
-                        recording_id=recording_id,
-                        idx=seg.idx,
-                        start_sec=seg.start_sec,
-                        end_sec=seg.end_sec,
-                        transcript=seg.transcript if seg.transcript else None,
-                        text_scrubbed=seg.transcript if seg.transcript else None,
-                        speaker=seg.speaker,
-                        vad_conf=seg.vad_conf,
+            # A retry of the same inactive generation replaces only its own
+            # staging rows. It never mutates a previous active generation.
+            if pipeline_run_id is not None:
+                await session.execute(
+                    delete(ChunkSegment).where(
+                        ChunkSegment.pipeline_run_id == pipeline_run_id,
+                        ChunkSegment.tenant_id == tenant_id,
+                    )
+                )
+                await session.execute(
+                    delete(Chunk).where(
+                        Chunk.pipeline_run_id == pipeline_run_id,
+                        Chunk.tenant_id == tenant_id,
+                    )
+                )
+                await session.execute(
+                    delete(Segment).where(
+                        Segment.pipeline_run_id == pipeline_run_id,
+                        Segment.tenant_id == tenant_id,
                     )
                 )
 
+            # Insert segments
+            persisted_segments: dict[int, Segment] = {}
+            for seg in segments:
+                orm_segment = Segment(
+                    tenant_id=tenant_id,
+                    recording_id=recording_id,
+                    pipeline_run_id=pipeline_run_id,
+                    generation=generation,
+                    idx=seg.idx,
+                    start_sec=seg.start_sec,
+                    end_sec=seg.end_sec,
+                    transcript=seg.transcript if seg.transcript else None,
+                    text_scrubbed=seg.transcript if seg.transcript else None,
+                    speaker=seg.speaker,
+                    vad_conf=seg.vad_conf,
+                )
+                session.add(orm_segment)
+                persisted_segments[seg.idx] = orm_segment
+            await session.flush()
+
             # Insert chunks and get IDs back
-            for chunk in chunks:
+            for ordinal, chunk in enumerate(chunks):
+                segment_rows = [persisted_segments[idx] for idx in chunk.segment_ids]
+                persisted_segment_ids = [int(segment.id) for segment in segment_rows]
                 orm_chunk = Chunk(
                     tenant_id=tenant_id,
                     recording_id=recording_id,
-                    segment_ids=chunk.segment_ids,
+                    pipeline_run_id=pipeline_run_id,
+                    generation=generation,
+                    ordinal=ordinal,
+                    segment_ids=persisted_segment_ids,
                     text=chunk.text,
                     token_n=chunk.token_n,
                     content_hash=chunk.content_hash,
                 )
                 session.add(orm_chunk)
                 await session.flush()  # Get auto-increment ID
+                for provenance_ordinal, segment_id in enumerate(persisted_segment_ids):
+                    session.add(
+                        ChunkSegment(
+                            tenant_id=tenant_id,
+                            recording_id=recording_id,
+                            pipeline_run_id=pipeline_run_id,
+                            generation=generation,
+                            chunk_id=int(orm_chunk.id),
+                            segment_id=segment_id,
+                            ordinal=provenance_ordinal,
+                        )
+                    )
                 updated_chunks.append(replace(chunk, chunk_id=orm_chunk.id))
 
             await session.commit()
@@ -491,6 +557,8 @@ class Chunker:
         segments: list[SegmentRecord],
         chunks: list[ChunkRecord],
         recorded_at: datetime | None,
+        *,
+        generation: int = 0,
     ) -> None:
         """Write segments and chunks to file_index JSON stores.
 
@@ -499,17 +567,23 @@ class Chunker:
             segments: Segment records.
             chunks: Chunk records.
             recorded_at: Recording timestamp.
+            generation: Per-recording processing generation.
         """
         assert self._file_index is not None
 
         # Write video segments
         for seg in segments:
-            seg_key = f"{recording_id}_{seg.idx}"
+            seg_key = (
+                f"{recording_id}_g{generation}_{seg.idx}"
+                if generation > 0
+                else f"{recording_id}_{seg.idx}"
+            )
             await self._file_index.set(
                 "kv_store_video_segments",
                 seg_key,
                 {
                     "recording_id": recording_id,
+                    "generation": generation,
                     "idx": seg.idx,
                     "start_sec": seg.start_sec,
                     "end_sec": seg.end_sec,
@@ -522,12 +596,17 @@ class Chunker:
 
         # Write text chunks
         for chunk in chunks:
-            chunk_key = f"{recording_id}_{chunk.chunk_id or 'pending'}"
+            chunk_key = (
+                f"{recording_id}_g{generation}_{chunk.chunk_id or 'pending'}"
+                if generation > 0
+                else f"{recording_id}_{chunk.chunk_id or 'pending'}"
+            )
             await self._file_index.set(
                 "kv_store_text_chunks",
                 chunk_key,
                 {
                     "recording_id": recording_id,
+                    "generation": generation,
                     "segment_ids": chunk.segment_ids,
                     "text": chunk.text,
                     "token_n": chunk.token_n,
@@ -536,11 +615,15 @@ class Chunker:
             )
 
         # Write video path
+        video_path_key = (
+            f"{recording_id}_g{generation}" if generation > 0 else str(recording_id)
+        )
         await self._file_index.set(
             "kv_store_video_path",
-            str(recording_id),
+            video_path_key,
             {
                 "recording_id": recording_id,
+                "generation": generation,
                 "recorded_at": recorded_at.isoformat() if recorded_at else None,
             },
         )

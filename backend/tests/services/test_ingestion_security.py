@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from audio_graphy.errors import APIError, ValidationError
+from audio_graphy.errors import APIError, DuplicateRecordingError, ValidationError
 from audio_graphy.schemas.recordings import RecordingCreate, RecordingResponse
 from audio_graphy.services.ingestion import IngestionService
 
@@ -28,6 +31,22 @@ class _ThreadCheckingBrokenCrypto:
     def encrypt_file(self, _source: Path, _target: Path) -> None:
         self.called_thread_id = threading.get_ident()
         raise RuntimeError("stop after thread check")
+
+
+class _RecordingCrypto:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def encrypt_file(self, source: Path, target: Path) -> Any:
+        self.calls += 1
+        payload = f"ciphertext-generation-{self.calls}".encode()
+        target.write_bytes(payload)
+        return SimpleNamespace(
+            master_key_id="test-master",
+            data_key_id=f"key-{self.calls}",
+            size_bytes=source.stat().st_size,
+            sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
+        )
 
 
 def _service(
@@ -125,6 +144,34 @@ async def test_encryption_is_offloaded_from_the_event_loop(tmp_path: Path) -> No
 
     assert crypto.called_thread_id is not None
     assert crypto.called_thread_id != event_loop_thread_id
+
+
+@pytest.mark.asyncio
+async def test_duplicate_registration_never_touches_published_ciphertext(
+    session_factory: async_sessionmaker[AsyncSession],
+    tmp_path: Path,
+) -> None:
+    audio = tmp_path / "stable.wav"
+    audio.write_bytes(b"RIFF-private")
+    crypto = _RecordingCrypto()
+    service = IngestionService(session_factory, crypto=cast(Any, crypto))
+
+    first = await service.register_recording(
+        "tenant-a",
+        RecordingCreate(store_id="S1", path=str(audio)),
+    )
+    assert first.audio_encrypted_path is not None
+    published_path = Path(first.audio_encrypted_path)
+    published_ciphertext = await asyncio.to_thread(published_path.read_bytes)
+
+    with pytest.raises(DuplicateRecordingError):
+        await service.register_recording(
+            "tenant-a",
+            RecordingCreate(store_id="S1", path=str(audio)),
+        )
+
+    assert crypto.calls == 1
+    assert await asyncio.to_thread(published_path.read_bytes) == published_ciphertext
 
 
 def test_recording_response_never_exposes_server_path() -> None:

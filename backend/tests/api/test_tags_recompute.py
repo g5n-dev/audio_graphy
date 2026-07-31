@@ -17,8 +17,7 @@ class TestTagsRecompute:
             json={"prompt_version": "v2", "dry_run": True},
             headers=auth_headers["admin_t1"],
         )
-        # May return 200 if DB available, or 500 if not
-        assert resp.status_code in (200, 500)
+        assert resp.status_code == 409
 
     def test_recompute_requires_admin(self, test_client: TestClient, auth_headers: dict) -> None:
         """Only admin can trigger recompute."""

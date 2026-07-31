@@ -17,16 +17,25 @@ See: docs/m3-architecture.md §1.1 (C3), §4.2, docs/m3-prd.md TAG-08,
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
+import uuid
 from collections.abc import MutableMapping
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from apscheduler.schedulers.background import BackgroundScheduler
-from sqlalchemy import select
+from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from audio_graphy.models.enums import RecordingStatus
+from audio_graphy.models.pipeline import (
+    DEFAULT_REQUIRED_PROJECTIONS,
+    PIPELINE_RUN_CLAIMABLE_STATES,
+    RecordingPipelineRun,
+)
 from audio_graphy.models.recording import Recording
 
 if TYPE_CHECKING:
@@ -50,6 +59,7 @@ class PipelineWorker:
         file_indexes: Dict of tenant_id -> FileIndex.
         poll_seconds: Polling interval.
         concurrency: Max concurrent pipeline executions.
+        enable_adaptive_gleaning: Opt-in quality-gated entity gleaning mode.
     """
 
     def __init__(
@@ -64,7 +74,12 @@ class PipelineWorker:
         poll_seconds: int = 5,
         concurrency: int = 1,
         pii_scrubber: PIIScrubber | None = None,
+        enable_adaptive_gleaning: bool = False,
+        worker_id: str | None = None,
+        lease_seconds: int = 120,
     ) -> None:
+        if lease_seconds < 10:
+            raise ValueError("lease_seconds must be at least 10")
         self._session_factory = session_factory
         self._bundle = bundle
         self._vector_store = vector_store
@@ -74,28 +89,25 @@ class PipelineWorker:
         self._poll_seconds = poll_seconds
         self._concurrency = concurrency
         self._pii_scrubber = pii_scrubber
+        self._enable_adaptive_gleaning = enable_adaptive_gleaning
+        self._worker_id = worker_id or f"pipeline-{uuid.uuid4().hex}"
+        self._lease_seconds = lease_seconds
         self._lock = asyncio.Lock()
 
     async def poll_once(self) -> int:
         """Process queued recordings once. Returns the number processed.
 
-        Acquires a lock to enforce concurrency=1 (C5 decision).
+        The in-process lock bounds one worker instance; the database CAS lease
+        is the authority across processes/hosts.
         """
         async with self._lock:
-            async with self._session_factory() as session:
-                stmt = (
-                    select(Recording)
-                    .where(Recording.status == RecordingStatus.QUEUED.value)
-                    .order_by(Recording.created_at)
-                    .limit(self._concurrency)
-                )
-                result = await session.execute(stmt)
-                recordings = list(result.scalars().all())
+            await self._ensure_legacy_queued_runs()
+            claimed = await self._claim_runs()
 
-            if not recordings:
+            if not claimed:
                 return 0
 
-            for recording in recordings:
+            for recording, pipeline_run in claimed:
                 # Get per-tenant stores
                 tenant_id = str(recording.tenant_id)
                 graph_store = self._graph_stores.get(tenant_id)
@@ -128,15 +140,151 @@ class PipelineWorker:
                     graph_store,
                     file_index,
                     pii_scrubber=self._pii_scrubber,
+                    enable_adaptive_gleaning=self._enable_adaptive_gleaning,
                 )
                 try:
-                    await svc.run_pipeline(recording)
+                    await svc.run_pipeline(
+                        recording,
+                        pipeline_run_id=pipeline_run.id,
+                        lease_owner=self._worker_id,
+                        lease_seconds=self._lease_seconds,
+                    )
                 except Exception as exc:
                     logger.error(
                         "Pipeline failed for recording %d: %s", recording.id, exc, exc_info=True
                     )
 
-            return len(recordings)
+            return len(claimed)
+
+    async def _ensure_legacy_queued_runs(self) -> None:
+        """Create deterministic generation-1 runs for pre-0029 queued rows."""
+        try:
+            async with self._session_factory() as session, session.begin():
+                candidates = list(
+                    (
+                        await session.execute(
+                            select(Recording)
+                            .where(Recording.status == RecordingStatus.QUEUED.value)
+                            .order_by(Recording.created_at)
+                            .limit(self._concurrency)
+                            .with_for_update(skip_locked=True)
+                        )
+                    ).scalars()
+                )
+                for recording in candidates:
+                    existing = (
+                        await session.execute(
+                            select(func.count(RecordingPipelineRun.id)).where(
+                                RecordingPipelineRun.recording_id == recording.id,
+                                RecordingPipelineRun.tenant_id == recording.tenant_id,
+                                RecordingPipelineRun.state.in_(
+                                    tuple(PIPELINE_RUN_CLAIMABLE_STATES)
+                                ),
+                            )
+                        )
+                    ).scalar_one()
+                    if existing:
+                        continue
+                    latest = (
+                        await session.execute(
+                            select(func.max(RecordingPipelineRun.generation)).where(
+                                RecordingPipelineRun.recording_id == recording.id
+                            )
+                        )
+                    ).scalar_one_or_none()
+                    generation = int(latest or 0) + 1
+                    source_fingerprint = recording.audio_sha256 or hashlib.sha256(
+                        f"{recording.path}:{recording.source_revision}".encode()
+                    ).hexdigest()
+                    session.add(
+                        RecordingPipelineRun(
+                            tenant_id=str(recording.tenant_id),
+                            recording_id=recording.id,
+                            generation=generation,
+                            idempotency_key=(
+                                f"pipeline:{recording.tenant_id}:"
+                                f"{recording.id}:{generation}"
+                            ),
+                            source_fingerprint=source_fingerprint,
+                            config_fingerprint=hashlib.sha256(
+                                (
+                                    "recording-generation-v1:"
+                                    f"{recording.prompt_version or ''}"
+                                ).encode()
+                            ).hexdigest(),
+                            state="queued",
+                            required_projections=list(DEFAULT_REQUIRED_PROJECTIONS),
+                            completed_projections=[],
+                        )
+                    )
+        except IntegrityError:
+            # Another worker won the deterministic unique generation/key.
+            logger.debug("Concurrent worker created the legacy pipeline run first")
+
+    async def _claim_runs(
+        self,
+    ) -> list[tuple[Recording, RecordingPipelineRun]]:
+        """CAS-claim runnable generations and attach a renewable lease."""
+        now = datetime.now(UTC)
+        lease_expires_at = now + timedelta(seconds=self._lease_seconds)
+        eligible = or_(
+            RecordingPipelineRun.state == "queued",
+            and_(
+                RecordingPipelineRun.state.in_(
+                    tuple(PIPELINE_RUN_CLAIMABLE_STATES - {"queued"})
+                ),
+                or_(
+                    RecordingPipelineRun.lease_expires_at.is_(None),
+                    RecordingPipelineRun.lease_expires_at <= now,
+                ),
+            ),
+        )
+        async with self._session_factory() as session, session.begin():
+            candidate_ids = list(
+                (
+                    await session.execute(
+                        select(RecordingPipelineRun.id)
+                        .where(eligible)
+                        .order_by(RecordingPipelineRun.created_at)
+                        .limit(self._concurrency)
+                    )
+                ).scalars()
+            )
+            claimed_ids: list[int] = []
+            for run_id in candidate_ids:
+                result = await session.execute(
+                    update(RecordingPipelineRun)
+                    .where(
+                        RecordingPipelineRun.id == run_id,
+                        eligible,
+                    )
+                    .values(
+                        state="claimed",
+                        lease_owner=self._worker_id,
+                        lease_expires_at=lease_expires_at,
+                        attempt_count=RecordingPipelineRun.attempt_count + 1,
+                        started_at=func.coalesce(
+                            RecordingPipelineRun.started_at,
+                            now,
+                        ),
+                    )
+                )
+                if getattr(result, "rowcount", 0) == 1:
+                    claimed_ids.append(int(run_id))
+
+            claimed: list[tuple[Recording, RecordingPipelineRun]] = []
+            for run_id in claimed_ids:
+                run = await session.get(RecordingPipelineRun, run_id)
+                if run is None:
+                    continue
+                recording = await session.get(Recording, run.recording_id)
+                if recording is None:
+                    run.state = "failed_terminal"
+                    run.error_code = "RECORDING_MISSING"
+                    run.finished_at = now
+                    continue
+                claimed.append((recording, run))
+            return claimed
 
     async def start_loop(self) -> None:
         """Start the polling loop (runs forever)."""
@@ -223,36 +371,86 @@ async def run_eval_job(
         session_factory: Optional async session maker (for testing).
             When ``None``, reads from ``get_settings`` + ``create_db_engine``.
         bundle: Optional AdapterBundle (for testing). When ``None``,
-            ``build_adapters(get_settings())`` is used.
+            the raw ``build_adapters(get_settings())`` result is wrapped by
+            ``build_llm_runtime`` before any production LLM call.
         settings: Optional Settings instance. When ``None``, ``get_settings()``.
     """
-    import logging as _logging
+    log = logging.getLogger("audio_graphy.scheduler.eval")
+    owned_engine: Any | None = None
+    runtime: Any | None = None
+
+    if settings is None:
+        from audio_graphy.config import get_settings
+
+        settings = get_settings()
+    try:
+        if session_factory is None:
+            from audio_graphy.db import create_db_engine, create_session_factory
+
+            owned_engine = create_db_engine(settings)  # type: ignore[arg-type]
+            session_factory = create_session_factory(owned_engine)
+
+        if bundle is None:
+            from audio_graphy.config import build_adapters
+            from audio_graphy.services.llm_runtime import build_llm_runtime
+
+            raw_bundle = build_adapters(settings)  # type: ignore[arg-type]
+            runtime = await build_llm_runtime(
+                settings,  # type: ignore[arg-type]
+                session_factory,
+                raw_bundle,
+            )
+            bundle = runtime.bundle
+
+        await _execute_eval_job(
+            run_id,
+            tenant_id,
+            session_factory=session_factory,
+            bundle=bundle,
+            settings=settings,
+            log=log,
+        )
+    finally:
+        if runtime is not None:
+            await _close_eval_resource(runtime, "aclose", "LLM runtime", log)
+        if owned_engine is not None:
+            await _close_eval_resource(owned_engine, "dispose", "database engine", log)
+
+
+async def _close_eval_resource(
+    resource: Any,
+    method_name: str,
+    label: str,
+    log: logging.Logger,
+) -> None:
+    """Close an owned eval resource without masking the job outcome."""
+    close = getattr(resource, method_name, None)
+    if not callable(close):
+        return
+    try:
+        await close()
+    except Exception:
+        log.warning("Eval %s cleanup failed", label, exc_info=True)
+
+
+async def _execute_eval_job(
+    run_id: str,
+    tenant_id: str,
+    *,
+    session_factory: async_sessionmaker[AsyncSession],
+    bundle: AdapterBundle,
+    settings: object,
+    log: logging.Logger,
+) -> None:
+    """Execute one eval using already-resolved dependencies."""
     from pathlib import Path as _Path
 
     from audio_graphy.eval.reporter import to_json, to_markdown
     from audio_graphy.eval.runner import EvalRunner, MockPipeline
     from audio_graphy.eval.state import EvalRunState
 
-    log = _logging.getLogger("audio_graphy.scheduler.eval")
-
-    # Resolve dependencies.
-    if settings is None:
-        from audio_graphy.config import get_settings
-
-        settings = get_settings()
-    if session_factory is None:
-        from audio_graphy.db import create_db_engine, create_session_factory
-
-        engine = create_db_engine(settings)  # type: ignore[arg-type]
-        session_factory = create_session_factory(engine)
-    if bundle is None:
-        from audio_graphy.config import build_adapters
-
-        bundle = build_adapters(settings)  # type: ignore[arg-type]
-
     state = EvalRunState(session_factory)
 
-    # 1. Load + claim.
     try:
         run = await state.get(run_id, tenant_id)
     except Exception as exc:
@@ -265,11 +463,9 @@ async def run_eval_job(
         log.info("EvalRun %s already %s — skipping", run_id, run.status)
         return
 
-    # Transition to running.
     await state.transition_to(run_id, "running")
 
     try:
-        # 2. Build pipeline.
         gold_path = _Path(run.gold_set_path)
         pipeline_type = run.pipeline
         pipeline: Any
@@ -280,8 +476,6 @@ async def run_eval_job(
             from audio_graphy.eval.runner import RAGPipeline
             from audio_graphy.storage.graph_networkx import NetworkXGraphStore
 
-            # Use the tenant-scoped graph store from app state if available;
-            # otherwise build a fresh one for this run.
             working_dir = _Path(str(getattr(settings, "working_dir", ".")))
             graph_store = NetworkXGraphStore(
                 working_dir,
@@ -299,7 +493,6 @@ async def run_eval_job(
         else:
             raise ValueError(f"Unknown pipeline type: {pipeline_type!r}")
 
-        # 3. Build judge (or None).
         judge = None
         if run.judge_enabled:
             try:
@@ -312,9 +505,7 @@ async def run_eval_job(
                     run_id,
                     exc,
                 )
-                judge = None
 
-        # 4. Run EvalRunner.
         position_debias = bool(run.config.get("position_debias", True))
         runner = EvalRunner(
             gold_set_path=gold_path,
@@ -326,7 +517,6 @@ async def run_eval_job(
         )
         eval_run = await runner.run()
 
-        # 5. Reporter writes files.
         report_working = _Path(str(getattr(settings, "working_dir", ".")))
         report_dir = report_working / "eval_reports"
         report_dir.mkdir(parents=True, exist_ok=True)
@@ -335,7 +525,6 @@ async def run_eval_job(
         to_markdown(eval_run, md_path)
         to_json(eval_run, json_path)
 
-        # 6. Persist completion.
         await state.transition_to(
             run_id,
             "completed",
@@ -348,9 +537,7 @@ async def run_eval_job(
             run_id,
             list(eval_run.aggregate_metrics.keys()),
         )
-
     except Exception as exc:
-        # 7. Persist failure (truncate to fit column width).
         err_msg = repr(exc)[:8000]
         log.error("EvalRun %s failed: %s", run_id, exc, exc_info=True)
         await state.transition_to(

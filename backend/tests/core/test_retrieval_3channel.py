@@ -498,6 +498,7 @@ class TestRetrievalResultAudioHits:
             filtered_by_time=0,
         )
         assert r.audio_hits == 0
+        assert r.keywords == ()
 
     def test_explicit_audio_hits(self) -> None:
         r = RetrievalResult(
@@ -507,8 +508,10 @@ class TestRetrievalResultAudioHits:
             graph_hits=0,
             filtered_by_time=0,
             audio_hits=5,
+            keywords=("shared", "keywords"),
         )
         assert r.audio_hits == 5
+        assert r.keywords == ("shared", "keywords")
 
 
 # ============================================================

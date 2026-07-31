@@ -48,6 +48,7 @@ from audio_graphy.errors import (
 from audio_graphy.models.speaker_link import SpeakerLink
 from audio_graphy.models.speaker_merge_pending import SpeakerMergePending
 from audio_graphy.models.speaker_node import SpeakerNode
+from audio_graphy.models.voiceprint_vector import VoiceprintVector
 from audio_graphy.schemas.speakers import (
     SpeakerDetailResponse,
     SpeakerListItem,
@@ -283,8 +284,17 @@ async def confirm_merge(
         target_id: SpeakerNode.id (the canonical merge target).
     """
     tenant_id = get_tenant_id(request)
-    pending = await db.get(SpeakerMergePending, speaker_id)
-    if pending is None or str(pending.tenant_id) != tenant_id:
+    pending = (
+        await db.execute(
+            select(SpeakerMergePending)
+            .where(
+                SpeakerMergePending.id == speaker_id,
+                SpeakerMergePending.tenant_id == tenant_id,
+            )
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if pending is None:
         raise EntityNotFoundError(
             message="SpeakerMergePending row not found in this tenant",
             detail={"pending_id": speaker_id, "tenant_id": tenant_id},
@@ -295,14 +305,119 @@ async def confirm_merge(
             detail={"pending_id": speaker_id, "current_status": pending.status},
         )
     # Verify target exists in tenant.
-    target = await db.get(SpeakerNode, target_id)
-    if target is None or str(target.tenant_id) != tenant_id:
+    target = (
+        await db.execute(
+            select(SpeakerNode)
+            .where(
+                SpeakerNode.id == target_id,
+                SpeakerNode.tenant_id == tenant_id,
+            )
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if target is None:
         raise EntityNotFoundError(
             message="Target SpeakerNode not found in this tenant",
             detail={"target_id": target_id, "tenant_id": tenant_id},
         )
 
+    confidence = (
+        float(body.voiceprint_score)
+        if body.voiceprint_score is not None
+        else (
+            float(pending.voiceprint_score)
+            if pending.voiceprint_score is not None
+            else float(pending.fuzzy_score)
+        )
+    )
+    recordings = list(target.recordings_list or [])
+    if int(pending.recording_id) not in recordings:
+        recordings.append(int(pending.recording_id))
+    target.recordings_list = recordings
+    target.recordings_count = len(recordings)
+    target.total_speech_sec = float(target.total_speech_sec or 0.0) + float(
+        pending.candidate_speech_sec or 0.0
+    )
+    if pending.candidate_first_seen is not None and (
+        target.first_seen is None or pending.candidate_first_seen < target.first_seen
+    ):
+        target.first_seen = pending.candidate_first_seen
+    target.merge_confidence = max(float(target.merge_confidence or 0.0), confidence)
+    target.merge_strategy = "fuzzy"
+    target.ambiguity_tag = None
+
+    # The staged biometric payload is attached only inside this review
+    # transaction.  Rejection never reaches this branch.
+    if (
+        pending.candidate_voiceprint_id
+        and pending.candidate_vector_encrypted is not None
+        and pending.candidate_encryption_meta is not None
+    ):
+        existing_vector = (
+            await db.execute(
+                select(VoiceprintVector).where(
+                    VoiceprintVector.tenant_id == tenant_id,
+                    VoiceprintVector.voiceprint_id == pending.candidate_voiceprint_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if existing_vector is not None and int(existing_vector.speaker_entity_id) != target_id:
+            raise ConflictError(
+                message="Candidate voiceprint is already attached to another speaker",
+                detail={
+                    "pending_id": speaker_id,
+                    "existing_speaker_id": int(existing_vector.speaker_entity_id),
+                },
+            )
+        if existing_vector is None:
+            db.add(
+                VoiceprintVector(
+                    tenant_id=tenant_id,
+                    recording_id=int(pending.recording_id),
+                    segment_id=None,
+                    speaker_entity_id=target_id,
+                    voiceprint_id=str(pending.candidate_voiceprint_id),
+                    vector_encrypted=pending.candidate_vector_encrypted,
+                    encryption_meta=dict(pending.candidate_encryption_meta),
+                    duration_sec=float(pending.candidate_speech_sec or 0.0),
+                )
+            )
+
+    existing_link_id = (
+        await db.execute(
+            select(SpeakerLink.id).where(
+                SpeakerLink.tenant_id == tenant_id,
+                SpeakerLink.canonical_speaker_id == target_id,
+                SpeakerLink.recording_id == pending.recording_id,
+                SpeakerLink.strategy == "fuzzy",
+            )
+        )
+    ).scalar_one_or_none()
+    if existing_link_id is None:
+        db.add(
+            SpeakerLink(
+                tenant_id=tenant_id,
+                canonical_speaker_id=target_id,
+                source_speaker_id=target_id,
+                recording_id=int(pending.recording_id),
+                cosine_similarity=(
+                    float(body.voiceprint_score)
+                    if body.voiceprint_score is not None
+                    else (
+                        float(pending.voiceprint_score)
+                        if pending.voiceprint_score is not None
+                        else None
+                    )
+                ),
+                merge_confidence=confidence,
+                strategy="fuzzy",
+                ambiguity_tag=None,
+            )
+        )
+
     pending.status = "resolved_inferred"
+    pending.observation_state = "APPLIED"
+    pending.state_version = int(pending.state_version or 1) + 1
     pending.matched_speaker_node_id = target_id
     pending.resolved_by = "human"
     pending.resolved_at = datetime.now(UTC)
@@ -341,8 +456,17 @@ async def reject_merge(
     The pending row is marked ``resolved_rejected``.
     """
     tenant_id = get_tenant_id(request)
-    pending = await db.get(SpeakerMergePending, speaker_id)
-    if pending is None or str(pending.tenant_id) != tenant_id:
+    pending = (
+        await db.execute(
+            select(SpeakerMergePending)
+            .where(
+                SpeakerMergePending.id == speaker_id,
+                SpeakerMergePending.tenant_id == tenant_id,
+            )
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if pending is None:
         raise EntityNotFoundError(
             message="SpeakerMergePending row not found in this tenant",
             detail={"pending_id": speaker_id, "tenant_id": tenant_id},
@@ -354,6 +478,8 @@ async def reject_merge(
         )
 
     pending.status = "resolved_rejected"
+    pending.observation_state = "REJECTED"
+    pending.state_version = int(pending.state_version or 1) + 1
     pending.resolved_by = "human"
     pending.resolved_at = datetime.now(UTC)
     if body.notes is not None:

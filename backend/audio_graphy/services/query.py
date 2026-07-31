@@ -13,6 +13,7 @@ See: docs/m3-architecture.md §10.1, docs/m6-architecture.md §3.7.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
@@ -44,6 +45,8 @@ class QueryService:
         pii_scrubber: Optional PIIScrubber; when set, the answer + citation
             snippets are scrubbed before return (M6 PIPL §14.3).
         audit: Optional AuditWriter for fire-and-forget audit records.
+        enable_batch_judge: Enable the quality-gated candidate batch judge.
+            Disabled by default until gold-set parity has been established.
     """
 
     def __init__(
@@ -56,6 +59,7 @@ class QueryService:
         *,
         pii_scrubber: PIIScrubber | None = None,
         audit: AuditWriter | None = None,
+        enable_batch_judge: bool = False,
     ) -> None:
         self._session_factory = session_factory
         self._bundle = bundle
@@ -64,6 +68,7 @@ class QueryService:
         self._file_index = file_index
         self._pii_scrubber = pii_scrubber
         self._audit = audit
+        self._enable_batch_judge = enable_batch_judge
 
     async def search(
         self,
@@ -73,6 +78,7 @@ class QueryService:
         time_range: tuple[datetime, datetime] | None = None,
         top_k: int = 10,
         user_id: int | None = None,
+        permission_scope: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Execute dual-channel retrieval + rerank + answer generation.
 
@@ -82,10 +88,20 @@ class QueryService:
             time_range: Optional (start, end) time filter.
             top_k: Max candidates.
             user_id: Optional acting user (for audit attribution).
+            permission_scope: Effective authorization scope for LLM cache reuse.
 
         Returns:
             Dict with query, answer, citations, retrieval_stats.
         """
+        resolved_scope = (
+            dict(permission_scope)
+            if permission_scope
+            else {
+                "tenant_id": tenant_id,
+                "actor_user_id": user_id,
+            }
+        )
+
         # Build retriever
         retriever = DualChannelRetriever(
             self._bundle,
@@ -101,6 +117,7 @@ class QueryService:
             tenant_id=tenant_id,
             top_k=top_k,
             time_range=time_range,
+            permission_scope=resolved_scope,
         )
 
         # Rerank + answer
@@ -108,11 +125,15 @@ class QueryService:
             self._bundle,
             file_index=self._file_index,
             graph_store=self._graph_store,
+            enable_batch_judge=self._enable_batch_judge,
         )
         rerank_result = await reranker.rerank_and_answer(
             query,
             retrieval_result.candidates,
             time_range=time_range,
+            keywords=retrieval_result.keywords,
+            tenant_id=tenant_id,
+            permission_scope=resolved_scope,
         )
 
         # M6: PII scrubbing (defensive — LLM may regenerate PII from context).

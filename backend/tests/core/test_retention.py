@@ -166,6 +166,48 @@ async def test_older_recording_deleted(
 
 
 @pytest.mark.asyncio
+async def test_retention_invalidates_llm_cache_by_recording_provenance(
+    ret_factory: async_sessionmaker[AsyncSession],
+    ret_crypto: AudioCrypto,
+    ret_audit: AuditWriter,
+    tmp_path: Path,
+) -> None:
+    audio = tmp_path / "llm-cache.wav"
+    audio.write_bytes(b"\x00" * 100)
+    await _seed_recording(ret_factory, days_ago=365, path=str(audio))
+
+    class _CacheSpy:
+        calls: list[tuple[str, list[dict[str, str]]]] = []
+
+        async def delete_by_provenance(
+            self,
+            tenant_id: str,
+            references: list[dict[str, str]],
+        ) -> int:
+            self.calls.append((tenant_id, references))
+            return 1
+
+    cache = _CacheSpy()
+    enforcer = RetentionEnforcer(
+        ret_factory,
+        ret_crypto,
+        ret_audit,
+        _noop_graph_factory,
+        retention_days=90,
+        llm_cache=cache,
+    )
+    report = await enforcer.run_sweep()
+
+    assert report.deleted == 1
+    assert cache.calls == [
+        (
+            "chang_an",
+            [{"source_type": "recording", "source_id": "1"}],
+        )
+    ]
+
+
+@pytest.mark.asyncio
 async def test_file_actually_unlinked(
     ret_factory: async_sessionmaker[AsyncSession],
     ret_crypto: AudioCrypto,

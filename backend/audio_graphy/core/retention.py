@@ -111,6 +111,7 @@ class RetentionEnforcer:
             FileIndex | Awaitable[FileIndex | None] | None,
         ]
         | None = None,
+        llm_cache: Any | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._crypto = crypto
@@ -121,6 +122,7 @@ class RetentionEnforcer:
         self._cascade_voiceprint = cascade_voiceprint
         self._working_dir = working_dir
         self._file_index_factory = file_index_factory
+        self._llm_cache = llm_cache
         # M9 R1 T14 — flag-gated bi-temporal cascade (L9 zero-regression).
         self._enable_advanced_graph: bool = enable_advanced_graph
         # Buffer of EdgeEvent rows pending atomic commit (filled by the
@@ -258,6 +260,15 @@ class RetentionEnforcer:
             )
         if file_index is not None:
             await file_index.erase_recording(rec.id)
+
+        # Remove encrypted LLM outputs linked to this recording before the
+        # source row/file becomes irreversible. A failure is intentionally
+        # surfaced so the retention sweep reports and retries this recording.
+        if self._llm_cache is not None:
+            await self._llm_cache.delete_by_provenance(
+                str(rec.tenant_id),
+                [{"source_type": "recording", "source_id": str(rec.id)}],
+            )
 
         # 1. (M7) voiceprint cascade — must run BEFORE recordings row is
         # deleted so we can still query speaker_node aggregations cleanly.

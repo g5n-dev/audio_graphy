@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -129,3 +130,66 @@ async def test_graph_store_factory_cold_loads_and_reuses_tenant_store(
     assert first is second
     assert first.graph.has_node("persisted")
     assert stores["tenant-a"] is first
+
+
+@pytest.mark.asyncio
+async def test_erasure_outbox_reconciler_runs_periodically_and_is_cancellable() -> None:
+    from audio_graphy.main import _run_erasure_outbox_reconciler
+
+    called = asyncio.Event()
+
+    class _Processor:
+        async def drain_pending(self, *, limit: int) -> dict[str, int]:
+            assert limit == 100
+            called.set()
+            return {"selected": 0, "succeeded": 0, "failed": 0, "skipped": 0}
+
+    task = asyncio.create_task(
+        _run_erasure_outbox_reconciler(_Processor(), interval_seconds=3600)
+    )
+    await asyncio.wait_for(called.wait(), timeout=1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.asyncio
+async def test_audio_operation_reconciler_recovers_and_dispatches_committed_queue() -> None:
+    from audio_graphy.main import _run_reception_audio_reconciler
+
+    dispatched = asyncio.Event()
+    calls: list[object] = []
+
+    class _Service:
+        async def reconcile_stale(self) -> int:
+            calls.append("leases")
+            return 1
+
+        async def reconcile_artifacts(self, *, limit: int) -> int:
+            assert limit == 100
+            calls.append("artifacts")
+            return 1
+
+        async def pending_operation_ids(self, *, limit: int) -> list[int]:
+            assert limit == 2
+            calls.append("pending")
+            return [7, 8]
+
+        async def run_operation(self, operation_id: int) -> None:
+            calls.append(operation_id)
+            if operation_id == 8:
+                dispatched.set()
+
+    task = asyncio.create_task(
+        _run_reception_audio_reconciler(
+            _Service(),
+            interval_seconds=3600,
+            batch_limit=2,
+        )
+    )
+    await asyncio.wait_for(dispatched.wait(), timeout=1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert calls[:3] == ["leases", "artifacts", "pending"]
+    assert set(calls[3:]) == {7, 8}

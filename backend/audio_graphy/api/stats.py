@@ -12,7 +12,9 @@ from fastapi import APIRouter, Depends, Query, Request
 from audio_graphy.api.deps import get_current_user, get_session_factory
 from audio_graphy.auth.middleware import AuthUser
 from audio_graphy.auth.tenants import get_tenant_id
+from audio_graphy.errors import ForbiddenError
 from audio_graphy.schemas.stats import StatsItem, StatsResponse
+from audio_graphy.services.tag_governance import TagGovernanceService
 from audio_graphy.tags.stats import TagStatsService
 
 router = APIRouter(tags=["stats"])
@@ -39,6 +41,14 @@ async def get_tag_stats(
     effective_agent = None if agent_user_id is not None else agent_name
 
     factory = get_session_factory(request)
+    if not await TagGovernanceService(factory).record_blind_sensitive_access(
+        tenant_id=tenant_id,
+        actor_user_id=user.id,
+        access_kind="legacy_tag_stats",
+    ):
+        raise ForbiddenError(
+            "Blind review isolation forbids tag statistics before submission"
+        )
     svc = TagStatsService(factory)
 
     stats = await svc.get_stats(

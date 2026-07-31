@@ -1,10 +1,10 @@
 你是 RAG 系统的审核员。判断下面每个事实是否被【上下文】支持。
 
+【输出格式】每行一个 JSON：{{"id": 1, "supported": true|false}}
+仅输出 JSON，不要解释。
+
 【上下文】
 {context}
 
 【待判断的事实】（编号 1..N）
 {numbered_facts}
-
-【输出格式】每行一个 JSON：{{"id": 1, "supported": true|false}}
-仅输出 JSON，不要解释。

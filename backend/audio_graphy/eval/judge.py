@@ -7,7 +7,7 @@ LLM-as-judge 实现：复用 ``LLMOpenAIAdapter``（strong），3 个 prompt 模
 
 Design:
 - Lazy prompt loading via importlib.resources (works after pip install).
-- MD5 cache_key per call — same (method, text) reuses LLMOpenAIAdapter cache.
+- Rich tenant-scoped LLMRequest recipes with optional dataset/example refs.
 - All parse failures log WARNING and return safe defaults (no exception).
 """
 
@@ -17,30 +17,24 @@ import hashlib
 import json
 import logging
 import re
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Protocol
+from typing import Any
 
-from audio_graphy.adapters.protocols import LLMAdapter
+from audio_graphy.adapters.protocols import LLMAdapter, LLMResponse
+from audio_graphy.services.llm_gateway import (
+    CachePolicy,
+    LLMProvenance,
+    LLMRequest,
+    execute_llm,
+)
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_PROMPT_DIR = Path(__file__).parent / "prompts"
 _ALLOWED_RELEVANCE = (0.0, 0.5, 1.0)
-
-
-class _LLMAdapterProto(Protocol):
-    """Structural superset of LLMOpenAIAdapter used by LLMJudge."""
-
-    model: str
-
-    async def complete(
-        self,
-        messages: list[dict[str, str]],
-        *,
-        temperature: float = 0.0,
-        max_tokens: int | None = None,
-        cache_key: str | None = None,
-    ) -> object: ...
+_EVAL_TTL_SECONDS = 90 * 24 * 60 * 60
+_EVAL_POSTPROCESSOR_VERSION = "eval-safe-defaults-v1"
 
 
 class LLMJudge:
@@ -54,10 +48,13 @@ class LLMJudge:
         score = await judge.judge_relevance("优惠多少？", "5 万元现金优惠。")
 
     Args:
-        llm: Any ``LLMOpenAIAdapter``-compatible adapter (must accept
-            ``cache_key=`` and return ``LLMResponse`` with ``.text``).
+        llm: Any gateway or compatible transport adapter returning
+            ``LLMResponse``.
         prompt_dir: Directory containing the 3 prompt templates. Defaults to
             ``audio_graphy/eval/prompts/`` next to this module.
+        tenant_id: Default tenant scope; ``"default"`` preserves legacy callers.
+        dataset_id: Optional evaluation dataset provenance shared by calls.
+        permission_scope: Optional authorization snapshot for recipe isolation.
     """
 
     def __init__(
@@ -65,25 +62,68 @@ class LLMJudge:
         llm: LLMAdapter,
         *,
         prompt_dir: Path | None = None,
+        tenant_id: str = "default",
+        dataset_id: str | int | None = None,
+        permission_scope: Mapping[str, Any] | None = None,
     ) -> None:
         self._llm = llm
         self._prompt_dir = prompt_dir or _DEFAULT_PROMPT_DIR
         self._prompt_cache: dict[str, str] = {}
+        self._tenant_id = tenant_id
+        self._dataset_id = dataset_id
+        self._permission_scope = (
+            dict(permission_scope) if permission_scope else {"tenant_id": tenant_id}
+        )
 
     # --------------------------------------------------------------
     # Public methods
     # --------------------------------------------------------------
-    async def extract_facts(self, text: str) -> list[str]:
+    async def extract_facts(
+        self,
+        text: str,
+        *,
+        tenant_id: str | None = None,
+        dataset_id: str | int | None = None,
+        example_id: str | int | None = None,
+        permission_scope: Mapping[str, Any] | None = None,
+    ) -> list[str]:
         """Extract atomic facts from ``text``.
 
         Returns ``[]`` on empty / unparseable response (with WARNING).
         """
-        cache_key = self._cache_key("extract_facts", text)
-        prompt = self._load_prompt("extract_facts.txt").format(text=text)
-        resp_text = await self._call_llm(prompt, cache_key=cache_key)
+        template = self._load_prompt("extract_facts.txt")
+        prompt = template.format(text=text)
+        resp_text = await self._call_llm(
+            prompt,
+            purpose="extract_facts",
+            prompt_template=template,
+            schema_version="eval-fact-list-v1",
+            parser_version="eval-fact-list-parser-v1",
+            response_schema={
+                "type": "string",
+                "format": "one-bulleted-atomic-fact-per-line",
+            },
+            business_snapshot={
+                "text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+            },
+            response_validator=self._valid_fact_response,
+            tenant_id=tenant_id,
+            dataset_id=dataset_id,
+            example_id=example_id,
+            permission_scope=permission_scope,
+        )
         return self._parse_fact_list(resp_text)
 
-    async def judge_faithfulness(self, context: str, facts: list[str]) -> list[bool]:
+    async def judge_faithfulness(
+        self,
+        context: str,
+        facts: list[str],
+        *,
+        tenant_id: str | None = None,
+        dataset_id: str | int | None = None,
+        example_id: str | int | None = None,
+        permission_scope: Mapping[str, Any] | None = None,
+    ) -> list[bool]:
         """Judge each fact against ``context``.
 
         Returns a list of bools aligned to ``facts`` (pad/truncate to len).
@@ -92,22 +132,72 @@ class LLMJudge:
         if not facts:
             return []
         numbered = "\n".join(f"{i + 1}. {f}" for i, f in enumerate(facts))
-        cache_key = self._cache_key("faith", context, "\n".join(facts))
-        prompt = self._load_prompt("judge_faithfulness.txt").format(
-            context=context, numbered_facts=numbered
+        template = self._load_prompt("judge_faithfulness.txt")
+        prompt = template.format(context=context, numbered_facts=numbered)
+        resp_text = await self._call_llm(
+            prompt,
+            purpose="judge_faithfulness",
+            prompt_template=template,
+            schema_version="eval-faithfulness-jsonl-v1",
+            parser_version="eval-faithfulness-jsonl-parser-v1",
+            response_schema={
+                "type": "string",
+                "format": "jsonl",
+                "expected_count": len(facts),
+            },
+            business_snapshot={
+                "context_sha256": hashlib.sha256(context.encode("utf-8")).hexdigest(),
+                "facts_sha256": hashlib.sha256("\0".join(facts).encode("utf-8")).hexdigest(),
+                "fact_count": len(facts),
+            },
+            response_validator=lambda response: self._valid_faithfulness_response(
+                response,
+                expected_count=len(facts),
+            ),
+            tenant_id=tenant_id,
+            dataset_id=dataset_id,
+            example_id=example_id,
+            permission_scope=permission_scope,
         )
-        resp_text = await self._call_llm(prompt, cache_key=cache_key)
         return self._parse_jsonl_verdicts(resp_text, expected_count=len(facts))
 
-    async def judge_relevance(self, query: str, answer: str) -> float:
+    async def judge_relevance(
+        self,
+        query: str,
+        answer: str,
+        *,
+        tenant_id: str | None = None,
+        dataset_id: str | int | None = None,
+        example_id: str | int | None = None,
+        permission_scope: Mapping[str, Any] | None = None,
+    ) -> float:
         """Score relevance ∈ {0.0, 0.5, 1.0}.
 
         Out-of-set numeric values are snapped to the nearest allowed value
         with WARNING. Non-numeric responses default to ``0.0`` with WARNING.
         """
-        cache_key = self._cache_key("rel", query, answer)
-        prompt = self._load_prompt("judge_relevance.txt").format(query=query, answer=answer)
-        resp_text = await self._call_llm(prompt, cache_key=cache_key)
+        template = self._load_prompt("judge_relevance.txt")
+        prompt = template.format(query=query, answer=answer)
+        resp_text = await self._call_llm(
+            prompt,
+            purpose="judge_relevance",
+            prompt_template=template,
+            schema_version="eval-relevance-score-v1",
+            parser_version="eval-relevance-score-parser-v1",
+            response_schema={
+                "type": "number",
+                "enum": list(_ALLOWED_RELEVANCE),
+            },
+            business_snapshot={
+                "query_sha256": hashlib.sha256(query.encode("utf-8")).hexdigest(),
+                "answer_sha256": hashlib.sha256(answer.encode("utf-8")).hexdigest(),
+            },
+            response_validator=self._valid_relevance_response,
+            tenant_id=tenant_id,
+            dataset_id=dataset_id,
+            example_id=example_id,
+            permission_scope=permission_scope,
+        )
         return self._parse_relevance_score(resp_text)
 
     async def aclose(self) -> None:
@@ -135,21 +225,113 @@ class LLMJudge:
         return text
 
     # --------------------------------------------------------------
-    # Helpers — LLM call + cache_key
+    # Helpers — centralized LLM call
     # --------------------------------------------------------------
-    def _cache_key(self, *parts: str) -> str:
-        joined = "|".join(str(p) for p in parts)
-        return hashlib.md5(joined.encode("utf-8")).hexdigest()
-
-    async def _call_llm(self, prompt: str, *, cache_key: str) -> str:
+    async def _call_llm(
+        self,
+        prompt: str,
+        *,
+        purpose: str,
+        prompt_template: str,
+        schema_version: str,
+        parser_version: str,
+        response_schema: Mapping[str, Any],
+        business_snapshot: Mapping[str, Any],
+        response_validator: Callable[[LLMResponse], bool],
+        tenant_id: str | None,
+        dataset_id: str | int | None,
+        example_id: str | int | None,
+        permission_scope: Mapping[str, Any] | None,
+    ) -> str:
         messages = [{"role": "user", "content": prompt}]
-        resp = await self._llm.complete(
-            messages,
-            temperature=0.0,
-            cache_key=cache_key,
+        resolved_tenant = tenant_id or self._tenant_id
+        resolved_dataset = dataset_id if dataset_id is not None else self._dataset_id
+        resolved_scope = (
+            dict(permission_scope)
+            if permission_scope
+            else (
+                dict(self._permission_scope)
+                if resolved_tenant == self._tenant_id
+                else {"tenant_id": resolved_tenant}
+            )
         )
-        # LLMResponse.text — duck-typed to keep this module protocol-shaped.
-        return str(getattr(resp, "text", ""))
+        provenance: list[LLMProvenance] = []
+        if resolved_dataset is not None:
+            provenance.append(LLMProvenance("eval_dataset", str(resolved_dataset)))
+        if example_id is not None:
+            provenance.append(LLMProvenance("eval_example", str(example_id)))
+        adapter = self._llm
+        request = LLMRequest(
+            tenant_id=resolved_tenant,
+            purpose=purpose,
+            model_tier="strong",
+            provider=str(getattr(adapter, "provider", "openai-compatible")),
+            model_epoch=str(getattr(adapter, "model_epoch", adapter.model)),
+            messages=messages,
+            prompt_version=(
+                f"{purpose}:{hashlib.sha256(prompt_template.encode('utf-8')).hexdigest()}"
+            ),
+            schema_version=schema_version,
+            parser_version=parser_version,
+            postprocessor_version=_EVAL_POSTPROCESSOR_VERSION,
+            temperature=0.0,
+            top_p=1.0,
+            response_schema=response_schema,
+            business_snapshot=dict(business_snapshot),
+            permission_scope=resolved_scope,
+            provenance=tuple(provenance),
+            cache_policy=CachePolicy.EXACT,
+            ttl_seconds=_EVAL_TTL_SECONDS,
+            response_validator=response_validator,
+        )
+        response = await execute_llm(adapter, request)
+        return response.text
+
+    @staticmethod
+    def _valid_fact_response(response: LLMResponse) -> bool:
+        """Accept legal empty output or a strict bullet/numbered fact list."""
+
+        lines = [line.strip() for line in response.text.splitlines() if line.strip()]
+        if not lines:
+            return True
+        return all(re.match(r"^(?:[-*]\s+|\d+\.\s+)\S", line) is not None for line in lines)
+
+    @staticmethod
+    def _valid_faithfulness_response(
+        response: LLMResponse,
+        *,
+        expected_count: int,
+    ) -> bool:
+        """Require exactly one ordered boolean JSON verdict per fact."""
+
+        lines = [line.strip() for line in response.text.splitlines() if line.strip()]
+        if len(lines) != expected_count:
+            return False
+        for expected_id, line in enumerate(lines, 1):
+            try:
+                item = json.loads(line)
+            except (json.JSONDecodeError, TypeError):
+                return False
+            if (
+                not isinstance(item, dict)
+                or set(item) != {"id", "supported"}
+                or item["id"] != expected_id
+                or not isinstance(item["supported"], bool)
+            ):
+                return False
+        return True
+
+    @staticmethod
+    def _valid_relevance_response(response: LLMResponse) -> bool:
+        """Cache only an exact allowed relevance score."""
+
+        cleaned = response.text.strip().strip("*`").strip()
+        if re.fullmatch(r"\d+(?:\.\d+)?", cleaned) is None:
+            return False
+        try:
+            return float(cleaned) in _ALLOWED_RELEVANCE
+        except ValueError:
+            return False
 
     # --------------------------------------------------------------
     # Helpers — response parsing

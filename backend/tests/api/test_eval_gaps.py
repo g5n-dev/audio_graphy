@@ -276,11 +276,6 @@ def test_post_run_writes_audit_when_writer_attached(
     from audio_graphy.core.audit import AuditWriter
 
     writer = AuditWriter(db_session_factory, flush_batch_size=10, flush_interval_sec=10.0)
-
-    async def _start() -> None:
-        await writer.start()
-
-    _run_async(_start())
     test_client.app.state.audit_writer = writer
 
     try:

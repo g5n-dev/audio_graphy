@@ -56,6 +56,21 @@ class TestRecordingsHappyPath:
         assert resp.status_code == 200
         assert resp.json()["total"] == 0
 
+    def test_list_filter_exposes_only_declared_recording_statuses(
+        self, test_client: TestClient, auth_headers: dict
+    ) -> None:
+        silence = test_client.get(
+            "/api/v1/recordings?status=ready_no_speech",
+            headers=auth_headers["admin_t1"],
+        )
+        invalid = test_client.get(
+            "/api/v1/recordings?status=not-a-recording-status",
+            headers=auth_headers["admin_t1"],
+        )
+
+        assert silence.status_code == 200
+        assert invalid.status_code == 422
+
     def test_get_recording_detail_success(
         self, test_client: TestClient, auth_headers: dict, db_session_factory
     ) -> None:
@@ -94,17 +109,40 @@ class TestRecordingsHappyPath:
     def test_reindex_recording(
         self, test_client: TestClient, auth_headers: dict, db_session_factory
     ) -> None:
-        """POST /recordings/{id}/reindex resets status to queued."""
+        """POST reindex returns a queryable, idempotent processing operation."""
         rec_id = _run_async(seed_recording(db_session_factory))
 
         resp = test_client.post(
             f"/api/v1/recordings/{rec_id}/reindex",
-            headers=auth_headers["admin_t1"],
+            headers={
+                **auth_headers["admin_t1"],
+                "Idempotency-Key": "recordings-happy-reindex",
+            },
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 202
         body = resp.json()
         assert body["id"] == rec_id
         assert body["status"] == "queued"
+        assert body["operation_id"] > 0
+        assert body["generation"] == 1
+        assert body["operation_state"] == "queued"
+
+        replay = test_client.post(
+            f"/api/v1/recordings/{rec_id}/reindex",
+            headers={
+                **auth_headers["admin_t1"],
+                "Idempotency-Key": "recordings-happy-reindex",
+            },
+        )
+        assert replay.status_code == 202
+        assert replay.json()["operation_id"] == body["operation_id"]
+
+        operation = test_client.get(
+            f"/api/v1/recordings/{rec_id}/processing-runs/{body['operation_id']}",
+            headers=auth_headers["admin_t1"],
+        )
+        assert operation.status_code == 200
+        assert operation.json()["state"] == "queued"
 
     def test_reindex_nonexistent(self, test_client: TestClient, auth_headers: dict) -> None:
         """POST /recordings/{id}/reindex with nonexistent ID returns 404."""

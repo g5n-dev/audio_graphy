@@ -10,11 +10,13 @@ import pytest
 
 from audio_graphy.adapters.bundle import (
     StreamingAdapterBundle,
+    build_hybrid_bundle,
     build_mock_bundle,
     build_streaming_adapters,
     build_streaming_asr_for_session,
     build_streaming_vad_for_session,
 )
+from audio_graphy.adapters.real.llm_openai import LLMOpenAIAdapter
 from audio_graphy.config import Settings
 
 
@@ -67,6 +69,21 @@ def test_build_mock_bundle_enables_both_flags():
     b = build_mock_bundle(s)
     assert b.audio_embed is not None
     assert b.voiceprint is not None
+
+
+def test_real_llm_bundle_wires_tier_specific_structured_output_capabilities() -> None:
+    settings = Settings(
+        adapter_llm_mode="real",
+        llm_strong_structured_output_capability="strict_json_schema",
+        llm_weak_structured_output_capability="json_object",
+    )
+
+    bundle = build_hybrid_bundle(settings)
+
+    assert isinstance(bundle.strong_llm, LLMOpenAIAdapter)
+    assert isinstance(bundle.weak_llm, LLMOpenAIAdapter)
+    assert bundle.strong_llm.structured_output_capability == "strict_json_schema"
+    assert bundle.weak_llm.structured_output_capability == "json_object"
 
 
 # ============================================================

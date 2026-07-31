@@ -21,9 +21,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 COMPOSE_FILE = PROJECT_ROOT / "docker-compose.yml"
 STREAMING_VAD_OVERRIDE = PROJECT_ROOT / "docker-compose.streaming-vad.yml"
 
-CORE_SERVICES = {"mysql", "master-key-init", "backend", "frontend"}
+CORE_SERVICES = {"mysql", "master-key-init", "backend", "tag-worker", "frontend"}
 PROFILE_SERVICES = {
     "mock": CORE_SERVICES | {"adminer"},
+    "cache-redis": CORE_SERVICES | {"redis"},
     "models-cpu": CORE_SERVICES | {"bge-m3-cpu", "campplus-service", "funasr"},
     "models-single-gpu": CORE_SERVICES
     | {
@@ -76,6 +77,7 @@ def _compose(profile: str) -> dict[str, Any]:
     environment = os.environ.copy()
     environment.pop("COMPOSE_APP_BIND_HOST", None)
     environment.pop("COMPOSE_PRIVATE_BIND_HOST", None)
+    environment.pop("REDIS_URL", None)
     result = subprocess.run(
         [
             "docker",
@@ -103,6 +105,12 @@ def _compose(profile: str) -> dict[str, Any]:
 @pytest.mark.parametrize(("profile", "expected"), PROFILE_SERVICES.items())
 def test_profile_resolves_to_expected_services(profile: str, expected: set[str]) -> None:
     assert set(_compose(profile)["services"]) == expected
+
+
+def test_redis_is_not_configured_for_apps_unless_explicitly_requested() -> None:
+    services = _compose("mock")["services"]
+    assert services["backend"]["environment"]["REDIS_URL"] == ""
+    assert services["tag-worker"]["environment"]["REDIS_URL"] == ""
 
 
 @pytest.mark.parametrize("profile", PROFILE_SERVICES)
@@ -301,6 +309,31 @@ def test_vllm_host_ports_do_not_shadow_backend() -> None:
     for service_name in ("vllm-strong", "vllm-weak"):
         model_ports = {str(port["published"]) for port in services[service_name].get("ports", [])}
         assert backend_ports.isdisjoint(model_ports)
+
+
+def test_optional_redis_is_ephemeral_bounded_and_not_a_startup_dependency() -> None:
+    services = _compose("cache-redis")["services"]
+    redis = services["redis"]
+    command = " ".join(redis["command"])
+
+    assert redis["image"] == "redis:8.8.0-alpine"
+    assert redis.get("ports", []) == []
+    assert redis["read_only"] is True
+    assert redis["deploy"]["resources"]["limits"]["memory"] == "201326592"
+    assert "--maxmemory 128mb" in command
+    assert "--maxmemory-policy allkeys-lru" in command
+    assert "--appendonly no" in command
+    assert "--save " in command
+    assert "redis" not in services["backend"].get("depends_on", {})
+    assert services["backend"]["environment"]["LLM_HOT_CACHE_BACKEND"] == "auto"
+
+
+def test_vllm_prefix_caching_is_enabled_for_strong_and_weak_models() -> None:
+    services = _compose("models-multi-gpu")["services"]
+    for service_name in ("vllm-strong", "vllm-weak"):
+        command = services[service_name]["command"]
+        rendered = " ".join(command) if isinstance(command, list) else command
+        assert "--enable-prefix-caching" in rendered
 
 
 def test_streaming_vad_override_mounts_local_model_read_only() -> None:

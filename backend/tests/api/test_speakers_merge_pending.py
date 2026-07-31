@@ -30,6 +30,7 @@ async def _seed_pending(
     matched_node_id: int = 1,
     fuzzy_score: float = 0.88,
     status: str = "pending",
+    candidate_speech_sec: float | None = 12.5,
 ) -> int:
     from audio_graphy.models.speaker_merge_pending import SpeakerMergePending
 
@@ -41,11 +42,43 @@ async def _seed_pending(
             matched_speaker_node_id=matched_node_id,
             fuzzy_score=fuzzy_score,
             status=status,
+            observation_state="PENDING_REVIEW",
+            candidate_speaker_id="spk_0",
+            candidate_voiceprint_id="candidate-vp-hash",
+            candidate_speech_sec=candidate_speech_sec,
+            candidate_role_hint="customer",
         )
         session.add(row)
         await session.commit()
         await session.refresh(row)
         return int(row.id)
+
+
+async def _canonical_snapshot(factory: Any, node_id: int) -> dict[str, Any]:
+    from sqlalchemy import func, select
+
+    from audio_graphy.models.speaker_link import SpeakerLink
+    from audio_graphy.models.speaker_node import SpeakerNode
+
+    async with factory() as session:
+        node = await session.get(SpeakerNode, node_id)
+        assert node is not None
+        link_count = int(
+            (
+                await session.execute(
+                    select(func.count())
+                    .select_from(SpeakerLink)
+                    .where(SpeakerLink.canonical_speaker_id == node_id)
+                )
+            ).scalar_one()
+        )
+        return {
+            "recordings_list": list(node.recordings_list or []),
+            "recordings_count": int(node.recordings_count or 0),
+            "total_speech_sec": float(node.total_speech_sec or 0.0),
+            "merge_strategy": str(node.merge_strategy),
+            "link_count": link_count,
+        }
 
 
 async def _seed_speaker_node(
@@ -154,6 +187,15 @@ def test_confirm_merge_inspector_happy_path(test_client, auth_headers, seeded_sp
     assert body["status"] == "resolved_inferred"
     assert body["resolved_by"] == "human"
     assert body["voiceprint_score"] == pytest.approx(0.85)
+    snapshot = _run_async(
+        _canonical_snapshot(
+            test_client.app.state.session_factory,
+            target_id,
+        )
+    )
+    assert snapshot["total_speech_sec"] == pytest.approx(42.5)
+    assert snapshot["merge_strategy"] == "fuzzy"
+    assert snapshot["link_count"] == 1
 
 
 def test_confirm_merge_forbidden_viewer(test_client, auth_headers, seeded_speaker_data):
@@ -212,6 +254,13 @@ def test_confirm_merge_409_when_already_resolved(test_client, auth_headers, seed
 
 def test_reject_merge_inspector_happy_path(test_client, auth_headers, seeded_speaker_data):
     pending_id = seeded_speaker_data["pending_id"]
+    target_id = seeded_speaker_data["node_id"]
+    before = _run_async(
+        _canonical_snapshot(
+            test_client.app.state.session_factory,
+            target_id,
+        )
+    )
     resp = test_client.post(
         f"/api/v1/speakers/{pending_id}/reject-merge",
         headers=auth_headers["inspector_t1"],
@@ -221,6 +270,13 @@ def test_reject_merge_inspector_happy_path(test_client, auth_headers, seeded_spe
     body = resp.json()
     assert body["status"] == "resolved_rejected"
     assert body["resolved_by"] == "human"
+    after = _run_async(
+        _canonical_snapshot(
+            test_client.app.state.session_factory,
+            target_id,
+        )
+    )
+    assert after == before
 
 
 def test_reject_merge_admin_happy_path(test_client, auth_headers, seeded_speaker_data):

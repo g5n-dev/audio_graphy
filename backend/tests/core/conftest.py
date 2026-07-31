@@ -12,7 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -62,6 +62,7 @@ class ScriptedLLMAdapter:
         self._default_response: str = '("实体","测试实体","车型")<|COMPLETE|>'
         self._call_count = 0
         self._cache: dict[str, LLMResponse] = {}
+        self.response_schemas: list[Mapping[str, Any] | None] = []
 
     def set_response(self, keyword: str, response: str) -> None:
         """Set a response that will be returned when the prompt contains keyword."""
@@ -84,7 +85,12 @@ class ScriptedLLMAdapter:
         temperature: float = 0.0,
         max_tokens: int | None = None,
         cache_key: str | None = None,
+        response_schema: Mapping[str, Any] | None = None,
     ) -> LLMResponse:
+        # Keep the fake honest about the production transport contract: callers
+        # may require strict structured output and the schema must not be
+        # silently discarded merely because this adapter is test-only.
+        self.response_schemas.append(response_schema)
         self._call_count += 1
 
         prompt_hash = self.compute_prompt_hash(self.model, messages)

@@ -117,10 +117,10 @@ class TestTagsHappyPath:
         )
         assert resp.status_code == 404
 
-    def test_post_manual_tag_success(
+    def test_post_manual_recording_tag_requires_evidence_bound_workbench(
         self, test_client: TestClient, auth_headers: dict, db_session_factory
     ) -> None:
-        """POST /recordings/{id}/tags with mode=manual on indexed recording."""
+        """Recording-level manual writes cannot bypass canonical evidence."""
         rec_id = _run_async(seed_recording(db_session_factory, status="indexed"))
 
         resp = test_client.post(
@@ -132,17 +132,18 @@ class TestTagsHappyPath:
             },
             headers=auth_headers["admin_t1"],
         )
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["recording_id"] == rec_id
-        assert body["tag_path"] == "quality.greeting"
-        assert body["tag_value"] == "fail"
-        assert body["source"] == "manual"
+        assert resp.status_code == 409
+        current = test_client.get(
+            f"/api/v1/recordings/{rec_id}/tags",
+            headers=auth_headers["admin_t1"],
+        )
+        assert current.status_code == 200
+        assert current.json()["tags"] == []
 
-    def test_post_auto_tag_success(
+    def test_post_auto_recording_tag_rejects_ambiguous_legacy_mapping(
         self, test_client: TestClient, auth_headers: dict, db_session_factory
     ) -> None:
-        """POST /recordings/{id}/tags with mode=auto triggers LLM tagging."""
+        """Unmapped recording tags return 409 instead of copying across units."""
         rec_id = _run_async(seed_recording(db_session_factory, status="indexed"))
 
         resp = test_client.post(
@@ -153,11 +154,7 @@ class TestTagsHappyPath:
             },
             headers=auth_headers["admin_t1"],
         )
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["recording_id"] == rec_id
-        assert body["tagged"] >= 1
-        assert len(body["results"]) >= 1
+        assert resp.status_code == 409
 
     def test_post_tags_not_found(self, test_client: TestClient, auth_headers: dict) -> None:
         """POST tags on nonexistent recording returns 404."""
@@ -184,7 +181,7 @@ class TestTagsHappyPath:
     def test_recompute_dry_run(
         self, test_client: TestClient, auth_headers: dict, db_session_factory
     ) -> None:
-        """POST /tags/recompute with dry_run=true returns preview."""
+        """Legacy recording dry-run points callers to canonical evaluations."""
         _run_async(seed_recording(db_session_factory))
 
         resp = test_client.post(
@@ -192,16 +189,12 @@ class TestTagsHappyPath:
             json={"prompt_version": "v2", "dry_run": True},
             headers=auth_headers["admin_t1"],
         )
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["dry_run"] is True
-        assert "affected_count" in body
-        assert "changed_count" in body
+        assert resp.status_code == 409
 
     def test_recompute_execute(
         self, test_client: TestClient, auth_headers: dict, db_session_factory
     ) -> None:
-        """POST /tags/recompute with dry_run=false creates and executes task."""
+        """Ambiguous legacy recording scope never creates a fake recompute."""
         _run_async(seed_recording(db_session_factory))
 
         resp = test_client.post(
@@ -209,36 +202,35 @@ class TestTagsHappyPath:
             json={"prompt_version": "v2", "dry_run": False},
             headers=auth_headers["admin_t1"],
         )
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["dry_run"] is False
-        assert "task_id" in body
-        assert "status" in body
+        assert resp.status_code == 409
 
     def test_get_recompute_task_success(
         self, test_client: TestClient, auth_headers: dict, db_session_factory
     ) -> None:
-        """GET /tags/recompute/{task_id} returns task status after recompute."""
-        _run_async(seed_recording(db_session_factory))
+        """Legacy status URL can resolve a numeric canonical job id."""
+        from audio_graphy.services.tag_governance import TagGovernanceService
 
-        # First create a recompute task
-        create_resp = test_client.post(
-            "/api/v1/tags/recompute",
-            json={"prompt_version": "v2", "dry_run": False},
-            headers=auth_headers["admin_t1"],
+        job = _run_async(
+            TagGovernanceService(db_session_factory).enqueue_job(
+                tenant_id="chang_an",
+                job_type="recompute",
+                scope={"dialogue_unit_ids": [101]},
+                idempotency_key="legacy-status-canonical-job",
+                created_by=1,
+            )
         )
-        task_id = create_resp.json()["task_id"]
 
-        # Then query its status
         resp = test_client.get(
-            f"/api/v1/tags/recompute/{task_id}",
+            f"/api/v1/tags/recompute/{job.id}",
             headers=auth_headers["admin_t1"],
         )
         assert resp.status_code == 200
         body = resp.json()
-        assert body["task_id"] == task_id
-        assert "status" in body
-        assert "total" in body
+        assert body["task_id"] == str(job.id)
+        assert body["job_id"] == job.id
+        assert body["status"] == "queued"
+        assert body["total"] == 1
+        assert body["successor"] == f"/api/v1/tag-jobs/{job.id}"
 
     def test_get_recompute_task_not_found(
         self, test_client: TestClient, auth_headers: dict

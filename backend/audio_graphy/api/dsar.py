@@ -24,13 +24,11 @@ See: docs/m6-architecture.md §3.5, docs/m6-prd.md §4.4.
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import csv
 import inspect
 import io
 import json
-import logging
 import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -38,7 +36,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from audio_graphy.api.deps import get_current_user, get_db, get_session_factory
@@ -58,12 +56,12 @@ from audio_graphy.schemas.dsar import (
     DSARExportRequest,
     DSARExportResponse,
 )
-from audio_graphy.services.reception_erasure import (
-    erase_reception_artifacts,
-    invalidate_receptions_for_recording,
+from audio_graphy.services.erasure_outbox import (
+    ErasureOutboxProcessor,
+    stage_recording_erasure,
 )
+from audio_graphy.services.tag_governance import TagGovernanceService
 
-logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/dsar", tags=["DSAR (PIPL §14.3)"])
 
 
@@ -298,6 +296,15 @@ async def export_recording(
 
     rec = await _fetch_recording(session, recording_id, user.tenant_id)
 
+    if not await TagGovernanceService(factory).record_blind_sensitive_access(
+        tenant_id=user.tenant_id,
+        actor_user_id=user.id,
+        access_kind="dsar_export_semantics",
+    ):
+        raise ForbiddenError(
+            "Blind review isolation forbids semantic export before submission"
+        )
+
     bundle = await _build_export_bundle(factory, rec, crypto)
 
     # Audit before streaming (so the row is committed even if client disconnects).
@@ -349,114 +356,54 @@ async def erase_recording(
     user: AuthUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ) -> DSAREraseResponse:
-    """Erase a recording permanently: audio + DB rows + GraphML refs.
-
-    Writes audit_log(action="dsar.erase") BEFORE deleting so the audit row
-    survives even if the deletion partially fails.
-    """
+    """Atomically erase DB truth, then drain recoverable external cleanup."""
     _require_admin(user)
     factory = get_session_factory(request)
 
-    rec = await _fetch_recording(session, recording_id, user.tenant_id)
-
-    # Audit FIRST (target row still exists).
-    await _write_audit(
-        request,
-        tenant_id=user.tenant_id,
-        user_id=user.id,
-        action="dsar.erase",
-        target=f"recording:{recording_id}",
-        before={
-            "path": str(rec.path),
-            "audio_encrypted_path": rec.audio_encrypted_path,
-        },
-        after={},
-    )
-
-    # GraphML is a durable PII-bearing store, not a best-effort cache. Scrub
-    # and flush it before deleting the DB row so persistence failures remain
-    # visible and retryable through the API.
-    graph_store = await _get_or_load_graph_store(request, user.tenant_id)
-    _remove_graph_refs_after_erase(
-        request,
-        graph_store,
-        recording_id,
-        user.tenant_id,
-    )
-    await graph_store.save()
-
-    # FileIndex contains transcript/chunk copies and an opaque LLM cache.
-    # Clear it before DB deletion so checkpoint failures leave a retryable
-    # source row instead of falsely reporting a complete erasure.
-    file_index = _get_or_create_file_index(request, user.tenant_id)
-    await file_index.erase_recording(recording_id)
-
-    # Both paths may coexist while the indexing pipeline still needs
-    # plaintext. DSAR must erase both, not choose one and strand the other.
-    audio_targets = {Path(path) for path in (str(rec.path), rec.audio_encrypted_path) if path}
-    for audio_path in audio_targets:
-        if audio_path.exists():
-            # Audit already records intent; surface nothing to client.
-            try:
-                audio_path.unlink()
-            except OSError as exc:
-                raise OSError(f"DSAR could not unlink audio for recording {recording_id}") from exc
-
-    # DB rows — explicit deletes (mirror RetentionEnforcer strategy). Any
-    # reception derived from this source is invalidated in the same commit so
-    # stale transcript labels and timeline coordinates cannot survive DSAR.
-    async with factory() as s:
-        reception_artifacts = await invalidate_receptions_for_recording(
-            s,
+    # This is the only irreversible database boundary: source rows,
+    # reception/canonical derivatives, the pathless audit receipt and external
+    # erasure intent commit together. No filesystem or projection is touched
+    # from inside this transaction.
+    async with session.begin():
+        staged = await stage_recording_erasure(
+            session,
             tenant_id=user.tenant_id,
             recording_id=recording_id,
-            actor=f"dsar:user:{user.id}",
+            actor_user_id=user.id,
         )
-        await s.execute(
-            delete(TagFact).where(
-                TagFact.tenant_id == user.tenant_id,
-                TagFact.recording_id == recording_id,
-            )
-        )
-        await s.execute(
-            delete(Chunk).where(
-                Chunk.tenant_id == user.tenant_id,
-                Chunk.recording_id == recording_id,
-            )
-        )
-        await s.execute(
-            delete(Segment).where(
-                Segment.tenant_id == user.tenant_id,
-                Segment.recording_id == recording_id,
-            )
-        )
-        await s.execute(
-            delete(Recording).where(
-                Recording.tenant_id == user.tenant_id,
-                Recording.id == recording_id,
-            )
-        )
-        if reception_artifacts:
-            await asyncio.to_thread(
-                erase_reception_artifacts,
-                reception_artifacts,
-                allowed_root=Path(request.app.state.settings.working_dir),
-            )
-        await s.commit()
+        if staged is None:
+            raise RecordingNotFoundError(detail={"recording_id": recording_id})
 
-    # M7 — voiceprint cascade (must run AFTER recordings delete so FK CASCADE
-    # has cleaned up speaker_links; we still need to manually handle the
-    # speaker_node aggregation decrement).
-    try:
-        await _cascade_voiceprint_after_erase(factory, recording_id, user.tenant_id)
-    except Exception as exc:
-        # Voiceprint cascade is best-effort — the main erase has succeeded.
-        logger.warning(
-            "Voiceprint cascade failed for recording %d tenant=%s: %s",
-            recording_id,
-            user.tenant_id,
-            exc,
+    async def _graph_factory(tenant_id: str) -> Any:
+        return await _get_or_load_graph_store(request, tenant_id)
+
+    def _file_index_factory(tenant_id: str) -> Any:
+        return _get_or_create_file_index(request, tenant_id)
+
+    def _graph_cleanup(graph_store: Any, target_id: int, tenant_id: str) -> None:
+        _remove_graph_refs_after_erase(
+            request,
+            graph_store,
+            target_id,
+            tenant_id,
         )
+
+    processor = ErasureOutboxProcessor(
+        factory,
+        working_dir=Path(request.app.state.settings.working_dir),
+        graph_store_factory=_graph_factory,
+        file_index_factory=_file_index_factory,
+        graph_cleanup=_graph_cleanup,
+        llm_cache=getattr(request.app.state, "llm_cache", None),
+    )
+    await processor.process_subject(
+        tenant_id=user.tenant_id,
+        subject_type="recording",
+        subject_id=str(recording_id),
+        # A repeated legacy request is an explicit retry signal and should not
+        # wait for the background backoff window.
+        force_retry=not staged.newly_erased,
+    )
 
     return DSAREraseResponse(recording_id=recording_id, deleted=True)
 
@@ -715,46 +662,3 @@ def _render_export_zip(
 
 
 __all__ = ["router"]
-
-
-# ------------------------------------------------------------------
-# M7 helpers
-# ------------------------------------------------------------------
-
-
-async def _cascade_voiceprint_after_erase(
-    factory: Any,
-    recording_id: int,
-    tenant_id: str,
-) -> None:
-    """M7 PIPL §14.3 cascade after DSAR erase.
-
-    The recordings FK CASCADE already cleaned up:
-        - vectors_voiceprint (FK on recording_id CASCADE)
-        - speaker_links (FK on recording_id CASCADE)
-    What remains is the ``speaker_nodes.recordings_list`` denormalised
-    aggregation: we must drop the recording from each affected speaker's
-    list and delete the speaker_node when the list becomes empty.
-    """
-    from sqlalchemy import select
-
-    from audio_graphy.models.speaker_node import SpeakerNode
-
-    async with factory() as s:
-        # Find speaker_nodes whose recordings_list still contains this recording.
-        # JSON containment is DB-specific; here we load all tenant speakers
-        # and filter in Python (typical N ≤ 10^3 per tenant).
-        stmt = select(SpeakerNode).where(SpeakerNode.tenant_id == tenant_id)
-        nodes = list((await s.execute(stmt)).scalars().all())
-
-        for node in nodes:
-            rids = list(node.recordings_list or [])
-            if recording_id not in rids:
-                continue
-            rids.remove(recording_id)
-            if not rids:
-                await s.delete(node)
-            else:
-                node.recordings_list = rids
-                node.recordings_count = len(rids)
-        await s.commit()

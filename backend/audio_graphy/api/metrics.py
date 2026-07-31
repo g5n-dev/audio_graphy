@@ -67,6 +67,78 @@ LLM_CALLS = Counter(
     registry=REGISTRY,
 )
 
+# Central gateway metrics deliberately use only bounded operational labels.
+# Tenant IDs, prompts, and recipe hashes must never become Prometheus labels.
+LLM_LOGICAL_CALLS = Counter(
+    "audiography_llm_logical_calls_total",
+    "Logical LLM requests, including cache hits and singleflight followers.",
+    ["model_tier", "purpose", "status"],
+    registry=REGISTRY,
+)
+
+LLM_PROVIDER_CALLS = Counter(
+    "audiography_llm_provider_calls_total",
+    "Physical provider calls made by the centralized LLM gateway.",
+    ["model_tier", "purpose", "status"],
+    registry=REGISTRY,
+)
+
+LLM_CACHE_EVENTS = Counter(
+    "audiography_llm_cache_events_total",
+    "LLM result-cache events by bounded source and outcome.",
+    ["model_tier", "purpose", "source", "result"],
+    registry=REGISTRY,
+)
+
+LLM_TOKENS = Counter(
+    "audiography_llm_tokens_total",
+    "LLM input/output tokens by actual provider use or counterfactual cache saving.",
+    ["model_tier", "purpose", "accounting", "direction"],
+    registry=REGISTRY,
+)
+
+LLM_CACHED_PREFILL_TOKENS = Counter(
+    "audiography_llm_cached_prefill_tokens_total",
+    "Provider-reported cached-prefix tokens within actual input tokens.",
+    ["model_tier", "purpose"],
+    registry=REGISTRY,
+)
+
+LLM_OBSERVER_DROPPED = Counter(
+    "audiography_llm_observer_dropped_total",
+    "LLM observations that could not be durably recorded.",
+    ["reason"],
+    registry=REGISTRY,
+)
+
+LLM_SINGLEFLIGHT_FOLLOWERS = Counter(
+    "audiography_llm_singleflight_followers_total",
+    "Requests served as process- or MySQL-level singleflight followers.",
+    ["scope"],
+    registry=REGISTRY,
+)
+
+LLM_CACHE_EVICTIONS = Counter(
+    "audiography_llm_cache_evictions_total",
+    "Bounded hot-cache evictions by backend.",
+    ["backend"],
+    registry=REGISTRY,
+)
+
+LLM_REDIS_FALLBACKS = Counter(
+    "audiography_llm_redis_fallbacks_total",
+    "Redis hot-cache degradations to the bounded local cache.",
+    ["reason"],
+    registry=REGISTRY,
+)
+
+LLM_LEASE_EVENTS = Counter(
+    "audiography_llm_lease_events_total",
+    "Persistent LLM-cache lease events.",
+    ["event"],
+    registry=REGISTRY,
+)
+
 RETENTION_DELETES = Counter(
     "audiography_retention_deletes_total",
     "Total recording rows hard-deleted by the daily retention cron.",
@@ -376,8 +448,18 @@ __all__ = [
     "LEIDEN_MODULARITY",
     "LEIDEN_RUNS_TOTAL",
     "LEIDEN_RUN_DURATION",
+    "LLM_CACHED_PREFILL_TOKENS",
+    "LLM_CACHE_EVENTS",
+    "LLM_CACHE_EVICTIONS",
     "LLM_CALLS",
     "LLM_CALL_DURATION",
+    "LLM_LEASE_EVENTS",
+    "LLM_LOGICAL_CALLS",
+    "LLM_OBSERVER_DROPPED",
+    "LLM_PROVIDER_CALLS",
+    "LLM_REDIS_FALLBACKS",
+    "LLM_SINGLEFLIGHT_FOLLOWERS",
+    "LLM_TOKENS",
     "PIPELINE_DURATION",
     "REGISTRY",
     "RETENTION_DELETES",

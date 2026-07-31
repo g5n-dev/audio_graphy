@@ -167,14 +167,14 @@ class TestChunkerExtractorIntegration:
             assert stored is not None
             assert stored["recorded_at"] is not None
 
-    async def test_llm_cache_persistence_across_flush(
+    async def test_entity_extraction_does_not_persist_legacy_file_cache(
         self,
         scripted_bundle: object,
         sample_audio_file: Path,
         file_index: object,
         sample_graphrag_response: str,
     ) -> None:
-        """LLM cache persists across flush → reload cycle."""
+        """FileIndex flush/reload never persists EntityExtractor outputs."""
         strong_llm = scripted_bundle.strong_llm
         strong_llm.set_default_response(sample_graphrag_response)
 
@@ -188,7 +188,6 @@ class TestChunkerExtractorIntegration:
 
         await extractor.extract_from_chunk(1, "测试缓存持久化", recording_id=1)
         await file_index.flush()  # type: ignore[attr-defined]
-        calls_before = strong_llm.call_count
 
         # Create new extractor with same file_index (simulates reload)
         extractor2 = EntityExtractor(
@@ -202,5 +201,7 @@ class TestChunkerExtractorIntegration:
 
         await extractor2.extract_from_chunk(1, "测试缓存持久化", recording_id=1)
 
-        # Should hit file_index cache — no new LLM calls
-        assert strong_llm.call_count == calls_before
+        assert (
+            await file_index.get_all("kv_store_llm_response_cache")  # type: ignore[attr-defined]
+            == {}
+        )

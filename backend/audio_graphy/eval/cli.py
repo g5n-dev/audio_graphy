@@ -22,6 +22,7 @@ import asyncio
 import logging
 import sys
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger("audio_graphy.eval.cli")
 
@@ -86,6 +87,72 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+async def _run_evaluation(args: argparse.Namespace, settings: Any, pipeline: Any) -> Any:
+    """Run evaluation while owning the optional judge runtime lifecycle."""
+    from audio_graphy.eval.runner import EvalRunner
+
+    runtime: Any | None = None
+    engine: Any | None = None
+    judge = None
+    try:
+        if not args.no_judge:
+            try:
+                from audio_graphy.config import build_adapters
+                from audio_graphy.db import create_db_engine, create_session_factory
+                from audio_graphy.eval.judge import LLMJudge
+                from audio_graphy.services.llm_runtime import build_llm_runtime
+
+                engine = create_db_engine(settings)
+                session_factory = create_session_factory(engine)
+                raw_bundle = build_adapters(settings)
+                runtime = await build_llm_runtime(settings, session_factory, raw_bundle)
+                judge = LLMJudge(llm=runtime.bundle.strong_llm)
+            except Exception as exc:
+                logger.warning("Judge init failed (%s); falling back to --no-judge", exc)
+                print(
+                    "warning: judge init failed (" + str(exc) + "); running without "
+                    "LLM metrics. Use --no-judge to silence this warning.",
+                    file=sys.stderr,
+                )
+
+        config_snapshot = {
+            "pipeline": repr(pipeline),
+            "judge": "enabled" if judge is not None else "disabled",
+            "k": str(args.k),
+            "judge_llm_model_resolved": settings.judge_llm_model_resolved,
+        }
+        if args.judge_llm:
+            config_snapshot["judge_llm_override"] = args.judge_llm
+
+        runner = EvalRunner(
+            gold_set_path=args.gold_set,
+            pipeline=pipeline,
+            judge=judge,
+            settings=settings,
+            k=args.k,
+            config_snapshot=config_snapshot,
+            voiceprint_eer_enabled=args.voiceprint_eer,
+            diarization_der_enabled=args.diarization_der,
+        )
+        return await runner.run()
+    finally:
+        if runtime is not None:
+            await _close_owned_resource(runtime, "aclose", "LLM runtime")
+        if engine is not None:
+            await _close_owned_resource(engine, "dispose", "database engine")
+
+
+async def _close_owned_resource(resource: Any, method_name: str, label: str) -> None:
+    """Close a CLI-owned resource without hiding the evaluation result."""
+    close = getattr(resource, method_name, None)
+    if not callable(close):
+        return
+    try:
+        await close()
+    except Exception:
+        logger.warning("%s cleanup failed", label, exc_info=True)
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point.
 
@@ -112,7 +179,7 @@ def main(argv: list[str] | None = None) -> int:
     # Lazy imports — keep --help fast.
     from audio_graphy.config import get_settings
     from audio_graphy.eval.reporter import to_json, to_markdown
-    from audio_graphy.eval.runner import EvalRunner, MockPipeline
+    from audio_graphy.eval.runner import MockPipeline
 
     settings = get_settings()
 
@@ -123,45 +190,8 @@ def main(argv: list[str] | None = None) -> int:
         file=sys.stderr,
     )
 
-    judge = None
-    if not args.no_judge:
-        try:
-            from audio_graphy.config import build_adapters
-            from audio_graphy.eval.judge import LLMJudge
-
-            bundle = build_adapters(settings)
-            judge = LLMJudge(llm=bundle.strong_llm)
-        except Exception as exc:
-            logger.warning("Judge init failed (%s); falling back to --no-judge", exc)
-            print(
-                "warning: judge init failed (" + str(exc) + "); running without "
-                "LLM metrics. Use --no-judge to silence this warning.",
-                file=sys.stderr,
-            )
-            judge = None
-
-    config_snapshot = {
-        "pipeline": repr(pipeline),
-        "judge": "enabled" if judge is not None else "disabled",
-        "k": str(args.k),
-        "judge_llm_model_resolved": settings.judge_llm_model_resolved,
-    }
-    if args.judge_llm:
-        config_snapshot["judge_llm_override"] = args.judge_llm
-
-    runner = EvalRunner(
-        gold_set_path=args.gold_set,
-        pipeline=pipeline,
-        judge=judge,
-        settings=settings,
-        k=args.k,
-        config_snapshot=config_snapshot,
-        voiceprint_eer_enabled=args.voiceprint_eer,
-        diarization_der_enabled=args.diarization_der,
-    )
-
     try:
-        run = asyncio.run(runner.run())
+        run = asyncio.run(_run_evaluation(args, settings, pipeline))
     except Exception as exc:
         print("error: evaluation crashed: " + str(exc), file=sys.stderr)
         return 70

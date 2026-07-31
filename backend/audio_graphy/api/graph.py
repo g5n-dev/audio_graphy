@@ -6,23 +6,33 @@ See: docs/m3-prd.md §4.5.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Annotated, Any
 
 import networkx as nx
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Path, Query, Request
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from audio_graphy.api.deps import get_graph_store
+from audio_graphy.api.deps import get_db, get_graph_store
 from audio_graphy.auth.middleware import AuthUser
 from audio_graphy.auth.roles import require_any_authenticated
+from audio_graphy.auth.tenants import get_tenant_id
+from audio_graphy.config import Settings, get_settings
 from audio_graphy.errors import EntityNotFoundError, PathNotFoundError
 from audio_graphy.schemas.graph import (
     EntityDetailResponse,
     ExploreResponse,
     GraphEdgeResponse,
+    GraphEdgeWindowResponse,
     GraphNodeResponse,
     NeighborResponse,
     PathResponse,
 )
+from audio_graphy.schemas.topic_clusters import (
+    TopicClusterDetailResponse,
+    TopicClustersResponse,
+)
+from audio_graphy.services.graph_explorer import collect_bounded_induced_edges
+from audio_graphy.services.topic_clusters import TopicClusterService
 from audio_graphy.storage.graph_networkx import NetworkXGraphStore
 
 logger = logging.getLogger(__name__)
@@ -79,13 +89,61 @@ def _edge_to_response(
     )
 
 
+@router.get(
+    "/topic-clusters",
+    response_model=TopicClustersResponse,
+    summary="Browse a successful Leiden job as topic clusters",
+)
+async def get_topic_clusters(
+    request: Request,
+    job_id: int | None = Query(default=None, ge=1),
+    level: int = Query(default=0, ge=0, le=2),
+    query: str | None = Query(default=None, min_length=1, max_length=120),
+    db: AsyncSession = Depends(get_db),
+    _user: AuthUser = Depends(require_any_authenticated()),
+) -> TopicClustersResponse:
+    """Return one tenant-scoped projection bound to a successful job id."""
+    snapshot = await TopicClusterService(db).get_snapshot(
+        tenant_id=get_tenant_id(request),
+        job_id=job_id,
+        level=level,
+        query=query,
+    )
+    return TopicClustersResponse.model_validate(snapshot)
+
+
+@router.get(
+    "/topic-clusters/{job_id}/{level}/{community_id}",
+    response_model=TopicClusterDetailResponse,
+    summary="Get one topic cluster from an exact Leiden job",
+)
+async def get_topic_cluster_detail(
+    job_id: Annotated[int, Path(ge=1)],
+    level: Annotated[int, Path(ge=0, le=2)],
+    community_id: Annotated[int, Path(ge=0)],
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    _user: AuthUser = Depends(require_any_authenticated()),
+) -> TopicClusterDetailResponse:
+    """Resolve an exact job/level/community tuple without cross-run fallback."""
+    detail = await TopicClusterService(db).get_detail(
+        tenant_id=get_tenant_id(request),
+        job_id=job_id,
+        level=level,
+        community_id=community_id,
+    )
+    return TopicClusterDetailResponse.model_validate(detail)
+
+
 @router.get("/explore", response_model=ExploreResponse, summary="Browse full graph")
 async def explore(
     request: Request,
     node_type: str | None = Query(default=None),
     min_degree: int = Query(default=0, ge=0),
     limit: int = Query(default=200, ge=1, le=2000),
+    edge_limit: int | None = Query(default=None, ge=1, le=5000),
     graph_store: NetworkXGraphStore = Depends(get_graph_store),
+    settings: Settings = Depends(get_settings),
     _user: AuthUser = Depends(require_any_authenticated()),
 ) -> ExploreResponse:
     """Browse the full knowledge graph (nodes + edges)."""
@@ -108,17 +166,30 @@ async def explore(
 
     nodes = [_node_to_response(n_id, attrs) for n_id, attrs in node_data]
 
-    # Collect edges between visible nodes
-    edges = []
-    for source, target, key, attrs in g.edges(data=True, keys=True):
-        if source in node_ids and target in node_ids:
-            edges.append(_edge_to_response(source, target, key, attrs))
+    # Collect a bounded projection of edges induced by visible nodes.  The
+    # service uses a NetworkX subgraph view instead of building node pairs.
+    edge_window = collect_bounded_induced_edges(
+        g,
+        node_ids,
+        requested_budget=edge_limit,
+        configured_budget=settings.graph_edge_render_budget,
+    )
+    edges = [
+        _edge_to_response(source, target, key, attrs)
+        for source, target, key, attrs in edge_window.edges
+    ]
 
     return ExploreResponse(
         nodes=nodes,
         edges=edges,
         total_nodes=g.number_of_nodes(),
         total_edges=g.number_of_edges(),
+        edge_window=GraphEdgeWindowResponse(
+            total=edge_window.total,
+            returned=edge_window.returned,
+            truncated=edge_window.truncated,
+            render_budget=edge_window.render_budget,
+        ),
     )
 
 
@@ -180,7 +251,9 @@ async def get_subgraph(
     entity: str = Query(description="Center entity name"),
     max_hops: int = Query(default=1, ge=1, le=3),
     limit: int = Query(default=50, ge=1, le=500),
+    edge_limit: int | None = Query(default=None, ge=1, le=5000),
     graph_store: NetworkXGraphStore = Depends(get_graph_store),
+    settings: Settings = Depends(get_settings),
     _user: AuthUser = Depends(require_any_authenticated()),
 ) -> ExploreResponse:
     """Extract an N-hop subgraph centered on an entity."""
@@ -215,17 +288,28 @@ async def get_subgraph(
         if g.has_node(node_id):
             nodes.append(_node_to_response(node_id, g.nodes[node_id]))
 
-    # Collect edges within the subgraph
-    edges = []
-    for source, target, key, attrs in g.edges(data=True, keys=True):
-        if source in node_set and target in node_set:
-            edges.append(_edge_to_response(source, target, key, attrs))
+    edge_window = collect_bounded_induced_edges(
+        g,
+        node_set,
+        requested_budget=edge_limit,
+        configured_budget=settings.graph_edge_render_budget,
+    )
+    edges = [
+        _edge_to_response(source, target, key, attrs)
+        for source, target, key, attrs in edge_window.edges
+    ]
 
     return ExploreResponse(
         nodes=nodes,
         edges=edges,
         total_nodes=len(nodes),
-        total_edges=len(edges),
+        total_edges=edge_window.total,
+        edge_window=GraphEdgeWindowResponse(
+            total=edge_window.total,
+            returned=edge_window.returned,
+            truncated=edge_window.truncated,
+            render_budget=edge_window.render_budget,
+        ),
     )
 
 

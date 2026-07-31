@@ -21,6 +21,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from audio_graphy.api.auth import router as auth_router
+from audio_graphy.api.deprecation import LegacyTaggingDeprecationMiddleware
 from audio_graphy.api.dsar import router as dsar_router
 from audio_graphy.api.eval import router as eval_router
 from audio_graphy.api.graph import router as graph_router
@@ -37,6 +38,7 @@ from audio_graphy.api.recordings import router as recordings_router
 from audio_graphy.api.segments import router as segments_router
 from audio_graphy.api.speakers import router as speakers_router
 from audio_graphy.api.stats import router as stats_router
+from audio_graphy.api.tag_governance import router as tag_governance_router
 from audio_graphy.api.tag_insights import router as tag_insights_router
 from audio_graphy.api.tags import router as tags_router
 from audio_graphy.auth.jwt_utils import JWTManager
@@ -202,6 +204,55 @@ def _run_retention_sweep_wrapper(
     return _run
 
 
+async def _run_erasure_outbox_reconciler(
+    processor: Any,
+    *,
+    interval_seconds: float = 30.0,
+) -> None:
+    """Continuously drain durable privacy erasures without blocking startup."""
+    while True:
+        try:
+            report = await processor.drain_pending(limit=100)
+            if report["selected"]:
+                logger.info("Erasure outbox reconciliation: %s", report)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.error("Erasure outbox reconciliation failed", exc_info=True)
+        await asyncio.sleep(interval_seconds)
+
+
+async def _run_reception_audio_reconciler(
+    service: Any,
+    *,
+    interval_seconds: float = 5.0,
+    batch_limit: int = 4,
+) -> None:
+    """Recover expired audio work and dispatch committed queued operations."""
+    while True:
+        try:
+            recovered = await service.reconcile_stale()
+            artifacts = await service.reconcile_artifacts(limit=100)
+            operation_ids = await service.pending_operation_ids(limit=batch_limit)
+            if operation_ids:
+                await asyncio.gather(
+                    *(service.run_operation(operation_id) for operation_id in operation_ids)
+                )
+            if recovered or artifacts or operation_ids:
+                logger.info(
+                    "Reception audio reconciliation: recovered=%d artifacts=%d "
+                    "dispatched=%d",
+                    recovered,
+                    artifacts,
+                    len(operation_ids),
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.error("Reception audio reconciliation failed", exc_info=True)
+        await asyncio.sleep(interval_seconds)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Application lifespan: startup + shutdown hooks.
@@ -240,6 +291,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # DB engine + session factory (with graceful fallback for test/no-DB environments)
     from audio_graphy.db import create_db_engine, create_session_factory
 
+    session_factory = None
     try:
         engine = create_db_engine(settings)
         session_factory = create_session_factory(engine)
@@ -254,22 +306,56 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     from audio_graphy.config import build_adapters
 
     bundle = build_adapters(settings)
+    llm_runtime: Any | None = None
+    if session_factory is not None:
+        from audio_graphy.services.llm_runtime import build_llm_runtime
+
+        llm_runtime = await build_llm_runtime(settings, session_factory, bundle)
+        bundle = llm_runtime.bundle
+        app.state.llm_runtime = llm_runtime
+        app.state.llm_cache = llm_runtime.cache
+        app.state.llm_cache_store = llm_runtime.store
+    else:
+        # Even in diagnostic/no-DB mode all calls still pass through the
+        # centralized retry/concurrency/recipe boundary; result caching is off.
+        from dataclasses import replace
+
+        from audio_graphy.services.llm_gateway import LLMGateway
+
+        bundle = replace(
+            bundle,
+            strong_llm=LLMGateway(
+                bundle.strong_llm,
+                model_tier="strong",
+                max_concurrency=getattr(settings, "llm_strong_concurrency", 4),
+            ),
+            weak_llm=LLMGateway(
+                bundle.weak_llm,
+                model_tier="weak",
+                max_concurrency=getattr(settings, "llm_weak_concurrency", 8),
+            ),
+        )
+        app.state.llm_runtime = None
+        app.state.llm_cache = None
+        app.state.llm_cache_store = None
     app.state.adapter_bundle = bundle
 
     # Global vector store
     from audio_graphy.storage.mysql_vector import MySQLVectorStore
 
-    vector_store = MySQLVectorStore(
-        session_factory,
-        dim=settings.embedding_dim,
-        cache_ttl_seconds=settings.vector_index_cache_ttl_seconds,
-        cache_max_entries=settings.vector_index_cache_max_entries,
-        cache_max_bytes=settings.vector_index_cache_max_bytes,
-        load_batch_rows=settings.vector_index_load_batch_rows,
-        load_max_rows=settings.vector_index_load_max_rows,
-        load_max_source_bytes=settings.vector_index_load_max_source_bytes,
-        load_max_memory_bytes=settings.vector_index_load_max_memory_bytes,
-    )
+    vector_store: MySQLVectorStore | None = None
+    if session_factory is not None:
+        vector_store = MySQLVectorStore(
+            session_factory,
+            dim=settings.embedding_dim,
+            cache_ttl_seconds=settings.vector_index_cache_ttl_seconds,
+            cache_max_entries=settings.vector_index_cache_max_entries,
+            cache_max_bytes=settings.vector_index_cache_max_bytes,
+            load_batch_rows=settings.vector_index_load_batch_rows,
+            load_max_rows=settings.vector_index_load_max_rows,
+            load_max_source_bytes=settings.vector_index_load_max_source_bytes,
+            load_max_memory_bytes=settings.vector_index_load_max_memory_bytes,
+        )
     app.state.vector_store = vector_store
 
     # Per-tenant store caches
@@ -300,6 +386,43 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             file_indexes[tenant_id] = index
         return index
 
+    erasure_reconciler_task: asyncio.Task[None] | None = None
+    app.state.erasure_outbox_processor = None
+    if session_factory is not None:
+        try:
+            from audio_graphy.services.erasure_outbox import (
+                ErasureOutboxProcessor,
+                remove_recording_graph_refs,
+            )
+
+            def _graph_cleanup(store: Any, recording_id: int, tenant_id: str) -> None:
+                retention = getattr(app.state, "retention_enforcer", None)
+                if retention is not None:
+                    retention._remove_graph_refs(
+                        store,
+                        recording_id,
+                        tenant_id=tenant_id,
+                    )
+                    return
+                remove_recording_graph_refs(store, recording_id, tenant_id)
+
+            erasure_processor = ErasureOutboxProcessor(
+                session_factory,
+                working_dir=Path(settings.working_dir),
+                graph_store_factory=graph_store_factory,
+                file_index_factory=file_index_factory,
+                graph_cleanup=_graph_cleanup,
+                llm_cache=getattr(app.state, "llm_cache", None),
+                worker_id="lifespan-reconciler",
+            )
+            app.state.erasure_outbox_processor = erasure_processor
+            erasure_reconciler_task = asyncio.create_task(
+                _run_erasure_outbox_reconciler(erasure_processor),
+                name="erasure-outbox-reconciler",
+            )
+        except Exception as exc:
+            logger.warning("Erasure outbox reconciler wiring failed: %s", exc)
+
     # Stateless PII scrubber is created before the worker so raw ASR text is
     # redacted before any persistent or derived store can observe it.
     from audio_graphy.core.pii import PIIScrubber
@@ -319,6 +442,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # APScheduler pipeline worker
     worker_task: asyncio.Task[None] | None = None
     try:
+        if session_factory is None or vector_store is None:
+            raise RuntimeError("database is unavailable; pipeline worker is disabled")
         from audio_graphy.scheduler import PipelineWorker
 
         worker = PipelineWorker(
@@ -331,12 +456,47 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             poll_seconds=settings.pipeline_poll_seconds,
             concurrency=settings.pipeline_concurrency,
             pii_scrubber=pii_scrubber,
+            enable_adaptive_gleaning=settings.enable_adaptive_gleaning,
         )
         # Run the worker as an async background task
         worker_task = asyncio.create_task(worker.start_loop())
         app.state.pipeline_worker = worker
     except Exception as exc:
         logger.warning("Failed to start pipeline worker: %s", exc)
+
+    reception_audio_reconciler_task: asyncio.Task[None] | None = None
+    app.state.reception_audio_operation_service = None
+    if session_factory is not None:
+        try:
+            from audio_graphy.services.reception_audio_operations import (
+                ReceptionAudioOperationService,
+            )
+            from audio_graphy.services.receptions import ReceptionService
+
+            reception_service = ReceptionService(
+                session_factory,
+                audio_root=Path(settings.working_dir),
+                audio_assembler=getattr(app.state, "audio_assembler", None),
+                audio_crypto=audio_crypto,
+                embed_adapter=getattr(bundle, "embed", None),
+            )
+            reception_audio_operation_service = ReceptionAudioOperationService(
+                session_factory,
+                reception_service,
+            )
+            app.state.reception_audio_operation_service = (
+                reception_audio_operation_service
+            )
+            reception_audio_reconciler_task = asyncio.create_task(
+                _run_reception_audio_reconciler(
+                    reception_audio_operation_service,
+                    interval_seconds=max(1.0, float(settings.pipeline_poll_seconds)),
+                    batch_limit=max(1, int(settings.pipeline_concurrency)),
+                ),
+                name="reception-audio-reconciler",
+            )
+        except Exception as exc:
+            logger.warning("Reception audio reconciler wiring failed: %s", exc)
 
     # AuditWriter (async-batched; lifespan-managed).
     from audio_graphy.core.audit import AuditWriter
@@ -368,6 +528,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 graph_store_factory,
                 working_dir=Path(settings.working_dir),
                 file_index_factory=file_index_factory,
+                llm_cache=getattr(app.state, "llm_cache", None),
             )
             app.state.retention_enforcer = retention_enforcer
 
@@ -415,6 +576,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         worker_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await worker_task
+    if erasure_reconciler_task is not None:
+        erasure_reconciler_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await erasure_reconciler_task
+    if reception_audio_reconciler_task is not None:
+        reception_audio_reconciler_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await reception_audio_reconciler_task
 
     # M6: shut down AuditWriter (flushes remaining queue) + retention scheduler.
     audit_writer = getattr(app.state, "audit_writer", None)
@@ -425,6 +594,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if retention_scheduler is not None:
         with contextlib.suppress(Exception):
             retention_scheduler.shutdown(wait=False)
+
+    if llm_runtime is not None:
+        with contextlib.suppress(Exception):
+            await llm_runtime.aclose()
 
     # Close real adapter httpx clients (mock adapters have no aclose()).
     # Real adapters (Silero/LLM/BGE) own httpx.AsyncClient pools; failing to
@@ -497,6 +670,7 @@ def create_app() -> FastAPI:
         RequestBodyLimitMiddleware,
         max_body_bytes=settings.max_request_body_bytes,
     )
+    app.add_middleware(LegacyTaggingDeprecationMiddleware)
 
     # Exception handlers
     register_exception_handlers(app)
@@ -515,6 +689,7 @@ def create_app() -> FastAPI:
     app.include_router(graph_router, prefix=API_PREFIX)
     app.include_router(tags_router, prefix=API_PREFIX)
     app.include_router(tag_insights_router, prefix=API_PREFIX)
+    app.include_router(tag_governance_router, prefix=API_PREFIX)
     app.include_router(prompts_router, prefix=API_PREFIX)
     app.include_router(stats_router, prefix=API_PREFIX)
     app.include_router(dsar_router, prefix=API_PREFIX)

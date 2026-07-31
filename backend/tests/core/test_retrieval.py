@@ -209,6 +209,7 @@ class TestDualChannelRetrieval:
         assert isinstance(result, RetrievalResult)
         assert result.query == "test query"
         assert result.graph_hits == 0  # Empty graph
+        assert result.keywords
 
     async def test_retrieve_with_time_range(
         self,

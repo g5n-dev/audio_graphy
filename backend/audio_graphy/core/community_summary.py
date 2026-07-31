@@ -17,6 +17,7 @@ GraphRAG (Microsoft, 2024) — MIT-clean conceptual reference.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
@@ -24,13 +25,34 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
+from audio_graphy.adapters.protocols import LLMAdapter, LLMResponse
 from audio_graphy.core.leiden import LeidenRunResult
 from audio_graphy.core.types import GraphEdge, GraphNode
+from audio_graphy.services.llm_gateway import (
+    CachePolicy,
+    LLMProvenance,
+    LLMRequest,
+    canonical_sha256,
+    execute_llm,
+)
 
 logger = logging.getLogger(__name__)
 
 # Q2 — max hierarchy level that this service will summarise.
 Q2_MAX_LEVEL: int = 2  # level 3 dropped
+_COMMUNITY_PROMPT_VERSION = "community-summary-prompt-v1"
+_COMMUNITY_SCHEMA_VERSION = "community-summary-schema-v1"
+_COMMUNITY_PARSER_VERSION = "community-summary-parser-v1"
+_COMMUNITY_POSTPROCESSOR_VERSION = "community-summary-postprocessor-v1"
+_COMMUNITY_TTL_SECONDS = 90 * 24 * 60 * 60
+_COMMUNITY_MAX_TOKENS = 256
+_COMMUNITY_RESPONSE_SCHEMA: dict[str, Any] = {
+    "type": "string",
+    "format": "title-summary-markers-v1",
+    "required_markers": ["TITLE:", "SUMMARY:"],
+    "title_max_length": 80,
+    "summary_max_length": 4000,
+}
 
 
 # ============================================================
@@ -88,12 +110,6 @@ class SummarySink(Protocol):
         community_id: int,
         tenant_id: str,
     ) -> CommunitySummaryRecord | None: ...
-
-
-class LLMAdapter(Protocol):
-    """Minimal LLM protocol for summary generation."""
-
-    async def complete(self, prompt: str, *, max_tokens: int = 256) -> str: ...
 
 
 # ============================================================
@@ -227,6 +243,15 @@ class CommunitySummaryService:
             is_leaf = self._is_leaf(m)
             if m.level != 0 and not is_leaf:
                 continue
+            cached = self._sink.fetch(
+                leiden_job_id=self._leiden_job_id,
+                level=m.level,
+                community_id=m.community_id,
+                tenant_id=self._tenant_id,
+            )
+            if cached is not None:
+                records.append(cached)
+                continue
             rec = await self._generate_one(m)
             records.append(rec)
             self._sink.write(rec, self._tenant_id)
@@ -279,23 +304,119 @@ class CommunitySummaryService:
 
     async def _generate_one(self, m: CommunityMembership) -> CommunitySummaryRecord:
         """Render prompt → call LLM → parse → return record."""
-        nodes_str = "\n".join(f"- {n.entity_id} ({n.type}): {n.description}" for n in m.nodes)
-        edges_str = "\n".join(f"- {e.source} --{e.relation}--> {e.target}" for e in m.edges)
-        prompt = self._prompt_template.format(
-            level=m.level,
-            nodes=nodes_str,
-            edges=edges_str,
+        ordered_nodes = sorted(m.nodes, key=lambda node: node.entity_id)
+        ordered_edges = sorted(
+            m.edges,
+            key=lambda edge: (edge.source, edge.relation, edge.target),
         )
-        raw = await self._llm.complete(prompt, max_tokens=256)
-        title, summary = _parse_llm_output(raw)
+        nodes_str = "\n".join(
+            f"- {node.entity_id} ({node.type}): {node.description}" for node in ordered_nodes
+        )
+        edges_str = "\n".join(
+            f"- {edge.source} --{edge.relation}--> {edge.target}" for edge in ordered_edges
+        )
+        user_content = (
+            "COMMUNITY INPUT\n"
+            f"LEVEL: {m.level}\n"
+            f"COMMUNITY_ID: {m.community_id}\n"
+            f"NODES:\n{nodes_str or '(none)'}\n"
+            f"EDGES:\n{edges_str or '(none)'}"
+        )
+        content_snapshot = {
+            "level": m.level,
+            "community_id": m.community_id,
+            "nodes": [
+                {
+                    "entity_id": node.entity_id,
+                    "name": node.name,
+                    "type": node.type,
+                    "description": node.description,
+                    "source_ids": sorted(node.source_ids),
+                    "recording_ids": sorted(node.recording_ids),
+                    "degree": node.degree,
+                    "expired_at": node.expired_at,
+                }
+                for node in ordered_nodes
+            ],
+            "edges": [
+                {
+                    "source": edge.source,
+                    "target": edge.target,
+                    "relation": edge.relation,
+                    "weight": edge.weight,
+                    "confidence": edge.confidence,
+                    "confidence_score": edge.confidence_score,
+                    "source_ids": sorted(edge.source_ids),
+                    "valid_at": edge.valid_at,
+                    "invalid_at": edge.invalid_at,
+                    "created_at": edge.created_at,
+                    "expired_at": edge.expired_at,
+                    "superseded_by": edge.superseded_by,
+                }
+                for edge in ordered_edges
+            ],
+        }
+        system_prompt = self._prompt_template.strip()
+        prompt_sha256 = hashlib.sha256(system_prompt.encode("utf-8")).hexdigest()
+        recording_refs = tuple(
+            LLMProvenance("recording", recording_id)
+            for recording_id in sorted(
+                {str(recording_id) for node in ordered_nodes for recording_id in node.recording_ids}
+            )
+        )
+        request = LLMRequest(
+            tenant_id=self._tenant_id,
+            purpose="community_summary",
+            model_tier="weak",
+            provider=str(getattr(self._llm, "provider", "openai-compatible")),
+            model_epoch=str(getattr(self._llm, "model_epoch", self._llm.model)),
+            messages=(
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ),
+            prompt_version=f"{_COMMUNITY_PROMPT_VERSION}:{prompt_sha256}",
+            schema_version=_COMMUNITY_SCHEMA_VERSION,
+            parser_version=_COMMUNITY_PARSER_VERSION,
+            postprocessor_version=_COMMUNITY_POSTPROCESSOR_VERSION,
+            temperature=0.0,
+            top_p=1.0,
+            max_tokens=_COMMUNITY_MAX_TOKENS,
+            response_schema=_COMMUNITY_RESPONSE_SCHEMA,
+            business_snapshot={
+                "content_sha256": canonical_sha256(content_snapshot),
+                "member_count": len(ordered_nodes),
+            },
+            permission_scope={
+                "tenant_id": self._tenant_id,
+                "leiden_job_id": self._leiden_job_id,
+                "community_id": m.community_id,
+                "level": m.level,
+            },
+            provenance=(
+                LLMProvenance(
+                    "community",
+                    f"{self._leiden_job_id}:{m.level}:{m.community_id}",
+                ),
+                LLMProvenance("leiden_job", str(self._leiden_job_id)),
+                *recording_refs,
+            ),
+            cache_policy=CachePolicy.EXACT,
+            ttl_seconds=_COMMUNITY_TTL_SECONDS,
+            response_validator=_valid_summary_response,
+        )
+        response = await execute_llm(self._llm, request)
+        parsed = _parse_structured_llm_output(response.text)
+        if parsed is None:
+            raise ValueError("community summary LLM output failed structured validation")
+        title, summary = parsed
         return CommunitySummaryRecord(
             leiden_job_id=self._leiden_job_id,
             level=m.level,
             community_id=m.community_id,
             title=title,
             summary=summary,
-            member_count=len(m.nodes),
-            member_node_ids=[n.entity_id for n in m.nodes],
+            member_count=len(ordered_nodes),
+            member_node_ids=[node.entity_id for node in ordered_nodes],
             generated_at=datetime.now(UTC),
             strategy=m.strategy,
         )
@@ -321,6 +442,9 @@ def _build_level_mappings(
 
 def _parse_llm_output(raw: str) -> tuple[str, str]:
     """Parse ``TITLE: ...\\nSUMMARY: ...`` LLM output (best-effort)."""
+    structured = _parse_structured_llm_output(raw)
+    if structured is not None:
+        return structured
     title = "Untitled community"
     summary = raw.strip()
     lines = raw.strip().splitlines()
@@ -344,6 +468,37 @@ def _parse_llm_output(raw: str) -> tuple[str, str]:
     if not summary:
         summary = "(empty summary)"
     return title, summary
+
+
+def _parse_structured_llm_output(raw: str) -> tuple[str, str] | None:
+    """Strictly validate the cacheable TITLE/SUMMARY wire format."""
+
+    if not isinstance(raw, str) or not raw.strip() or len(raw) > 16_384:
+        return None
+    lines = raw.strip().splitlines()
+    if len(lines) < 2:
+        return None
+    if not lines[0].upper().startswith("TITLE:"):
+        return None
+    if not lines[1].upper().startswith("SUMMARY:"):
+        return None
+    title = lines[0][len("TITLE:") :].strip()
+    first_summary_part = lines[1][len("SUMMARY:") :].strip()
+    continuation = "\n".join(lines[2:]).strip()
+    summary = (
+        f"{first_summary_part}\n{continuation}"
+        if first_summary_part and continuation
+        else first_summary_part or continuation
+    )
+    if not 1 <= len(title) <= 80 or not 1 <= len(summary) <= 4000:
+        return None
+    return title, summary
+
+
+def _valid_summary_response(response: LLMResponse) -> bool:
+    """Gateway validator: malformed/incomplete results must never be cached."""
+
+    return _parse_structured_llm_output(response.text) is not None
 
 
 # ============================================================

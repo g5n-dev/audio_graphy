@@ -13,6 +13,7 @@ Cases:
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -60,8 +61,20 @@ def _stub_bundle(extract_text: str | None = "test answer") -> Any:
     """
     bundle = MagicMock()
     bundle.strong_llm.model = "stub-model"
+    # A raw transport adapter intentionally has no rich Gateway ``execute``.
+    # MagicMock fabricates arbitrary attributes, so make that absence explicit.
+    bundle.strong_llm.execute = None
 
-    async def _complete(messages, *, temperature=0.0, max_tokens=None, cache_key=None):
+    async def _complete(
+        messages,
+        *,
+        temperature=0.0,
+        max_tokens=None,
+        cache_key=None,
+        response_schema: Mapping[str, Any] | None = None,
+    ):
+        del messages, temperature, max_tokens, cache_key
+        assert response_schema is not None
         if extract_text is None:
             raise RuntimeError("LLM exploded")
         return LLMResponse(

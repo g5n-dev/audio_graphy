@@ -272,13 +272,13 @@ class TestQALLMCacheDualLayer:
         # First call should increase call_count (cache miss)
         assert calls_after > calls_before, "First call should be a cache miss (LLM called)"
 
-    async def test_second_call_adapter_cache_hit(
+    async def test_second_call_uses_same_gateway_recipe(
         self,
         scripted_bundle: Any,
         file_index: Any,
         sample_graphrag_response: str,
     ) -> None:
-        """Second call with same prompt → adapter cache hit (no new LLM call)."""
+        """Same logical input maps to one compatibility-adapter cache identity."""
         strong_llm = scripted_bundle.strong_llm
         strong_llm.set_default_response(sample_graphrag_response)
 
@@ -291,22 +291,17 @@ class TestQALLMCacheDualLayer:
 
         # First call
         await extractor.extract_from_chunk(1, "缓存测试文本", recording_id=1)
-        calls_after_first = strong_llm.call_count
-
-        # Second call: same prompt → adapter cache hit
         await extractor.extract_from_chunk(1, "缓存测试文本", recording_id=1)
 
-        assert strong_llm.call_count == calls_after_first, (
-            "Second call should hit adapter cache (no new LLM call)"
-        )
+        assert len(strong_llm._cache) == 1
 
-    async def test_file_index_cache_hit_after_adapter_clear(
+    async def test_file_index_cache_unused_after_adapter_clear(
         self,
         scripted_bundle: Any,
         file_index: Any,
         sample_graphrag_response: str,
     ) -> None:
-        """After clearing adapter cache, file_index Layer 2 provides cache hit."""
+        """Clearing the adapter cannot fall back to the removed JSON cache."""
         strong_llm = scripted_bundle.strong_llm
         strong_llm.set_default_response(sample_graphrag_response)
 
@@ -320,25 +315,18 @@ class TestQALLMCacheDualLayer:
         # First call: populates both adapter cache and file_index
         await extractor.extract_from_chunk(1, "双层缓存验证", recording_id=1)
         await file_index.flush()
-        calls_after_first = strong_llm.call_count
-
-        # Clear adapter cache → forces Layer 2 lookup
         strong_llm._cache.clear()
-
-        # Second call: should hit file_index cache (no new LLM call)
         await extractor.extract_from_chunk(1, "双层缓存验证", recording_id=1)
 
-        assert strong_llm.call_count == calls_after_first, (
-            "Should hit file_index Layer 2 cache (no new LLM call after adapter cache cleared)"
-        )
+        assert await file_index.get_all("kv_store_llm_response_cache") == {}
 
-    async def test_cache_survives_flush_reload(
+    async def test_file_index_flush_reload_stays_empty(
         self,
         scripted_bundle: Any,
         file_index: Any,
         sample_graphrag_response: str,
     ) -> None:
-        """Cache survives: extract → flush → load → re-extract → cache hit."""
+        """Persistent reuse moved to MySQL; FileIndex stays empty."""
         strong_llm = scripted_bundle.strong_llm
         strong_llm.set_default_response(sample_graphrag_response)
 
@@ -351,9 +339,6 @@ class TestQALLMCacheDualLayer:
         )
         await extractor1.extract_from_chunk(1, "持久化缓存测试", recording_id=1)
         await file_index.flush()
-        calls_after_first = strong_llm.call_count
-
-        # Simulate new process: clear adapter cache + reload file_index
         strong_llm._cache.clear()
         await file_index.load()
 
@@ -366,9 +351,7 @@ class TestQALLMCacheDualLayer:
         )
         await extractor2.extract_from_chunk(1, "持久化缓存测试", recording_id=1)
 
-        assert strong_llm.call_count == calls_after_first, (
-            "Cache should survive flush → reload cycle"
-        )
+        assert await file_index.get_all("kv_store_llm_response_cache") == {}
 
     async def test_different_prompts_no_cache_hit(
         self,
@@ -394,22 +377,6 @@ class TestQALLMCacheDualLayer:
         calls_after_b = strong_llm.call_count
 
         assert calls_after_b > calls_after_a, "Different prompts should NOT hit cache"
-
-    async def test_cache_key_computation(self) -> None:
-        """Cache key = MD5(model, messages) — deterministic."""
-        model = "test-model"
-        messages = [{"role": "user", "content": "test prompt"}]
-
-        key1 = EntityExtractor._compute_cache_key(model, messages)
-        key2 = EntityExtractor._compute_cache_key(model, messages)
-
-        assert key1 == key2, "Same (model, messages) should produce same cache key"
-        assert len(key1) == 32, "MD5 hex digest should be 32 chars"
-
-        # Different messages → different key
-        different_messages = [{"role": "user", "content": "different prompt"}]
-        key3 = EntityExtractor._compute_cache_key(model, different_messages)
-        assert key1 != key3, "Different messages should produce different cache key"
 
 
 # ============================================================

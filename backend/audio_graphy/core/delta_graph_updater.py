@@ -222,6 +222,7 @@ class DeltaGraphUpdater:
                 chunk_id=chunk_id,
                 chunk_text=chunk.text,
                 recording_id=recording_id,
+                tenant_id=tenant_id,
             )
             t_extract = (time.perf_counter() - t0) * 1000.0
 

@@ -70,10 +70,12 @@ def build_mock_bundle(settings: Settings) -> AdapterBundle:
         asr=MockASRAdapter(flaky=settings.mock_asr_flaky),
         strong_llm=MockLLMAdapter(
             model=settings.llm_strong_model,
+            model_epoch=settings.llm_strong_model_epoch or settings.llm_strong_model,
             error_rate=settings.mock_llm_error_rate,
         ),
         weak_llm=MockLLMAdapter(
             model=settings.llm_weak_model,
+            model_epoch=settings.llm_weak_model_epoch or settings.llm_weak_model,
             error_rate=settings.mock_llm_error_rate,
         ),
         embed=MockEmbedAdapter(dim=settings.embedding_dim),
@@ -131,19 +133,29 @@ def build_hybrid_bundle(settings: Settings) -> AdapterBundle:
             base_url=settings.openai_base_url_strong,
             api_key=settings.openai_api_key,
             model=settings.llm_strong_model,
+            model_epoch=settings.llm_strong_model_epoch or settings.llm_strong_model,
+            structured_output_capability=(
+                settings.llm_strong_structured_output_capability
+            ),
         )
         weak_llm: LLMAdapter = LLMOpenAIAdapter(
             base_url=settings.openai_base_url_weak,
             api_key=settings.openai_api_key,
             model=settings.llm_weak_model,
+            model_epoch=settings.llm_weak_model_epoch or settings.llm_weak_model,
+            structured_output_capability=(
+                settings.llm_weak_structured_output_capability
+            ),
         )
     else:
         strong_llm = MockLLMAdapter(
             model=settings.llm_strong_model,
+            model_epoch=settings.llm_strong_model_epoch or settings.llm_strong_model,
             error_rate=settings.mock_llm_error_rate,
         )
         weak_llm = MockLLMAdapter(
             model=settings.llm_weak_model,
+            model_epoch=settings.llm_weak_model_epoch or settings.llm_weak_model,
             error_rate=settings.mock_llm_error_rate,
         )
 
