@@ -18,6 +18,10 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from audio_graphy.core.audio_timeline import (
+    seconds_to_milliseconds,
+    verified_recording_duration_ms,
+)
 from audio_graphy.core.pii import scrubbed_segment_text
 from audio_graphy.core.reception_merge import (
     MergeFeatureReason,
@@ -31,9 +35,16 @@ from audio_graphy.errors import (
     RecordingNotFoundError,
     ValidationError,
 )
-from audio_graphy.models.reception import ProvenanceEvent, Reception, ReceptionRecording
+from audio_graphy.models.reception import (
+    ProvenanceEvent,
+    Reception,
+    ReceptionAutomationRun,
+    ReceptionRecording,
+)
 from audio_graphy.models.recording import Recording
 from audio_graphy.models.segment import Segment
+from audio_graphy.models.tag_governance import TagExtractionJob
+from audio_graphy.schemas.reception_pipeline import ReceptionAutomationRequest
 from audio_graphy.schemas.receptions import (
     ReceptionCreate,
     ReceptionDiscoveryRequest,
@@ -45,13 +56,17 @@ from audio_graphy.services.receptions import (
     ReceptionService,
     ReceptionWorkspace,
 )
+from audio_graphy.services.tag_governance import (
+    resolve_serving_tagger_route,
+    stable_job_idempotency_key,
+)
 
 AutomaticCandidateType = Literal[
     "merge_group",
     "recording_split",
     "duration_review",
 ]
-_PROPOSAL_TOKEN_VERSION = 1
+_PROPOSAL_TOKEN_VERSION = 2
 _PROPOSAL_TOKEN_TTL_SEC = 15 * 60
 _PROPOSAL_TOKEN_CLOCK_SKEW_SEC = 30
 _DISCOVERY_MAX_ITEMS = 500
@@ -196,6 +211,23 @@ def _segment_snapshot_hash(segments: list[Segment]) -> str:
     ).hexdigest()
 
 
+def _segment_customer_voiceprint_id(segment: Segment) -> str | None:
+    """Return only turn-scoped customer evidence.
+
+    A recording-level content/customer hash is not turn evidence: copying it
+    onto every turn makes a real customer transition mathematically
+    impossible to observe.  The attribute probes keep this reader compatible
+    with the generation-aware Segment schema while legacy rows correctly
+    report that the signal is unavailable.
+    """
+
+    for attribute in ("customer_voiceprint_id", "voiceprint_id"):
+        value = getattr(segment, attribute, None)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
 def _create_split_proposal_token(
     *,
     secret: str,
@@ -219,6 +251,10 @@ def _create_split_proposal_token(
         "iat": issued_at,
         "recording_id": recording.id,
         "recording_updated_at": recording.updated_at.isoformat(),
+        "source_revision": int(getattr(recording, "source_revision", 0) or 0),
+        "audio_sha256": getattr(recording, "audio_sha256", None),
+        "audio_size_bytes": getattr(recording, "audio_size_bytes", None),
+        "audio_duration_ms": getattr(recording, "audio_duration_ms", None),
         "scenario": scenario,
         "segment_snapshot": _segment_snapshot_hash(segments),
         "split_at_sec": round(split_at_sec, 6),
@@ -350,6 +386,122 @@ class ReceptionAutomationService:
         self._reception_service = reception_service
         self._proposal_secret = proposal_secret
 
+    @staticmethod
+    def _actor_user_id(actor: str) -> int:
+        prefix, separator, raw_id = actor.partition(":")
+        if prefix != "user" or not separator:
+            return 0
+        try:
+            return max(int(raw_id), 0)
+        except ValueError:
+            return 0
+
+    async def _ensure_acceptance_closed_loop(
+        self,
+        session: AsyncSession,
+        *,
+        tenant_id: str,
+        reception_ids: tuple[int, ...],
+        actor: str,
+    ) -> None:
+        """Atomically persist automation and canonical-tag work for acceptance.
+
+        This helper deliberately receives the proposal transaction's session:
+        a browser disconnect can therefore never commit the Reception without
+        also committing its durable downstream work.
+        """
+
+        unique_ids = tuple(dict.fromkeys(reception_ids))
+        if not unique_ids:
+            return
+        request = ReceptionAutomationRequest()
+        existing_run_ids = set(
+            (
+                await session.execute(
+                    select(ReceptionAutomationRun.reception_id).where(
+                        ReceptionAutomationRun.tenant_id == tenant_id,
+                        ReceptionAutomationRun.reception_id.in_(unique_ids),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        tagger_version_id, _deployment_id = await resolve_serving_tagger_route(
+            session,
+            tenant_id=tenant_id,
+        )
+        job_scopes = {
+            reception_id: {
+                "reception_ids": [reception_id],
+                "trigger": "proposal_accept",
+            }
+            for reception_id in unique_ids
+        }
+        idempotency_keys = {
+            reception_id: (
+                "reception-accepted:"
+                + stable_job_idempotency_key(
+                    tenant_id=tenant_id,
+                    operation="extract",
+                    scope=job_scopes[reception_id],
+                    tagger_version_id=tagger_version_id,
+                )
+            )
+            for reception_id in unique_ids
+        }
+        existing_job_keys = set(
+            (
+                await session.execute(
+                    select(TagExtractionJob.idempotency_key).where(
+                        TagExtractionJob.tenant_id == tenant_id,
+                        TagExtractionJob.idempotency_key.in_(tuple(idempotency_keys.values())),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        actor_user_id = self._actor_user_id(actor)
+        for reception_id in unique_ids:
+            if reception_id not in existing_run_ids:
+                session.add(
+                    ReceptionAutomationRun(
+                        tenant_id=tenant_id,
+                        reception_id=reception_id,
+                        status="pending",
+                        stage="merge",
+                        attempt_count=0,
+                        checkpoints={},
+                        segmentation_algorithm=request.segmentation_algorithm,
+                        tag_group_key=request.tag_group_key,
+                        tag_group_version=request.tag_group_version,
+                        target_labels=list(request.target_labels),
+                        tag_priority=request.tag_priority,
+                    )
+                )
+            idempotency_key = idempotency_keys[reception_id]
+            if idempotency_key not in existing_job_keys:
+                session.add(
+                    TagExtractionJob(
+                        tenant_id=tenant_id,
+                        job_type="extract",
+                        origin="serving",
+                        status="queued",
+                        scope=job_scopes[reception_id],
+                        tagger_version_id=tagger_version_id,
+                        idempotency_key=idempotency_key,
+                        total_items=1,
+                        completed_items=0,
+                        failed_items=0,
+                        attempt_count=0,
+                        max_attempts=3,
+                        revision=1,
+                        created_by=actor_user_id,
+                    )
+                )
+        await session.flush()
+
     async def list_receptions(
         self,
         tenant_id: str,
@@ -461,7 +613,6 @@ class ReceptionAutomationService:
                 duration_result = await session.execute(
                     select(
                         Segment.recording_id,
-                        func.max(Segment.end_sec),
                         func.count(Segment.id),
                     )
                     .where(
@@ -471,14 +622,13 @@ class ReceptionAutomationService:
                     .group_by(Segment.recording_id)
                 )
                 duration_rows = duration_result.all()
-                durations = {
-                    int(recording_id): float(duration)
-                    for recording_id, duration, _count in duration_rows
-                    if duration is not None and float(duration) > 0
-                }
+                for recording in recordings:
+                    verified_duration_ms = verified_recording_duration_ms(recording)
+                    if verified_duration_ms is not None:
+                        durations[recording.id] = verified_duration_ms / 1_000
                 segment_counts = {
                     int(recording_id): int(count)
-                    for recording_id, _duration, count in duration_rows
+                    for recording_id, count in duration_rows
                 }
 
             segments_by_recording: dict[int, list[Segment]] = {}
@@ -572,7 +722,7 @@ class ReceptionAutomationService:
                         segment.transcript,
                     ),
                     speaker=segment.speaker,
-                    customer_voiceprint_id=recording.customer_hash,
+                    customer_voiceprint_id=_segment_customer_voiceprint_id(segment),
                 )
                 for segment in recording_segments
             ]
@@ -801,16 +951,14 @@ class ReceptionAutomationService:
                 .with_for_update()
             )
             segments = list(segment_result.scalars().all())
-            source_duration_sec = max(
-                (float(segment.end_sec) for segment in segments),
-                default=0.0,
-            )
-            if source_duration_sec <= 0:
+            verified_duration_ms = verified_recording_duration_ms(recording)
+            if verified_duration_ms is None:
                 raise ValidationError(
                     "Recording duration is unavailable; index the recording first",
                     code="RECORDING_DURATION_UNAVAILABLE",
                     detail={"recording_ids": [recording_id]},
                 )
+            source_duration_sec = verified_duration_ms / 1_000
             if not 0 < body.split_at_sec < source_duration_sec:
                 raise ValidationError(
                     "The recording split boundary is outside the source duration",
@@ -836,6 +984,14 @@ class ReceptionAutomationService:
             current_snapshot_matches = (
                 token_payload.get("duration_sec") == round(source_duration_sec, 6)
                 and token_payload.get("recording_updated_at") == recording.updated_at.isoformat()
+                and token_payload.get("source_revision")
+                == int(getattr(recording, "source_revision", 0) or 0)
+                and token_payload.get("audio_sha256")
+                == getattr(recording, "audio_sha256", None)
+                and token_payload.get("audio_size_bytes")
+                == getattr(recording, "audio_size_bytes", None)
+                and token_payload.get("audio_duration_ms")
+                == getattr(recording, "audio_duration_ms", None)
                 and token_payload.get("store_id") == recording.store_id
                 and token_payload.get("segment_snapshot") == _segment_snapshot_hash(segments)
             )
@@ -862,7 +1018,7 @@ class ReceptionAutomationService:
                         segment.transcript,
                     ),
                     speaker=segment.speaker,
-                    customer_voiceprint_id=recording.customer_hash,
+                    customer_voiceprint_id=_segment_customer_voiceprint_id(segment),
                 )
                 for segment in segments
             ]
@@ -969,6 +1125,13 @@ class ReceptionAutomationService:
                     timeline_end_sec=source_end - source_start,
                     source_start_sec=source_start,
                     source_end_sec=source_end,
+                    source_start_ms=seconds_to_milliseconds(source_start),
+                    source_end_ms=seconds_to_milliseconds(source_end),
+                    timeline_start_ms=0,
+                    timeline_end_ms=seconds_to_milliseconds(
+                        source_end - source_start
+                    ),
+                    gap_before_ms=0,
                     gap_before_sec=0.0,
                     decision_source="manual",
                     merge_confidence=current_signal.confidence,
@@ -1075,6 +1238,12 @@ class ReceptionAutomationService:
                 child_events[0].id,
                 child_events[1].id,
             )
+            await self._ensure_acceptance_closed_loop(
+                session,
+                tenant_id=tenant_id,
+                reception_ids=child_reception_ids,
+                actor=actor,
+            )
 
         workspaces = (
             await self._reception_service.get_workspace(
@@ -1173,22 +1342,16 @@ class ReceptionAutomationService:
                         self._raise_recording_assignment_conflict(assignments)
                     reception_id = idempotent_id
                 else:
-                    segment_result = await session.execute(
-                        select(Segment.recording_id, Segment.end_sec)
-                        .where(
-                            Segment.tenant_id == tenant_id,
-                            Segment.recording_id.in_(requested_ids),
+                    durations = {
+                        recording_id: duration_ms / 1_000
+                        for recording_id in requested_ids
+                        if (
+                            duration_ms := verified_recording_duration_ms(
+                                by_id[recording_id]
+                            )
                         )
-                        .order_by(Segment.recording_id, Segment.id)
-                        .with_for_update()
-                    )
-                    durations: dict[int, float] = {}
-                    for recording_id, end_sec in segment_result.all():
-                        parsed_id = int(recording_id)
-                        durations[parsed_id] = max(
-                            durations.get(parsed_id, 0.0),
-                            float(end_sec),
-                        )
+                        is not None
+                    }
 
                     create_body = self._build_merge_group_create_body(
                         tenant_id=tenant_id,
@@ -1204,6 +1367,12 @@ class ReceptionAutomationService:
                         body=create_body,
                         actor=actor,
                     )
+                await self._ensure_acceptance_closed_loop(
+                    session,
+                    tenant_id=tenant_id,
+                    reception_ids=(reception_id,),
+                    actor=actor,
+                )
         except IntegrityError as exc:
             if body.external_session_id is not None and await self._external_session_exists(
                 tenant_id,
@@ -1491,6 +1660,23 @@ class ReceptionAutomationService:
                     timeline_end_sec=mapping.timeline_end_sec,
                     source_start_sec=mapping.source_start_sec,
                     source_end_sec=mapping.source_end_sec,
+                    source_start_ms=seconds_to_milliseconds(
+                        mapping.source_start_sec
+                    ),
+                    source_end_ms=(
+                        seconds_to_milliseconds(mapping.source_end_sec)
+                        if mapping.source_end_sec is not None
+                        else None
+                    ),
+                    timeline_start_ms=seconds_to_milliseconds(
+                        mapping.timeline_start_sec
+                    ),
+                    timeline_end_ms=seconds_to_milliseconds(
+                        mapping.timeline_end_sec
+                    ),
+                    gap_before_ms=seconds_to_milliseconds(
+                        mapping.gap_before_sec
+                    ),
                     gap_before_sec=mapping.gap_before_sec,
                     decision_source=mapping.decision_source,
                     merge_confidence=mapping.merge_confidence,

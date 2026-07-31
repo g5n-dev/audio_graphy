@@ -129,6 +129,88 @@ class TestStreamSessionOnPCM:
         assert session.last_seq == 4
 
     @pytest.mark.asyncio
+    async def test_duplicate_seq_is_acked_without_reprocessing(self) -> None:
+        session = _make_session()
+        async for _ in session.on_pcm_chunk(b"\x00" * 1024, seq=7):
+            pass
+        bytes_after_first = session.bytes_in
+
+        duplicate_events = [
+            event
+            async for event in session.on_pcm_chunk(b"\xff" * 1024, seq=7)
+        ]
+
+        assert duplicate_events == [
+            {
+                "type": "frame_ack",
+                "session_id": "test-session",
+                "seq": 7,
+                "duplicate": True,
+            }
+        ]
+        assert session.bytes_in == bytes_after_first
+        assert session.last_seq == 7
+
+    @pytest.mark.asyncio
+    async def test_accepted_frame_is_acked_and_older_seen_frame_is_duplicate(self) -> None:
+        session = _make_session()
+        first_events = [
+            event
+            async for event in session.on_pcm_chunk(b"\x00" * 1024, seq=10)
+        ]
+        assert {
+            "type": "frame_ack",
+            "session_id": "test-session",
+            "seq": 10,
+            "duplicate": False,
+        } in first_events
+        async for _ in session.on_pcm_chunk(b"\x00" * 1024, seq=11):
+            pass
+        bytes_after_two = session.bytes_in
+
+        replay_events = [
+            event
+            async for event in session.on_pcm_chunk(b"\xff" * 1024, seq=10)
+        ]
+
+        assert replay_events == [
+            {
+                "type": "frame_ack",
+                "session_id": "test-session",
+                "seq": 10,
+                "duplicate": True,
+            }
+        ]
+        assert session.bytes_in == bytes_after_two
+        assert session.last_seq == 11
+
+    @pytest.mark.asyncio
+    async def test_out_of_order_seq_is_rejected_without_moving_watermark(self) -> None:
+        session = _make_session()
+        async for _ in session.on_pcm_chunk(b"\x00" * 1024, seq=5):
+            pass
+        bytes_after_first = session.bytes_in
+
+        events = [
+            event
+            async for event in session.on_pcm_chunk(b"\xff" * 1024, seq=4)
+        ]
+
+        assert events == [
+            {
+                "type": "error",
+                "session_id": "test-session",
+                "code": "OUT_OF_ORDER_SEQ",
+                "message": "sequence number is below the accepted watermark",
+                "recoverable": True,
+                "seq": 4,
+                "accepted_seq_high_watermark": 5,
+            }
+        ]
+        assert session.bytes_in == bytes_after_first
+        assert session.last_seq == 5
+
+    @pytest.mark.asyncio
     async def test_seq_gap_triggers_vad_reset_event(self) -> None:
         session = _make_session(seq_gap_threshold=3)
         events: list[dict[str, Any]] = []
@@ -241,6 +323,142 @@ class TestStreamSessionOnPCM:
         async for _ in session.on_pcm_chunk(b"\x00" * 1024, seq=0):
             pass
         assert session.error_count == 1
+
+    @pytest.mark.asyncio
+    async def test_confirmed_text_waits_for_vad_segment_instead_of_being_lost(self) -> None:
+        from audio_graphy.adapters.protocols import ASRDeltaResult, VADEvent
+
+        class DelayedVAD:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def push_chunk(self, pcm: bytes, *, seq: int) -> VADEvent:
+                del pcm
+                self.calls += 1
+                if self.calls == 1:
+                    return VADEvent(
+                        seq=seq,
+                        timestamp_sec=0.0,
+                        onset_score=1.0,
+                        state="SPEECH",
+                        transition="chunk",
+                    )
+                return VADEvent(
+                    seq=seq,
+                    timestamp_sec=0.1,
+                    onset_score=0.0,
+                    state="SILENCE",
+                    transition="segment_end",
+                    segment=SegmentRecord(
+                        idx=0,
+                        start_sec=0.0,
+                        end_sec=0.1,
+                        transcript="",
+                        speaker=None,
+                        vad_conf=1.0,
+                    ),
+                )
+
+            async def finalize(self):
+                return ()
+
+            async def aclose(self) -> None:
+                return
+
+            def reset_state(self) -> None:
+                return
+
+        class EarlyConfirmedASR:
+            async def push_pcm(self, pcm: bytes, *, seq: int) -> ASRDeltaResult:
+                del pcm
+                if seq == 0:
+                    return ASRDeltaResult(
+                        seq=seq,
+                        mode="confirmed",
+                        text="不会丢失的文本",
+                        is_final=True,
+                        sentence_id=1,
+                    )
+                return ASRDeltaResult(
+                    seq=seq,
+                    mode="realtime",
+                    text="",
+                    is_final=False,
+                    sentence_id=1,
+                )
+
+            async def finalize(self):
+                return ()
+
+            async def aclose(self) -> None:
+                return
+
+        session = _make_session(
+            vad=DelayedVAD(),  # type: ignore[arg-type]
+            asr=EarlyConfirmedASR(),  # type: ignore[arg-type]
+        )
+        first_events = [
+            event
+            async for event in session.on_pcm_chunk(b"\x00" * 1024, seq=0)
+        ]
+        assert not any(event["type"] == "segment_confirmed" for event in first_events)
+
+        second_events = [
+            event
+            async for event in session.on_pcm_chunk(b"\x00" * 1024, seq=1)
+        ]
+        confirmed = [
+            event for event in second_events if event["type"] == "segment_confirmed"
+        ]
+        assert confirmed[0]["text"] == "不会丢失的文本"
+        assert confirmed[0]["segment"]["idx"] == 0
+        assert session.confirmed_segments[0].transcript == "不会丢失的文本"
+
+    @pytest.mark.asyncio
+    async def test_finalize_closes_asr_even_when_vad_close_fails(self) -> None:
+        class CloseFailingVAD(MockStreamingVADAdapter):
+            async def aclose(self) -> None:
+                raise RuntimeError("vad close failed")
+
+        class TrackingASR(MockStreamingASRAdapter):
+            closed = False
+
+            async def aclose(self) -> None:
+                self.closed = True
+
+        vad = CloseFailingVAD(latency_ms=0)
+        asr = TrackingASR(connect_latency_ms=0, push_latency_ms=0)
+        await asr.connect(session_id="test-session", tenant_id="default")
+        session = _make_session(vad=vad, asr=asr)
+
+        async for _ in session.on_finalize():
+            pass
+
+        assert asr.closed is True
+        assert session.status == SessionStatus.CLOSED
+        assert session.error_count == 1
+
+    @pytest.mark.asyncio
+    async def test_finalize_leaves_pooled_asr_open_for_pool_release(self) -> None:
+        class TrackingASR(MockStreamingASRAdapter):
+            closed = False
+
+            async def aclose(self) -> None:
+                self.closed = True
+
+        asr = TrackingASR(connect_latency_ms=0, push_latency_ms=0)
+        await asr.connect(session_id="test-session", tenant_id="default")
+        session = _make_session(
+            vad=MockStreamingVADAdapter(latency_ms=0),
+            asr=asr,
+        )
+        session.close_asr_on_finalize = False
+
+        async for _ in session.on_finalize():
+            pass
+
+        assert asr.closed is False
+        assert session.status == SessionStatus.CLOSED
 
 
 class TestHashConsentToken:

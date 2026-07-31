@@ -220,15 +220,17 @@ class TestStreamingSessionORM:
         }
         assert expected.issubset(cols)
 
-    def test_unique_constraint_on_session_id(self) -> None:
+    def test_tenant_session_epoch_is_unique(self) -> None:
         from audio_graphy.models.streaming_session import StreamingSession
 
-        constraint_names = [
-            c.name
-            for c in StreamingSession.__table__.constraints
-            if hasattr(c, "name") and c.name and "ux" in c.name
-        ]
-        assert any("session_id" in n for n in constraint_names)
+        unique_indexes = {
+            index.name: tuple(column.name for column in index.columns)
+            for index in StreamingSession.__table__.indexes
+            if index.unique
+        }
+        assert unique_indexes[
+            "ux_streaming_sessions_tenant_session_epoch"
+        ] == ("tenant_id", "session_id", "epoch")
 
     def test_check_constraint_on_end_reason(self) -> None:
         from audio_graphy.models.streaming_session import StreamingSession

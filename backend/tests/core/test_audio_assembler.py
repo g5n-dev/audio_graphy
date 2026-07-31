@@ -16,6 +16,7 @@ import pytest
 from audio_graphy.core.audio_assembler import (
     AudioAssembler,
     AudioAssemblyProcessError,
+    AudioAssemblySource,
     AudioAssemblyValidationError,
 )
 
@@ -91,6 +92,37 @@ class FakeProcess:
         output_path = Path(self.args[-1])
         if self._owner.ffmpeg_output is not None:
             output_path.write_bytes(self._owner.ffmpeg_output)
+        expected_duration = (
+            float(self.args[self.args.index("-t") + 1])
+            if "-t" in self.args
+            else sum(probe.duration_sec for probe in self._owner.probes.values())
+        )
+        first_probe = next(iter(self._owner.probes.values()))
+        sample_rate = (
+            int(self.args[self.args.index("-ar") + 1])
+            if "-ar" in self.args
+            else first_probe.sample_rate
+        )
+        channels = (
+            int(self.args[self.args.index("-ac") + 1])
+            if "-ac" in self.args
+            else first_probe.channels
+        )
+        codec = (
+            self.args[self.args.index("-c:a") + 1]
+            if "-c:a" in self.args
+            else "pcm_s16le"
+        )
+        self._owner.probes[output_path.resolve()] = ProbeResult(
+            codec=first_probe.codec if codec == "copy" else codec,
+            sample_rate=sample_rate,
+            channels=channels,
+            duration_sec=(
+                self._owner.output_probe_duration_sec
+                if self._owner.output_probe_duration_sec is not None
+                else expected_duration
+            ),
+        )
         if self._owner.on_ffmpeg is not None:
             self._owner.on_ffmpeg()
         self.returncode = self._owner.ffmpeg_returncode
@@ -119,6 +151,7 @@ class FakeSubprocessFactory:
         block_ffprobe: bool = False,
         block_ffmpeg: bool = False,
         probe_payload: bytes | None = None,
+        output_probe_duration_sec: float | None = None,
         on_ffmpeg: Callable[[], None] | None = None,
     ) -> None:
         self.probes = {path.resolve(): value for path, value in probes.items()}
@@ -131,6 +164,7 @@ class FakeSubprocessFactory:
         self.block_ffprobe = block_ffprobe
         self.block_ffmpeg = block_ffmpeg
         self.probe_payload = probe_payload
+        self.output_probe_duration_sec = output_probe_duration_sec
         self.on_ffmpeg = on_ffmpeg
         self.ffmpeg_started = asyncio.Event()
         self.release_ffmpeg = asyncio.Event()
@@ -380,7 +414,120 @@ class TestPathAndResourceBoundaries:
 
 
 class TestCommandsAndFormatSelection:
-    async def test_same_format_uses_safe_concat_copy_and_escaped_manifest(
+    async def test_clips_prefix_and_suffix_and_inserts_exact_gap_before_concat(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        root = tmp_path / "audio"
+        root.mkdir()
+        first = _write_audio(root, "first.wav")
+        second = _write_audio(root, "second.wav")
+        fake = _install_subprocess(
+            monkeypatch,
+            {
+                first: ProbeResult(duration_sec=5.0),
+                second: ProbeResult(duration_sec=8.0),
+            },
+        )
+
+        result = await AudioAssembler(root).assemble(
+            [
+                AudioAssemblySource(
+                    path=first,
+                    source_start_sec=0.0,
+                    source_end_sec=2.0,
+                ),
+                AudioAssemblySource(
+                    path=second,
+                    source_start_sec=1.0,
+                    source_end_sec=4.0,
+                    gap_before_sec=0.5,
+                ),
+            ],
+            "merged.wav",
+        )
+
+        command = fake.ffmpeg_commands[0]
+        filter_graph = command[command.index("-filter_complex") + 1]
+        assert result.command_mode == "transcode_pcm"
+        assert "atrim=start=0:end=2" in filter_graph
+        assert "atrim=start=1:end=4" in filter_graph
+        assert "adelay=500:all=1" in filter_graph
+        assert result.total_duration_sec == pytest.approx(5.5)
+        assert [
+            (
+                item.source_start_sec,
+                item.source_end_sec,
+                item.gap_before_sec,
+                item.timeline_start_sec,
+                item.timeline_end_sec,
+            )
+            for item in result.inputs
+        ] == pytest.approx(
+            [
+                (0.0, 2.0, 0.0, 0.0, 2.0),
+                (1.0, 4.0, 0.5, 2.5, 5.5),
+            ]
+        )
+
+    async def test_prefix_clip_never_falls_back_to_full_file_concat_copy(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        root = tmp_path / "audio"
+        root.mkdir()
+        source = _write_audio(root, "source.wav")
+        fake = _install_subprocess(
+            monkeypatch,
+            {source: ProbeResult(duration_sec=10.0)},
+        )
+
+        result = await AudioAssembler(root).assemble(
+            [
+                AudioAssemblySource(
+                    path=source,
+                    source_start_sec=0.0,
+                    source_end_sec=4.0,
+                )
+            ],
+            "merged.wav",
+        )
+
+        assert result.command_mode == "transcode_pcm"
+        command = fake.ffmpeg_commands[0]
+        assert "-filter_complex" in command
+        assert "atrim=start=0:end=4" in command[command.index("-filter_complex") + 1]
+
+    async def test_rejects_slice_past_verified_media_duration(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        root = tmp_path / "audio"
+        root.mkdir()
+        source = _write_audio(root, "source.wav")
+        fake = _install_subprocess(
+            monkeypatch,
+            {source: ProbeResult(duration_sec=3.0)},
+        )
+
+        with pytest.raises(AudioAssemblyValidationError, match="duration"):
+            await AudioAssembler(root).assemble(
+                [
+                    AudioAssemblySource(
+                        path=source,
+                        source_start_sec=0.0,
+                        source_end_sec=3.5,
+                    )
+                ],
+                "merged.wav",
+            )
+
+        assert not fake.ffmpeg_commands
+
+    async def test_same_format_wav_is_still_normalized_to_deterministic_pcm(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
@@ -403,17 +550,35 @@ class TestCommandsAndFormatSelection:
         )
 
         command = fake.ffmpeg_commands[0]
-        assert result.command_mode == "concat_copy"
+        assert result.command_mode == "transcode_pcm"
         assert command[0] == "ffmpeg"
-        assert command[command.index("-c:a") + 1] == "copy"
-        assert command[command.index("-f") + 1] == "concat"
-        assert "-safe" in command
+        assert command[command.index("-c:a") + 1] == "pcm_s16le"
+        assert command[command.index("-ar") + 1] == "16000"
+        assert command[command.index("-ac") + 1] == "1"
         assert not any("shell" in kwargs for _, kwargs in fake.calls)
-        assert str(injected.resolve()) not in command
-        assert len(fake.concat_manifests) == 1
-        assert "'\\''" in fake.concat_manifests[0]
-        assert "; touch PWNED.wav" in fake.concat_manifests[0]
+        assert str(injected.resolve()) in command
+        assert not fake.concat_manifests
         assert not (root / "PWNED.wav").exists()
+
+    async def test_output_sample_count_mismatch_is_rejected_before_publication(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        root = tmp_path / "audio"
+        root.mkdir()
+        source = _write_audio(root, "source.wav")
+        target = _write_audio(root, "merged.wav", b"old-output")
+        _install_subprocess(
+            monkeypatch,
+            {source: ProbeResult(duration_sec=1.0)},
+            output_probe_duration_sec=0.5,
+        )
+
+        with pytest.raises(AudioAssemblyProcessError, match="sample count"):
+            await AudioAssembler(root).assemble([source], "merged.wav")
+
+        assert target.read_bytes() == b"old-output"
 
     async def test_different_metadata_uses_explicit_pcm_resampling_for_wav(
         self,

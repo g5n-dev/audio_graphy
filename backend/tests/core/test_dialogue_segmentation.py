@@ -6,6 +6,10 @@ without a database, model server, or API layer.
 
 from __future__ import annotations
 
+import math
+
+import pytest
+
 from audio_graphy.core.chunker import SegmentRecord
 from audio_graphy.core.dialogue_segmentation import (
     AutomotiveStage,
@@ -102,6 +106,79 @@ class TestStageModels:
 
 
 class TestHybridBoundaryScoring:
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"segment_id": "bad", "start_sec": math.nan, "end_sec": 1.0, "transcript": "text"},
+            {"segment_id": "bad", "start_sec": 0.0, "end_sec": math.inf, "transcript": "text"},
+            {"segment_id": "bad", "start_sec": 1.0, "end_sec": 1.0, "transcript": "text"},
+            {"segment_id": "", "start_sec": 0.0, "end_sec": 1.0, "transcript": "text"},
+        ],
+    )
+    def test_rejects_non_finite_zero_length_or_unidentified_segments(
+        self,
+        kwargs: dict[str, object],
+    ) -> None:
+        with pytest.raises(ValueError):
+            DialogueSegment(**kwargs)  # type: ignore[arg-type]
+
+    def test_batch_deduplicates_identical_segment_ids(self) -> None:
+        segment = _segment("same", 0, 1, "您好")
+
+        units = DialogueSegmenter().segment(
+            [segment, segment],
+            scenario=SalesScenario.GOLD_JEWELRY,
+        )
+
+        assert len(units) == 1
+        assert [ref.segment_id for ref in units[0].segment_refs] == ["same"]
+
+    def test_batch_rejects_conflicting_duplicate_segment_ids(self) -> None:
+        with pytest.raises(ValueError, match="duplicate"):
+            DialogueSegmenter().segment(
+                [
+                    _segment("same", 0, 1, "您好"),
+                    _segment("same", 1, 2, "不同内容"),
+                ],
+                scenario=SalesScenario.GOLD_JEWELRY,
+            )
+
+    def test_empty_text_cannot_inject_stage_topic_or_semantic_boundary(self) -> None:
+        units = DialogueSegmenter().segment(
+            [
+                _segment(
+                    "first",
+                    0,
+                    1,
+                    "请问您的预算",
+                    embedding=(1.0, 0.0),
+                    topic="需求",
+                    stage=GoldJewelryStage.NEEDS,
+                ),
+                _segment(
+                    "empty",
+                    1.1,
+                    2,
+                    "   ",
+                    embedding=(0.0, 1.0),
+                    topic="伪造主题",
+                    stage=GoldJewelryStage.PAYMENT,
+                ),
+            ],
+            scenario=SalesScenario.GOLD_JEWELRY,
+        )
+
+        assert len(units) == 1
+        assert units[0].stage == GoldJewelryStage.NEEDS
+        assert units[0].topic == "需求"
+
+    def test_rejects_stage_hint_outside_scenario_state_space(self) -> None:
+        with pytest.raises(ValueError, match="stage_hint"):
+            DialogueSegmenter().segment(
+                [_segment("bad", 0, 1, "文本", stage="not-a-gold-stage")],
+                scenario=SalesScenario.GOLD_JEWELRY,
+            )
+
     def test_combines_semantics_stage_speaker_and_pause(self) -> None:
         segments = [
             _segment(

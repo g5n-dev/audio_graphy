@@ -1,0 +1,204 @@
+{
+  "version": "dialogue-gold-2026-07-29",
+  "v1_baseline_by_scenario": {
+    "gold_jewelry": {
+      "boundary_f1": 0.85,
+      "stage_macro_f1": 0.8
+    },
+    "automotive": {
+      "boundary_f1": 0.85,
+      "stage_macro_f1": 0.8
+    }
+  },
+  "cases": [
+    {
+      "case_id": "gold-short-greeting-turns-silence",
+      "scenario": "gold_jewelry",
+      "segments": [
+        {
+          "segment_id": "g1",
+          "start_sec": 0.0,
+          "end_sec": 0.8,
+          "transcript": "您好，欢迎光临",
+          "speaker": "agent"
+        },
+        {
+          "segment_id": "g2",
+          "start_sec": 0.7,
+          "end_sec": 2.0,
+          "transcript": "我想看婚戒，预算两万元",
+          "speaker": "customer"
+        },
+        {
+          "segment_id": "g3",
+          "start_sec": 2.1,
+          "end_sec": 3.1,
+          "transcript": "这款可以试戴一下",
+          "speaker": "agent"
+        },
+        {
+          "segment_id": "g4",
+          "start_sec": 12.0,
+          "end_sec": 13.4,
+          "transcript": "这款是足金999，克重和工费都在标签上",
+          "speaker": "agent"
+        },
+        {
+          "segment_id": "g5",
+          "start_sec": 13.5,
+          "end_sec": 14.0,
+          "transcript": "",
+          "speaker": "customer"
+        }
+      ],
+      "boundary_after_segment_ids": ["g1", "g2", "g3"],
+      "stage_by_segment_id": {
+        "g1": "greeting",
+        "g2": "needs",
+        "g3": "selection_try_on",
+        "g4": "product_explanation",
+        "g5": "product_explanation"
+      }
+    },
+    {
+      "case_id": "gold-objection-jump-backtrack",
+      "scenario": "gold_jewelry",
+      "segments": [
+        {
+          "segment_id": "g6",
+          "start_sec": 0.0,
+          "end_sec": 1.2,
+          "transcript": "今天金价有活动，可以给您优惠",
+          "speaker": "agent"
+        },
+        {
+          "segment_id": "g7",
+          "start_sec": 1.3,
+          "end_sec": 2.5,
+          "transcript": "还是太贵了，能不能再申请折扣",
+          "speaker": "customer"
+        },
+        {
+          "segment_id": "g8",
+          "start_sec": 2.7,
+          "end_sec": 3.7,
+          "transcript": "可以刷卡付款，也支持微信",
+          "speaker": "agent"
+        },
+        {
+          "segment_id": "g9",
+          "start_sec": 3.9,
+          "end_sec": 5.1,
+          "transcript": "我再确认一下，主要是送人还是自戴，预算多少",
+          "speaker": "customer"
+        }
+      ],
+      "boundary_after_segment_ids": ["g6", "g7", "g8"],
+      "stage_by_segment_id": {
+        "g6": "price_promotion",
+        "g7": "objection_negotiation",
+        "g8": "payment",
+        "g9": "needs"
+      }
+    },
+    {
+      "case_id": "auto-frequent-turns-medium-pause",
+      "scenario": "automotive",
+      "segments": [
+        {
+          "segment_id": "a1",
+          "start_sec": 0.0,
+          "end_sec": 0.9,
+          "transcript": "您好，欢迎到店看车",
+          "speaker": "agent"
+        },
+        {
+          "segment_id": "a2",
+          "start_sec": 1.0,
+          "end_sec": 2.2,
+          "transcript": "家用SUV，预算二十万",
+          "speaker": "customer"
+        },
+        {
+          "segment_id": "a3",
+          "start_sec": 2.3,
+          "end_sec": 3.4,
+          "transcript": "平时几口人乘坐，有通勤需求吗",
+          "speaker": "agent"
+        },
+        {
+          "segment_id": "a4",
+          "start_sec": 7.0,
+          "end_sec": 8.5,
+          "transcript": "这款车是高配，续航、动力和空间都更好",
+          "speaker": "agent"
+        },
+        {
+          "segment_id": "a5",
+          "start_sec": 8.6,
+          "end_sec": 9.8,
+          "transcript": "裸车报价二十万，落地价我算一下",
+          "speaker": "customer"
+        },
+        {
+          "segment_id": "a6",
+          "start_sec": 9.9,
+          "end_sec": 11.0,
+          "transcript": "可以做分期，首付三成，贷款两年",
+          "speaker": "agent"
+        }
+      ],
+      "boundary_after_segment_ids": ["a1", "a3", "a4", "a5"],
+      "stage_by_segment_id": {
+        "a1": "greeting",
+        "a2": "needs",
+        "a3": "needs",
+        "a4": "vehicle_intro",
+        "a5": "quote",
+        "a6": "finance"
+      }
+    },
+    {
+      "case_id": "auto-long-silence-stage-jump-return",
+      "scenario": "automotive",
+      "segments": [
+        {
+          "segment_id": "a7",
+          "start_sec": 0.0,
+          "end_sec": 1.0,
+          "transcript": "裸车报价和落地价在这份单子上",
+          "speaker": "agent"
+        },
+        {
+          "segment_id": "a8",
+          "start_sec": 10.0,
+          "end_sec": 11.0,
+          "transcript": "我帮您预约试驾",
+          "speaker": "agent"
+        },
+        {
+          "segment_id": "a9",
+          "start_sec": 11.1,
+          "end_sec": 12.2,
+          "transcript": "我再确认一下家用需求和预算",
+          "speaker": "customer"
+        },
+        {
+          "segment_id": "a10",
+          "start_sec": 12.3,
+          "end_sec": 13.0,
+          "transcript": "音频到这里部分缺字",
+          "speaker": "agent",
+          "stage_hint": "needs"
+        }
+      ],
+      "boundary_after_segment_ids": ["a7", "a8"],
+      "stage_by_segment_id": {
+        "a7": "quote",
+        "a8": "test_drive",
+        "a9": "needs",
+        "a10": "needs"
+      }
+    }
+  ]
+}

@@ -8,6 +8,8 @@ from typing import Any, Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_core import PydanticCustomError
 
+from audio_graphy.core.audio_timeline import seconds_to_milliseconds
+
 ReceptionScenario = Literal["gold", "automotive", "custom"]
 ReceptionStatus = Literal[
     "proposed",
@@ -65,9 +67,13 @@ class ReceptionRecordingCreate(_StrictModel):
                     "reception_source_order",
                     "source_end_sec must be greater than source_start_sec",
                 )
-            timeline_duration = self.timeline_end_sec - self.timeline_start_sec
-            source_duration = self.source_end_sec - self.source_start_sec
-            if abs(timeline_duration - source_duration) > 0.05:
+            timeline_duration_ms = seconds_to_milliseconds(
+                self.timeline_end_sec
+            ) - seconds_to_milliseconds(self.timeline_start_sec)
+            source_duration_ms = seconds_to_milliseconds(
+                self.source_end_sec
+            ) - seconds_to_milliseconds(self.source_start_sec)
+            if timeline_duration_ms != source_duration_ms:
                 raise PydanticCustomError(
                     "reception_duration_mismatch",
                     "timeline and source span durations must match",
@@ -113,9 +119,16 @@ class ReceptionCreate(_StrictModel):
             )
 
         previous_end = 0.0
-        for mapping in self.recordings:
-            expected_start = previous_end + mapping.gap_before_sec
-            if abs(mapping.timeline_start_sec - expected_start) > 0.05:
+        for sequence_no, mapping in enumerate(self.recordings):
+            if sequence_no == 0 and seconds_to_milliseconds(mapping.gap_before_sec) != 0:
+                raise PydanticCustomError(
+                    "reception_first_gap",
+                    "the first source cannot have gap_before_sec",
+                )
+            expected_start_ms = seconds_to_milliseconds(
+                previous_end
+            ) + seconds_to_milliseconds(mapping.gap_before_sec)
+            if seconds_to_milliseconds(mapping.timeline_start_sec) != expected_start_ms:
                 raise PydanticCustomError(
                     "reception_timeline_gap",
                     "timeline_start_sec must equal previous end plus gap_before_sec",
@@ -139,6 +152,83 @@ class ReceptionMergeRequest(_StrictModel):
                 "recording_ids must be unique",
             )
         return self
+
+
+class ReceptionAudioPlanSourceRequest(_StrictModel):
+    mapping_id: int = Field(gt=0)
+    gap_before_ms: int = Field(ge=0, le=86_400_000)
+
+
+class ReceptionAudioPlanRequest(_StrictModel):
+    sources: list[ReceptionAudioPlanSourceRequest] = Field(min_length=1, max_length=100)
+    expected_version: int = Field(gt=0)
+
+    @model_validator(mode="after")
+    def validate_mapping_ids(self) -> Self:
+        mapping_ids = [source.mapping_id for source in self.sources]
+        if len(mapping_ids) != len(set(mapping_ids)):
+            raise PydanticCustomError(
+                "duplicate_reception_mapping",
+                "mapping_id values must be unique",
+            )
+        if self.sources[0].gap_before_ms != 0:
+            raise PydanticCustomError(
+                "reception_first_gap",
+                "the first source cannot have gap_before_ms",
+            )
+        return self
+
+
+class ReceptionAudioPlanSourceResponse(_StrictModel):
+    mapping_id: int
+    recording_id: int
+    sequence_no: int
+    source_start_ms: int
+    source_end_ms: int
+    gap_before_ms: int
+    timeline_start_ms: int
+    timeline_end_ms: int
+
+
+class ReceptionAudioPlanResponse(_StrictModel):
+    plan_token: str
+    timeline_revision: int
+    total_duration_ms: int
+    physical_eligible: bool
+    warnings: list[str]
+    sources: list[ReceptionAudioPlanSourceResponse]
+
+
+class ReceptionAudioOperationCreateRequest(_StrictModel):
+    plan_token: str = Field(min_length=32, max_length=2048)
+    mode: MergeMode
+    expected_version: int = Field(gt=0)
+
+
+ReceptionAudioOperationStatus = Literal[
+    "queued",
+    "claimed",
+    "probing",
+    "slicing",
+    "assembling",
+    "encrypting",
+    "verifying",
+    "committing",
+    "succeeded",
+    "failed",
+    "cancelled",
+]
+
+
+class ReceptionAudioOperationResponse(_StrictModel):
+    id: int
+    reception_id: int
+    status: ReceptionAudioOperationStatus
+    mode: MergeMode
+    progress: float = Field(ge=0, le=1)
+    error: str | None
+    created_at: datetime
+    updated_at: datetime
 
 
 class ReceptionMergeProposalRequest(_StrictModel):
@@ -193,7 +283,7 @@ class ReceptionSegmentRequest(_StrictModel):
     expected_version: int = Field(gt=0)
     replace_auto: bool = False
     algorithm_version: str = Field(
-        default="dialogue-hybrid-v1",
+        default="dialogue-hybrid-v2",
         min_length=1,
         max_length=64,
     )
@@ -222,18 +312,28 @@ class ReceptionRecordingResponse(_StrictModel):
     """Source recording plus its reception-time alignment."""
 
     id: int
+    mapping_id: int
     recording_id: int
     sequence_no: int
     timeline_start_sec: float
     timeline_end_sec: float
     source_start_sec: float
     source_end_sec: float | None
+    source_start_ms: int
+    source_end_ms: int | None
+    timeline_start_ms: int
+    timeline_end_ms: int
+    gap_before_ms: int
+    time_origin_ms: int
+    legal_source_start_ms: int
+    legal_source_end_ms: int | None
     gap_before_sec: float
     decision_source: DecisionSource
     merge_confidence: float | None
     merge_reasons: dict[str, Any]
     source_recorded_at: datetime | None
     audio_url: str
+    playback_expires_at: datetime
 
 
 class ReceptionMetadataResponse(_StrictModel):
@@ -253,6 +353,7 @@ class ReceptionMetadataResponse(_StrictModel):
     started_at: datetime
     ended_at: datetime
     audio_url: str | None
+    playback_expires_at: datetime | None
     version: int
     created_at: datetime
     updated_at: datetime
@@ -323,6 +424,7 @@ class DialogueUnitResponse(_StrictModel):
     business_stage: str | None
     summary: str | None
     boundary_confidence: float | None
+    stage_confidence: float | None = None
     boundary_reasons: list[Any]
     segment_refs: list[Any]
     speaker_refs: list[Any]
@@ -406,6 +508,22 @@ class ReceptionWorkspaceWindow(_StrictModel):
     provenance_events: WorkspaceCollectionWindow
 
 
+class ReceptionWorkspaceCapabilities(_StrictModel):
+    can_manage_audio: bool
+    can_run_segmentation: bool
+    can_edit_dialogue: bool
+    can_edit_tags: bool
+    supports_audio_plans: bool
+    supports_audio_operations: bool
+    can_cancel_audio_operation: bool
+    can_stream_audio: bool
+
+
+class ReceptionWorkspaceNeighbors(_StrictModel):
+    previous_dialogue_unit: DialogueUnitResponse | None = None
+    next_dialogue_unit: DialogueUnitResponse | None = None
+
+
 class ReceptionWorkspaceResponse(_StrictModel):
     """One bounded page of a listening-workbench snapshot."""
 
@@ -417,6 +535,9 @@ class ReceptionWorkspaceResponse(_StrictModel):
     transcript_items: list[TranscriptItemResponse]
     provenance_events: list[ProvenanceEventResponse]
     window: ReceptionWorkspaceWindow
+    capabilities: ReceptionWorkspaceCapabilities
+    neighbors: ReceptionWorkspaceNeighbors | None = None
+    active_audio_operation: ReceptionAudioOperationResponse | None = None
 
 
 class DialogueEditResponse(_StrictModel):
@@ -604,6 +725,12 @@ __all__ = [
     "MergeMode",
     "ProvenanceEventResponse",
     "ProvenanceListResponse",
+    "ReceptionAudioOperationCreateRequest",
+    "ReceptionAudioOperationResponse",
+    "ReceptionAudioPlanRequest",
+    "ReceptionAudioPlanResponse",
+    "ReceptionAudioPlanSourceRequest",
+    "ReceptionAudioPlanSourceResponse",
     "ReceptionAutomaticProposalResponse",
     "ReceptionCreate",
     "ReceptionDiscoveryRequest",
@@ -620,6 +747,8 @@ __all__ = [
     "ReceptionResponse",
     "ReceptionSegmentRequest",
     "ReceptionSplitAcceptanceResponse",
+    "ReceptionWorkspaceCapabilities",
+    "ReceptionWorkspaceNeighbors",
     "ReceptionWorkspaceResponse",
     "ReceptionWorkspaceWindow",
     "StateTransitionListResponse",

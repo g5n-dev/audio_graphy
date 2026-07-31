@@ -136,7 +136,7 @@ async def test_amiguous_layer2_match_enqueues_pending(
     result = await linker._try_layer2_fuzzy(cand, list(nodes), recording_id=1)
     assert result is not None
     matched_sn, ambiguity_tag, fuzzy_score, vp_score = result
-    assert ambiguity_tag == "AMBIGUOUS"
+    assert ambiguity_tag == "PENDING_REVIEW"
     assert fuzzy_score >= 0.85  # exact name match
     assert vp_score is None  # no voiceprint available
     assert matched_sn.id == nodes[0].id

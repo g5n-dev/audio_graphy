@@ -90,10 +90,26 @@ class DialogueSegment:
     stage_hint: str | None = None
 
     def __post_init__(self) -> None:
-        if self.end_sec < self.start_sec:
-            raise ValueError("end_sec must be greater than or equal to start_sec")
-        if not 0.0 <= self.vad_conf <= 1.0:
+        if not self.segment_id:
+            raise ValueError("segment_id must not be empty")
+        if (
+            not math.isfinite(self.start_sec)
+            or not math.isfinite(self.end_sec)
+            or self.start_sec < 0
+            or self.end_sec <= self.start_sec
+        ):
+            raise ValueError("segment times must be finite with 0 <= start_sec < end_sec")
+        if not math.isfinite(self.vad_conf) or not 0.0 <= self.vad_conf <= 1.0:
             raise ValueError("vad_conf must be between 0 and 1")
+        if self.semantic_embedding is not None and (
+            not self.semantic_embedding
+            or any(not math.isfinite(value) for value in self.semantic_embedding)
+        ):
+            raise ValueError("semantic_embedding must contain finite values")
+        if self.topic_hint is not None and not self.topic_hint.strip():
+            raise ValueError("topic_hint must not be blank")
+        if self.stage_hint is not None and not self.stage_hint.strip():
+            raise ValueError("stage_hint must not be blank")
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,6 +150,7 @@ class DialogueUnit:
     stage: str
     summary: str
     confidence: float
+    stage_confidence: float
     boundary_reason: str
     boundary_score: float
     boundary_signals: tuple[BoundarySignal, ...]
@@ -247,6 +264,8 @@ _STAGE_TOPICS: dict[str, str] = {
 class DialogueSegmenter:
     """Hybrid rule/semantic segmenter shared by batch and realtime paths."""
 
+    ALGORITHM_VERSION = "dialogue-hybrid-v2"
+
     def __init__(
         self,
         *,
@@ -280,6 +299,10 @@ class DialogueSegmenter:
 
         if stage_hint:
             stage = str(stage_hint)
+            if normalized_scenario != SalesScenario.GENERIC and stage not in order:
+                raise ValueError(
+                    f"stage_hint {stage!r} is outside the {normalized_scenario.value} state space"
+                )
             return StageInference(
                 stage=stage,
                 confidence=0.98,
@@ -326,10 +349,23 @@ class DialogueSegmenter:
             default_recording_id=recording_id,
         )
         output: list[DialogueUnit] = []
-        normalized = sorted(
+        ordered = sorted(
             (self._normalize_segment(segment, recording_id) for segment in segments),
             key=lambda segment: (segment.start_sec, segment.end_sec, segment.segment_id),
         )
+        normalized: list[DialogueSegment] = []
+        by_identity: dict[tuple[str | int | None, str], DialogueSegment] = {}
+        for segment in ordered:
+            identity = (segment.recording_id, segment.segment_id)
+            previous = by_identity.get(identity)
+            if previous is None:
+                by_identity[identity] = segment
+                normalized.append(segment)
+                continue
+            if previous != segment:
+                raise ValueError(
+                    "conflicting duplicate segment_id within one recording"
+                )
         for segment in normalized:
             output.extend(state.push(segment))
         output.extend(state.finalize())
@@ -514,6 +550,11 @@ class DialogueSegmentationState:
         self._start_score = 0.0
         self._start_signals: tuple[BoundarySignal, ...] = ()
         self._finalized = False
+        self._seen_segments: dict[
+            tuple[str | int | None, str],
+            DialogueSegment,
+        ] = {}
+        self._last_order_key: tuple[float, float, str] | None = None
 
     def push(self, source: SegmentSource) -> list[DialogueUnit]:
         """Consume one chronological segment and emit at most one closed unit."""
@@ -523,6 +564,29 @@ class DialogueSegmentationState:
             source,
             self._default_recording_id,
         )
+        identity = (segment.recording_id, segment.segment_id)
+        seen = self._seen_segments.get(identity)
+        if seen is not None:
+            if seen == segment:
+                return []
+            raise ValueError("conflicting duplicate segment_id within one recording")
+        order_key = (segment.start_sec, segment.end_sec, segment.segment_id)
+        if self._last_order_key is not None and order_key < self._last_order_key:
+            raise ValueError("incremental segments must be pushed in chronological order")
+        self._seen_segments[identity] = segment
+        self._last_order_key = order_key
+
+        has_text = bool(segment.transcript.strip())
+        if not has_text:
+            segment = DialogueSegment(
+                segment_id=segment.segment_id,
+                start_sec=segment.start_sec,
+                end_sec=segment.end_sec,
+                transcript=segment.transcript,
+                recording_id=segment.recording_id,
+                speaker=segment.speaker,
+                vad_conf=segment.vad_conf,
+            )
         previous_stage = self._current[-1][1].stage if self._current else None
         inference = self._segmenter.infer_stage(
             segment.transcript,
@@ -530,7 +594,11 @@ class DialogueSegmentationState:
             previous_stage=previous_stage,
             stage_hint=segment.stage_hint,
         )
-        topic = segment.topic_hint or _STAGE_TOPICS.get(inference.stage, UNKNOWN_TOPIC)
+        topic = (
+            self._current[-1][2]
+            if not has_text and self._current
+            else segment.topic_hint or _STAGE_TOPICS.get(inference.stage, UNKNOWN_TOPIC)
+        )
 
         if not self._current:
             self._current.append((segment, inference, topic))
@@ -579,6 +647,16 @@ class DialogueSegmentationState:
         classification_confidence = sum(inference.confidence for inference in inferences) / len(
             inferences
         )
+        stage_confidences = [
+            inference.confidence
+            for inference in inferences
+            if inference.stage == stage
+        ]
+        stage_confidence = (
+            sum(stage_confidences) / len(stage_confidences)
+            if stage_confidences
+            else 0.0
+        )
         audio_confidence = sum(segment.vad_conf for segment in segments) / len(segments)
         confidence = round(
             min(1.0, classification_confidence * 0.65 + audio_confidence * 0.35),
@@ -590,6 +668,7 @@ class DialogueSegmentationState:
             stage=stage,
             summary=text,
             confidence=confidence,
+            stage_confidence=round(min(1.0, max(0.0, stage_confidence)), 4),
             boundary_reason=self._start_reason,
             boundary_score=self._start_score,
             boundary_signals=self._start_signals,

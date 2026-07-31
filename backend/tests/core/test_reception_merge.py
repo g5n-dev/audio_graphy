@@ -282,6 +282,27 @@ class TestMultiRecordingGrouping:
 
 
 class TestManualConstraints:
+    def test_force_split_blocks_transitive_component_union(self) -> None:
+        recordings = [
+            _recording("a", 0, customer="same"),
+            _recording("b", 3, customer="same"),
+            _recording("c", 6, customer="same"),
+        ]
+        constraints = ManualReceptionConstraints.from_pairs(
+            force_split=[("a", "c")],
+        )
+
+        proposals = ReceptionMerger().propose_groups(
+            recordings,
+            constraints=constraints,
+        )
+
+        assert not any(
+            {"a", "c"} <= set(proposal.recording_ids)
+            and proposal.decision == "merge"
+            for proposal in proposals
+        )
+
     def test_force_split_wins_over_matching_explicit_identity(self) -> None:
         left = _recording("a", 0, reception_id="r-1")
         right = _recording("b", 1, reception_id="r-1")

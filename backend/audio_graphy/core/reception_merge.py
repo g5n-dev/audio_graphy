@@ -441,6 +441,10 @@ class ReceptionMerger:
 
         by_id = {item.recording_id: item for item in ordered}
         parent = {item.recording_id: item.recording_id for item in ordered}
+        component_members = {
+            item.recording_id: {item.recording_id}
+            for item in ordered
+        }
         known_customers = {
             item.recording_id: (
                 {item.customer_voiceprint_id} if item.customer_voiceprint_id else set()
@@ -479,6 +483,14 @@ class ReceptionMerger:
             right_root = find(right_id)
             if left_root == right_root:
                 return True
+            active_constraints = constraints or ManualReceptionConstraints()
+            if any(
+                frozenset((left_member, right_member))
+                in active_constraints.force_split
+                for left_member in component_members[left_root]
+                for right_member in component_members[right_root]
+            ):
+                return False
             combined_customers = known_customers[left_root] | known_customers[right_root]
             combined_receptions = explicit_receptions[left_root] | explicit_receptions[right_root]
             combined_sessions = explicit_sessions[left_root] | explicit_sessions[right_root]
@@ -489,6 +501,7 @@ class ReceptionMerger:
             ) and not allow_identity_override:
                 return False
             parent[right_root] = left_root
+            component_members[left_root] |= component_members[right_root]
             known_customers[left_root] = combined_customers
             explicit_receptions[left_root] = combined_receptions
             explicit_sessions[left_root] = combined_sessions

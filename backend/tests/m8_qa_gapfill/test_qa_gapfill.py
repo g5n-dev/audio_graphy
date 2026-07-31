@@ -902,6 +902,10 @@ def _ws_app(tmp_path: Path, **settings_over: Any) -> tuple[FastAPI, TestClient]:
     settings = Settings(
         jwt_secret="test-secret-32-chars-minimum-length!!",
         enable_streaming=True,
+        # This legacy protocol-gap suite intentionally exercises control-frame
+        # handling without a database. Ticket issuance/consumption is covered
+        # separately; JWT query auth remains explicitly gated here.
+        streaming_allow_legacy_jwt_query=True,
         adapter_streaming_vad_mode="mock",
         adapter_streaming_asr_mode="mock",
         streaming_session_timeout_sec=30.0,
@@ -1121,9 +1125,10 @@ class TestWSHelpers:
         app, _client = _ws_app(tmp_path)
         session = _make_session()
         _register_session(app, session)
-        assert app.state.stream_sessions["qa-gap"] is session
+        registry_key = ("t1", "qa-gap", 1)
+        assert app.state.stream_sessions[registry_key] is session
         _unregister_session(app, session)
-        assert "qa-gap" not in app.state.stream_sessions
+        assert registry_key not in app.state.stream_sessions
         # Unregister when registry missing — no-op.
         app.state.stream_sessions = None
         _unregister_session(app, session)
@@ -1133,7 +1138,7 @@ class TestWSHelpers:
         app.state.stream_sessions = None
         session = _make_session()
         _register_session(app, session)
-        assert app.state.stream_sessions["qa-gap"] is session
+        assert app.state.stream_sessions[("t1", "qa-gap", 1)] is session
 
     def test_build_tag_scheduler_no_factory_no_service(self, tmp_path: Path) -> None:
         app, _client = _ws_app(tmp_path)

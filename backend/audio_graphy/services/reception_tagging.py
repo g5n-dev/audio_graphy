@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from collections import defaultdict
 from collections.abc import Sequence
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any, Literal, cast
 
-from sqlalchemy import and_, desc, func, or_, select
+from sqlalchemy import and_, desc, func, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from audio_graphy.analytics.tag_insights import analyze_tag_insights
@@ -23,10 +25,15 @@ from audio_graphy.models.reception import (
     ReceptionRecording,
 )
 from audio_graphy.models.segment import Segment
+from audio_graphy.models.tag_governance import (
+    TagAssignmentCurrent,
+    TagAssignmentFact,
+)
 from audio_graphy.schemas.reception_tags import (
     ALL_DIALOGUE_TARGET_LABELS,
     MAX_EVIDENCE_SUMMARY_ITEMS,
     MAX_RECEPTION_OUTPUT_EVIDENCE_REFS,
+    CorrectDialogueTagRequest,
     DeriveDialogueTagsRequest,
     DialogueTargetLabel,
 )
@@ -40,6 +47,14 @@ from audio_graphy.schemas.tag_insights import (
     TagGroup,
     TimeWindow,
     TrendGranularity,
+)
+from audio_graphy.services.stage_projection import (
+    project_stage_change_in_session,
+)
+from audio_graphy.services.tag_governance import (
+    AssignmentValidationError,
+    GovernanceConflictError,
+    TagGovernanceService,
 )
 
 Scenario = Literal["gold", "automotive", "custom"]
@@ -132,6 +147,14 @@ class DeriveTagsResult:
 
 
 @dataclass(frozen=True, slots=True)
+class CorrectDialogueTagResult:
+    reception_id: int
+    reception_version: int
+    superseded_assignment_id: int
+    assignment: DialogueTagAssignment
+
+
+@dataclass(frozen=True, slots=True)
 class EvidenceSummary:
     reception_id: int
     dialogue_unit_id: int
@@ -141,6 +164,92 @@ class EvidenceSummary:
     confidence: float | None
     evidence_count: int
     evidence_refs: list[dict[str, Any]]
+
+
+@dataclass(frozen=True, slots=True)
+class _InsightAssignmentRow:
+    reception: Reception
+    unit: DialogueUnit
+    group_key: str
+    group_version: str
+    label_key: str
+    label_value: Any
+    confidence: float | None
+    source: str
+    priority: int
+    evidence_refs: list[Any]
+    assigned_at: datetime
+
+
+def _canonical_group(fact: TagAssignmentFact) -> tuple[str, str]:
+    return (
+        f"schema.{fact.schema_version_id or 0}",
+        (f"tagger.{fact.tagger_version_id}" if fact.tagger_version_id is not None else "manual"),
+    )
+
+
+def _canonical_workspace_group_version(fact: TagAssignmentFact) -> str:
+    tagger_ref = (
+        f"tagger:{fact.tagger_version_id}"
+        if fact.tagger_version_id is not None
+        else "tagger:manual"
+    )
+    return f"schema:{fact.schema_version_id}|{tagger_ref}"
+
+
+def _canonical_assignment_projection(
+    fact: TagAssignmentFact,
+) -> DialogueTagAssignment:
+    value = fact.tag_value
+    label_value = (
+        value
+        if isinstance(value, str)
+        else json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    )
+    return DialogueTagAssignment(
+        id=fact.id,
+        tenant_id=fact.tenant_id,
+        reception_id=cast(int, fact.reception_id),
+        dialogue_unit_id=fact.dialogue_unit_id or fact.subject_id,
+        group_key="canonical",
+        group_version=_canonical_workspace_group_version(fact),
+        label_key=fact.tag_key,
+        label_value=label_value,
+        confidence=fact.confidence,
+        source=fact.source,
+        priority=1_000 if fact.source == "manual" else 500,
+        evidence_refs=deepcopy(fact.evidence_refs),
+        model_run_id=f"fact:{fact.id}",
+        is_current=True,
+        assigned_at=fact.assigned_at,
+    )
+
+
+def _select_evidence_subset(
+    raw_refs: object,
+    requested_ref_ids: Sequence[str],
+    *,
+    assignment_id: int,
+) -> list[dict[str, Any]]:
+    original_refs: dict[str, dict[str, Any]] = {}
+    if isinstance(raw_refs, list):
+        for raw in raw_refs:
+            if not isinstance(raw, dict):
+                continue
+            ref_id = raw.get("ref_id")
+            if isinstance(ref_id, str) and ref_id and ref_id not in original_refs:
+                original_refs[ref_id] = raw
+    unknown_refs = [ref_id for ref_id in requested_ref_ids if ref_id not in original_refs]
+    if unknown_refs:
+        raise ValidationError(
+            "Manual evidence must be a subset of the current assignment evidence",
+            code="TAG_EVIDENCE_SUBSET_INVALID",
+            detail={
+                "assignment_id": assignment_id,
+                "unknown_ref_ids": unknown_refs,
+            },
+        )
+    return [deepcopy(original_refs[ref_id]) for ref_id in requested_ref_ids]
 
 
 @dataclass(frozen=True, slots=True)
@@ -522,6 +631,32 @@ def _same_assignment(
     )
 
 
+def _assignment_snapshot(assignment: DialogueTagAssignment) -> dict[str, Any]:
+    return {
+        "id": assignment.id,
+        "dialogue_unit_id": assignment.dialogue_unit_id,
+        "group_key": assignment.group_key,
+        "group_version": assignment.group_version,
+        "label_key": assignment.label_key,
+        "label_value": assignment.label_value,
+        "confidence": assignment.confidence,
+        "source": assignment.source,
+        "priority": assignment.priority,
+        "evidence_refs": deepcopy(assignment.evidence_refs),
+        "model_run_id": assignment.model_run_id,
+        "is_current": assignment.is_current,
+        "assigned_at": assignment.assigned_at.isoformat(),
+    }
+
+
+def _manual_group_version(base_version: str, reception_version: int) -> str:
+    suffix = f"-manual-r{reception_version}"
+    prefix_limit = 64 - len(suffix)
+    if prefix_limit <= 0:
+        return f"manual-r{reception_version}"[:64]
+    return f"{base_version[:prefix_limit]}{suffix}"
+
+
 def _safe_evidence_refs(raw_refs: object) -> list[dict[str, Any]]:
     if not isinstance(raw_refs, list):
         return []
@@ -801,6 +936,304 @@ class ReceptionTaggingService:
             )
         return result
 
+    async def correct_assignment(
+        self,
+        *,
+        reception_id: int,
+        assignment_id: int,
+        tenant_id: str,
+        request: CorrectDialogueTagRequest,
+        actor: str,
+        actor_user_id: int,
+    ) -> CorrectDialogueTagResult:
+        """Append one manual assignment while preserving the superseded fact."""
+
+        async with self._session_factory() as session, session.begin():
+            reception = await self._load_reception(
+                session,
+                reception_id=reception_id,
+                tenant_id=tenant_id,
+                for_update=True,
+            )
+            if reception.version != request.expected_reception_version:
+                raise ConflictError(
+                    "Reception version changed; reload before correcting the tag",
+                    code="RECEPTION_VERSION_CONFLICT",
+                    detail={
+                        "reception_id": reception.id,
+                        "expected_version": request.expected_reception_version,
+                        "actual_version": reception.version,
+                    },
+                )
+
+            is_canonical = request.expected_group_version.startswith("schema:")
+            if is_canonical:
+                fact = (
+                    await session.execute(
+                        select(TagAssignmentFact).where(
+                            TagAssignmentFact.id == assignment_id,
+                            TagAssignmentFact.tenant_id == tenant_id,
+                            TagAssignmentFact.reception_id == reception.id,
+                            TagAssignmentFact.subject_type == "dialogue_unit",
+                            TagAssignmentFact.tombstone.is_(False),
+                        )
+                    )
+                ).scalar_one_or_none()
+                if fact is None:
+                    raise NotFoundError(
+                        "Dialogue tag assignment not found",
+                        code="DIALOGUE_TAG_NOT_FOUND",
+                    )
+                actual_group_version = _canonical_workspace_group_version(fact)
+                current_fact_id = (
+                    await session.execute(
+                        select(TagAssignmentCurrent.fact_id).where(
+                            TagAssignmentCurrent.tenant_id == tenant_id,
+                            TagAssignmentCurrent.subject_type == fact.subject_type,
+                            TagAssignmentCurrent.subject_id == fact.subject_id,
+                            TagAssignmentCurrent.tag_key == fact.tag_key,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if (
+                    current_fact_id != fact.id
+                    or actual_group_version != request.expected_group_version
+                ):
+                    raise ConflictError(
+                        "Dialogue tag group version changed; reload before correcting",
+                        code="TAG_GROUP_VERSION_CONFLICT",
+                        detail={
+                            "assignment_id": fact.id,
+                            "expected_group_version": request.expected_group_version,
+                            "actual_group_version": actual_group_version,
+                            "is_current": current_fact_id == fact.id,
+                        },
+                    )
+                selected_evidence = _select_evidence_subset(
+                    fact.evidence_refs,
+                    request.evidence_ref_ids,
+                    assignment_id=fact.id,
+                )
+                dialogue_unit_id = fact.dialogue_unit_id or fact.subject_id
+                stage_change = (
+                    await project_stage_change_in_session(
+                        session,
+                        tenant_id=tenant_id,
+                        reception_id=reception.id,
+                        dialogue_unit_id=dialogue_unit_id,
+                        stage=request.label_value,
+                        evidence_refs=selected_evidence,
+                    )
+                    if fact.tag_key == "stage"
+                    else None
+                )
+                governance = TagGovernanceService(self._session_factory)
+                try:
+                    (
+                        superseded_fact,
+                        corrected_fact,
+                    ) = await governance.append_manual_correction_in_session(
+                        session,
+                        tenant_id=tenant_id,
+                        expected_fact_id=fact.id,
+                        tag_value=request.label_value,
+                        evidence_refs=selected_evidence,
+                        reason=request.reason,
+                        actor_user_id=actor_user_id,
+                    )
+                    await governance.project_manual_correction_in_session(
+                        session,
+                        tenant_id=tenant_id,
+                        reception=reception,
+                        superseded_fact=superseded_fact,
+                        corrected_fact=corrected_fact,
+                        reason=request.reason,
+                        actor_user_id=actor_user_id,
+                        stage_change=stage_change,
+                    )
+                except GovernanceConflictError as exc:
+                    raise ConflictError(
+                        "Dialogue tag current fact changed; reload before correcting",
+                        code="TAG_GROUP_VERSION_CONFLICT",
+                        detail={"assignment_id": fact.id},
+                    ) from exc
+                except AssignmentValidationError as exc:
+                    raise ValidationError(
+                        str(exc),
+                        code="TAG_ASSIGNMENT_INVALID",
+                        detail={"assignment_id": fact.id},
+                    ) from exc
+
+                return CorrectDialogueTagResult(
+                    reception_id=reception.id,
+                    reception_version=reception.version,
+                    superseded_assignment_id=superseded_fact.id,
+                    assignment=_canonical_assignment_projection(corrected_fact),
+                )
+
+            assignment = (
+                await session.execute(
+                    select(DialogueTagAssignment)
+                    .where(
+                        DialogueTagAssignment.id == assignment_id,
+                        DialogueTagAssignment.tenant_id == tenant_id,
+                        DialogueTagAssignment.reception_id == reception.id,
+                    )
+                    .with_for_update()
+                )
+            ).scalar_one_or_none()
+            if assignment is None:
+                raise NotFoundError(
+                    "Dialogue tag assignment not found",
+                    code="DIALOGUE_TAG_NOT_FOUND",
+                )
+            if (
+                not assignment.is_current
+                or assignment.group_version != request.expected_group_version
+            ):
+                raise ConflictError(
+                    "Dialogue tag group version changed; reload before correcting",
+                    code="TAG_GROUP_VERSION_CONFLICT",
+                    detail={
+                        "assignment_id": assignment.id,
+                        "expected_group_version": request.expected_group_version,
+                        "actual_group_version": assignment.group_version,
+                        "is_current": assignment.is_current,
+                    },
+                )
+
+            selected_evidence = _select_evidence_subset(
+                assignment.evidence_refs,
+                request.evidence_ref_ids,
+                assignment_id=assignment.id,
+            )
+
+            before = _assignment_snapshot(assignment)
+            now = datetime.now(UTC)
+            next_reception_version = reception.version + 1
+            manual_version = _manual_group_version(
+                assignment.group_version,
+                next_reception_version,
+            )
+            stage_change = (
+                await project_stage_change_in_session(
+                    session,
+                    tenant_id=tenant_id,
+                    reception_id=reception.id,
+                    dialogue_unit_id=assignment.dialogue_unit_id,
+                    stage=request.label_value,
+                    evidence_refs=selected_evidence,
+                )
+                if assignment.label_key == "stage"
+                else None
+            )
+            assignment.is_current = False
+            corrected = DialogueTagAssignment(
+                tenant_id=tenant_id,
+                reception_id=reception.id,
+                dialogue_unit_id=assignment.dialogue_unit_id,
+                group_key=assignment.group_key,
+                group_version=manual_version,
+                label_key=assignment.label_key,
+                label_value=request.label_value,
+                confidence=1.0,
+                source="manual",
+                priority=assignment.priority,
+                evidence_refs=selected_evidence,
+                model_run_id=f"{actor}:{manual_version}"[:128],
+                is_current=True,
+                assigned_at=now,
+            )
+            session.add(corrected)
+            reception.version = next_reception_version
+            await session.flush()
+            after = _assignment_snapshot(corrected)
+
+            session.add_all(
+                [
+                    ProvenanceEvent(
+                        tenant_id=tenant_id,
+                        reception_id=reception.id,
+                        object_type="dialogue_tag_assignment",
+                        object_ref=str(assignment.id),
+                        event_type="superseded",
+                        actor=actor,
+                        algorithm_version=manual_version,
+                        parent_refs=_provenance_parent_refs(
+                            assignment.dialogue_unit_id,
+                            assignment.evidence_refs,
+                        ),
+                        evidence_refs=_safe_evidence_refs(assignment.evidence_refs),
+                        payload={
+                            "reason": request.reason,
+                            "before": before,
+                            "superseded_by_assignment_id": corrected.id,
+                            "reception_version": reception.version,
+                        },
+                        occurred_at=now,
+                    ),
+                    ProvenanceEvent(
+                        tenant_id=tenant_id,
+                        reception_id=reception.id,
+                        object_type="dialogue_tag_assignment",
+                        object_ref=str(corrected.id),
+                        event_type="edited",
+                        actor=actor,
+                        algorithm_version=manual_version,
+                        parent_refs=[
+                            {
+                                "type": "dialogue_tag_assignment",
+                                "id": assignment.id,
+                            },
+                            *_provenance_parent_refs(
+                                corrected.dialogue_unit_id,
+                                corrected.evidence_refs,
+                            ),
+                        ],
+                        evidence_refs=_safe_evidence_refs(corrected.evidence_refs),
+                        payload={
+                            "reason": request.reason,
+                            "before": before,
+                            "after": after,
+                            "expected_group_version": request.expected_group_version,
+                            "reception_version": reception.version,
+                        },
+                        occurred_at=now,
+                    ),
+                ]
+            )
+            if stage_change is not None:
+                session.add(
+                    ProvenanceEvent(
+                        tenant_id=tenant_id,
+                        reception_id=reception.id,
+                        object_type="dialogue_unit",
+                        object_ref=str(assignment.dialogue_unit_id),
+                        event_type="edited",
+                        actor=actor,
+                        algorithm_version="manual-tag-edit-v1",
+                        parent_refs=[
+                            {
+                                "type": "dialogue_tag_assignment",
+                                "id": corrected.id,
+                            }
+                        ],
+                        evidence_refs=_safe_evidence_refs(corrected.evidence_refs),
+                        payload={
+                            "reason": request.reason,
+                            **stage_change,
+                            "reception_version": reception.version,
+                        },
+                        occurred_at=now,
+                    )
+                )
+            return CorrectDialogueTagResult(
+                reception_id=reception.id,
+                reception_version=reception.version,
+                superseded_assignment_id=assignment.id,
+                assignment=corrected,
+            )
+
     async def derive(
         self,
         *,
@@ -879,6 +1312,19 @@ class ReceptionTaggingService:
                 for item in existing
                 if item.is_current
             }
+            manual_current = {key: item for key, item in current.items() if item.source == "manual"}
+            protected_keys = set(manual_current)
+            automatic_planned = {
+                key: item for key, item in planned.items() if key not in protected_keys
+            }
+            automatic_current = {
+                key: item for key, item in current.items() if key not in protected_keys
+            }
+            missing = [
+                item
+                for item in missing
+                if (item.dialogue_unit_id, item.label_key) not in protected_keys
+            ]
             by_version = {
                 (
                     item.dialogue_unit_id,
@@ -893,9 +1339,12 @@ class ReceptionTaggingService:
             # output changes would overwrite history because the existing
             # database uniqueness contract permits one row per version/cell.
             # Require callers to advance ``group_version`` instead.
-            planned_keys = set(planned)
+            planned_keys = set(automatic_planned)
             reused_version_rows = [
-                item for item in existing if item.group_version == request.group_version
+                item
+                for item in existing
+                if item.group_version == request.group_version
+                and (item.dialogue_unit_id, item.label_key) not in protected_keys
             ]
             version_conflicts: list[dict[str, Any]] = []
             for persisted in reused_version_rows:
@@ -903,7 +1352,7 @@ class ReceptionTaggingService:
                     persisted.dialogue_unit_id,
                     cast(DialogueTargetLabel, persisted.label_key),
                 )
-                planned_tag = planned.get(key)
+                planned_tag = automatic_planned.get(key)
                 if planned_tag is None or not _matches_version_assignment(
                     persisted,
                     group_version=request.group_version,
@@ -945,10 +1394,10 @@ class ReceptionTaggingService:
                     },
                 )
 
-            exact = len(current) == len(planned)
+            exact = len(automatic_current) == len(automatic_planned)
             if exact:
-                for (unit_id, label_key), item in planned.items():
-                    current_assignment = current.get((unit_id, label_key))
+                for (unit_id, label_key), item in automatic_planned.items():
+                    current_assignment = automatic_current.get((unit_id, label_key))
                     if current_assignment is None or not _same_assignment(
                         current_assignment,
                         group_version=request.group_version,
@@ -975,7 +1424,7 @@ class ReceptionTaggingService:
                 )
 
             now = datetime.now(UTC)
-            superseded = list(current.values())
+            superseded = list(automatic_current.values())
             for old in superseded:
                 old.is_current = False
                 session.add(
@@ -1004,7 +1453,7 @@ class ReceptionTaggingService:
                 )
 
             persisted_assignments: list[DialogueTagAssignment] = []
-            for (unit_id, label_key), item in planned.items():
+            for (unit_id, label_key), item in automatic_planned.items():
                 evidence_refs = _evidence_json(item.evidence)
                 assignment = by_version.get((unit_id, request.group_version, label_key))
                 if assignment is None:
@@ -1067,7 +1516,7 @@ class ReceptionTaggingService:
 
             return DeriveTagsResult(
                 assignments=sorted(
-                    persisted_assignments,
+                    [*manual_current.values(), *persisted_assignments],
                     key=lambda assignment: (
                         unit_by_id[assignment.dialogue_unit_id].unit_index,
                         _LABEL_ORDER.index(
@@ -1227,6 +1676,98 @@ class ReceptionTaggingService:
                     evidence_summary=[],
                 )
 
+            canonical_stmt = (
+                select(TagAssignmentFact, DialogueUnit, Reception)
+                .join(
+                    DialogueUnit,
+                    and_(
+                        DialogueUnit.id == TagAssignmentFact.dialogue_unit_id,
+                        DialogueUnit.tenant_id == tenant_id,
+                    ),
+                )
+                .join(
+                    Reception,
+                    and_(
+                        Reception.id == TagAssignmentFact.reception_id,
+                        Reception.tenant_id == tenant_id,
+                    ),
+                )
+                .where(
+                    TagAssignmentFact.tenant_id == tenant_id,
+                    TagAssignmentFact.subject_type == "dialogue_unit",
+                    TagAssignmentFact.reception_id.in_(page_ids),
+                )
+            )
+            if selection_mode == "current":
+                canonical_stmt = canonical_stmt.join(
+                    TagAssignmentCurrent,
+                    and_(
+                        TagAssignmentCurrent.fact_id == TagAssignmentFact.id,
+                        TagAssignmentCurrent.tenant_id == tenant_id,
+                    ),
+                )
+            else:
+                canonical_pairs: list[Any] = []
+                for group_key, group_version in selected_exact_pairs:
+                    if not group_key.startswith("schema."):
+                        continue
+                    try:
+                        schema_version_id = int(group_key.removeprefix("schema."))
+                    except ValueError:
+                        continue
+                    if group_version == "manual":
+                        canonical_pairs.append(
+                            and_(
+                                TagAssignmentFact.schema_version_id == schema_version_id,
+                                TagAssignmentFact.tagger_version_id.is_(None),
+                            )
+                        )
+                    elif group_version.startswith("tagger."):
+                        try:
+                            tagger_version_id = int(group_version.removeprefix("tagger."))
+                        except ValueError:
+                            continue
+                        canonical_pairs.append(
+                            and_(
+                                TagAssignmentFact.schema_version_id == schema_version_id,
+                                TagAssignmentFact.tagger_version_id == tagger_version_id,
+                            )
+                        )
+                if canonical_pairs:
+                    canonical_stmt = canonical_stmt.where(or_(*canonical_pairs))
+                else:
+                    canonical_stmt = canonical_stmt.where(TagAssignmentFact.id < 0)
+            canonical_rows = (await session.execute(canonical_stmt)).all()
+            canonical_group_times: dict[tuple[str, str], datetime] = {}
+            for fact, _unit, _reception in canonical_rows:
+                if fact.tombstone:
+                    continue
+                pair = _canonical_group(fact)
+                if group_keys and pair[0] not in group_keys:
+                    continue
+                canonical_group_times[pair] = max(
+                    canonical_group_times.get(pair, fact.assigned_at),
+                    fact.assigned_at,
+                )
+
+            canonical_current_cells = (
+                select(
+                    TagAssignmentFact.dialogue_unit_id,
+                    TagAssignmentFact.tag_key,
+                )
+                .join(
+                    TagAssignmentCurrent,
+                    and_(
+                        TagAssignmentCurrent.fact_id == TagAssignmentFact.id,
+                        TagAssignmentCurrent.tenant_id == tenant_id,
+                    ),
+                )
+                .where(
+                    TagAssignmentFact.tenant_id == tenant_id,
+                    TagAssignmentFact.subject_type == "dialogue_unit",
+                    TagAssignmentFact.reception_id.in_(page_ids),
+                )
+            )
             base_tag_predicates: list[Any] = [
                 DialogueTagAssignment.tenant_id == tenant_id,
                 DialogueTagAssignment.reception_id.in_(page_ids),
@@ -1259,10 +1800,19 @@ class ReceptionTaggingService:
                         .limit(MAX_GROUPS + 1)
                     )
                 ).all()
-                group_truncated = len(group_rows) > MAX_GROUPS
-                selected_group_pairs = [
-                    (str(row[0]), str(row[1])) for row in group_rows[:MAX_GROUPS]
-                ]
+                all_group_times = {(str(row[0]), str(row[1])): row[2] for row in group_rows}
+                all_group_times.update(canonical_group_times)
+                ordered_groups = sorted(
+                    all_group_times,
+                    key=lambda pair: (
+                        all_group_times[pair],
+                        pair[0],
+                        pair[1],
+                    ),
+                    reverse=True,
+                )
+                group_truncated = len(ordered_groups) > MAX_GROUPS
+                selected_group_pairs = ordered_groups[:MAX_GROUPS]
             selected_group_ids = [
                 f"{group_key}@{version}" for group_key, version in selected_group_pairs
             ]
@@ -1300,14 +1850,21 @@ class ReceptionTaggingService:
                 ]
             )
             assignment_predicates = [*base_tag_predicates, pair_predicate]
-            total_assignments = int(
+            if selection_mode == "current":
+                assignment_predicates.append(
+                    tuple_(
+                        DialogueTagAssignment.dialogue_unit_id,
+                        DialogueTagAssignment.label_key,
+                    ).not_in(canonical_current_cells)
+                )
+            legacy_total_assignments = int(
                 (
                     await session.execute(
                         select(func.count(DialogueTagAssignment.id)).where(*assignment_predicates)
                     )
                 ).scalar_one()
             )
-            rows = (
+            legacy_rows = (
                 await session.execute(
                     select(
                         DialogueTagAssignment,
@@ -1339,14 +1896,74 @@ class ReceptionTaggingService:
                     .limit(assignment_limit + 1)
                 )
             ).all()
-            assignment_truncated = len(rows) > assignment_limit
-            rows = rows[:assignment_limit]
+            selected_pair_set = set(selected_group_pairs)
+            canonical_by_cell: dict[
+                tuple[int, str, tuple[str, str]],
+                tuple[TagAssignmentFact, DialogueUnit, Reception],
+            ] = {}
+            for fact, unit, reception in canonical_rows:
+                pair = _canonical_group(fact)
+                if pair not in selected_pair_set:
+                    continue
+                key = (unit.id, fact.tag_key, pair)
+                previous = canonical_by_cell.get(key)
+                if previous is None or previous[0].revision < fact.revision:
+                    canonical_by_cell[key] = (fact, unit, reception)
+            selected_canonical_rows = [
+                row for row in canonical_by_cell.values() if not row[0].tombstone
+            ]
+            total_assignments = legacy_total_assignments + len(selected_canonical_rows)
+            insight_rows = [
+                _InsightAssignmentRow(
+                    reception=reception,
+                    unit=unit,
+                    group_key=assignment.group_key,
+                    group_version=assignment.group_version,
+                    label_key=assignment.label_key,
+                    label_value=assignment.label_value,
+                    confidence=assignment.confidence,
+                    source=assignment.source,
+                    priority=assignment.priority,
+                    evidence_refs=list(assignment.evidence_refs),
+                    assigned_at=assignment.assigned_at,
+                )
+                for assignment, unit, reception in legacy_rows
+            ]
+            insight_rows.extend(
+                _InsightAssignmentRow(
+                    reception=reception,
+                    unit=unit,
+                    group_key=_canonical_group(fact)[0],
+                    group_version=_canonical_group(fact)[1],
+                    label_key=fact.tag_key,
+                    label_value=fact.tag_value,
+                    confidence=fact.confidence,
+                    source=fact.source,
+                    priority=100 if fact.source == "manual" else 10,
+                    evidence_refs=list(fact.evidence_refs),
+                    assigned_at=fact.assigned_at,
+                )
+                for fact, unit, reception in selected_canonical_rows
+            )
+            insight_rows.sort(
+                key=lambda row: (
+                    row.reception.started_at,
+                    row.reception.id,
+                    row.unit.unit_index,
+                    row.label_key,
+                    row.assigned_at,
+                )
+            )
+            assignment_truncated = len(insight_rows) > assignment_limit
+            rows = insight_rows[:assignment_limit]
 
         sources_by_group: dict[tuple[str, str], set[str]] = defaultdict(set)
         priorities_by_group: dict[tuple[str, str], list[int]] = defaultdict(list)
         analytics_assignments: list[TagAssignment] = []
         evidence_summary: list[EvidenceSummary] = []
-        for assignment, unit, reception in rows:
+        for assignment in rows:
+            unit = assignment.unit
+            reception = assignment.reception
             group_pair = (assignment.group_key, assignment.group_version)
             group_id = f"{assignment.group_key}@{assignment.group_version}"
             sources_by_group[group_pair].add(assignment.source)
@@ -1387,7 +2004,7 @@ class ReceptionTaggingService:
                         dialogue_unit_id=unit.id,
                         group_id=group_id,
                         label_key=assignment.label_key,
-                        label_value=assignment.label_value,
+                        label_value=str(assignment.label_value),
                         confidence=assignment.confidence,
                         evidence_count=len(clean_refs),
                         evidence_refs=clean_refs,

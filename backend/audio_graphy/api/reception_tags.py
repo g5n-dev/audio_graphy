@@ -5,20 +5,21 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from pydantic import Field, StringConstraints
 
 from audio_graphy.api.deps import get_current_user, get_session_factory
 from audio_graphy.auth.middleware import AuthUser
 from audio_graphy.auth.roles import require_write_access
 from audio_graphy.auth.tenants import get_tenant_id
+from audio_graphy.errors import ForbiddenError
 from audio_graphy.models.reception import DialogueTagAssignment
 from audio_graphy.schemas.reception_tags import (
     MAX_EVIDENCE_SUMMARY_ITEMS,
     MAX_RECEPTION_OUTPUT_EVIDENCE_REFS,
+    CorrectDialogueTagRequest,
+    CorrectDialogueTagResponse,
     DeriveDialogueTagsRequest,
-    DeriveDialogueTagsResponse,
-    MissingDialogueTag,
     ReceptionTagEvidenceSummary,
     ReceptionTagInsightsResponse,
 )
@@ -29,7 +30,15 @@ from audio_graphy.schemas.tag_insights import (
     MergeStrategy,
     TrendGranularity,
 )
+from audio_graphy.services.legacy_tag_compatibility import (
+    LegacyTagCompatibilityService,
+)
 from audio_graphy.services.reception_tagging import ReceptionTaggingService
+from audio_graphy.services.tag_governance import (
+    GovernanceConflictError,
+    GovernanceNotFoundError,
+    TagGovernanceService,
+)
 
 router = APIRouter(tags=["reception tags"])
 
@@ -67,6 +76,30 @@ def _service(request: Request) -> ReceptionTaggingService:
     return ReceptionTaggingService(get_session_factory(request))
 
 
+async def _enforce_blind_review_isolation(request: Request, user: AuthUser) -> None:
+    if await TagGovernanceService(get_session_factory(request)).has_active_blind_review(
+        tenant_id=get_tenant_id(request),
+        reviewer_user_id=user.id,
+    ):
+        raise ForbiddenError("Blind review isolation forbids tag output access before submission")
+
+
+async def _reserve_semantic_access(
+    request: Request,
+    user: AuthUser,
+    *,
+    access_kind: str,
+    reception_id: int | None = None,
+) -> None:
+    if not await TagGovernanceService(get_session_factory(request)).record_blind_sensitive_access(
+        tenant_id=get_tenant_id(request),
+        actor_user_id=user.id,
+        access_kind=access_kind,
+        reception_id=reception_id,
+    ):
+        raise ForbiddenError("Blind review isolation forbids tag output access before submission")
+
+
 def _assignment_response(
     assignment: DialogueTagAssignment,
 ) -> DialogueTagAssignmentResponse:
@@ -90,7 +123,7 @@ def _assignment_response(
 
 @router.post(
     "/receptions/{reception_id}/dialogue-tags/derive",
-    response_model=DeriveDialogueTagsResponse,
+    status_code=status.HTTP_202_ACCEPTED,
     summary="Derive versioned, evidence-bound dialogue tags",
     dependencies=[Depends(require_write_access())],
 )
@@ -99,31 +132,70 @@ async def derive_dialogue_tags(
     body: DeriveDialogueTagsRequest,
     request: Request,
     user: AuthUser = Depends(get_current_user),
-) -> DeriveDialogueTagsResponse:
-    result = await _service(request).derive(
+    idempotency_key: Annotated[
+        str | None,
+        Header(alias="Idempotency-Key", min_length=1, max_length=128),
+    ] = None,
+) -> dict[str, object]:
+    """Compatibility adapter: create one canonical async job, never legacy rows."""
+
+    await _enforce_blind_review_isolation(request, user)
+    tenant_id = get_tenant_id(request)
+    adapter = LegacyTagCompatibilityService(get_session_factory(request))
+    try:
+        job = await adapter.enqueue_reception(
+            tenant_id=tenant_id,
+            reception_id=reception_id,
+            legacy_paths=list(body.target_labels),
+            actor_user_id=user.id,
+            idempotency_key=idempotency_key,
+        )
+    except GovernanceNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except GovernanceConflictError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    return {
+        "job_id": job.id,
+        "status": job.status,
+        "reception_id": reception_id,
+        "requested_labels": list(body.target_labels),
+        "successor": f"/api/v1/tag-jobs/{job.id}",
+    }
+
+
+@router.patch(
+    "/receptions/{reception_id}/dialogue-tags/{assignment_id}",
+    response_model=CorrectDialogueTagResponse,
+    summary="Append an evidence-bound manual correction for one current dialogue tag",
+    dependencies=[Depends(require_write_access())],
+)
+async def correct_dialogue_tag(
+    reception_id: int,
+    assignment_id: int,
+    body: CorrectDialogueTagRequest,
+    request: Request,
+    user: AuthUser = Depends(get_current_user),
+) -> CorrectDialogueTagResponse:
+    await _reserve_semantic_access(
+        request,
+        user,
+        access_kind="tag_correction",
         reception_id=reception_id,
-        tenant_id=get_tenant_id(request),
+    )
+    tenant_id = get_tenant_id(request)
+    result = await _service(request).correct_assignment(
+        reception_id=reception_id,
+        assignment_id=assignment_id,
+        tenant_id=tenant_id,
         request=body,
         actor=f"user:{user.id}",
+        actor_user_id=user.id,
     )
-    return DeriveDialogueTagsResponse(
-        reception_id=reception_id,
-        group_key=body.group_key,
-        group_version=body.group_version,
-        requested_labels=body.target_labels,
-        assignment_count=len(result.assignments),
-        superseded_count=result.superseded_count,
-        no_op=result.no_op,
-        assignments=[_assignment_response(assignment) for assignment in result.assignments],
-        missing=[
-            MissingDialogueTag(
-                dialogue_unit_id=item.dialogue_unit_id,
-                unit_index=item.unit_index,
-                label_key=item.label_key,
-                reason=item.reason,
-            )
-            for item in result.missing
-        ],
+    return CorrectDialogueTagResponse(
+        reception_id=result.reception_id,
+        reception_version=result.reception_version,
+        superseded_assignment_id=result.superseded_assignment_id,
+        assignment=_assignment_response(result.assignment),
     )
 
 
@@ -170,6 +242,11 @@ async def get_reception_tag_insights(
     trend_granularity: TrendGranularity = "day",
     top_n_co_occurrences: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> ReceptionTagInsightsResponse:
+    await _reserve_semantic_access(
+        request,
+        user,
+        access_kind="reception_tag_insights",
+    )
     tenant_id = get_tenant_id(request)
     result = await _service(request).insights(
         tenant_id=tenant_id,

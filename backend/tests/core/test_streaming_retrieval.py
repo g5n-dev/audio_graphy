@@ -13,9 +13,10 @@ Covers:
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -49,7 +50,9 @@ class _KeywordLLM:
         temperature: float = 0.0,
         max_tokens: int | None = None,
         cache_key: str | None = None,
+        response_schema: Mapping[str, Any] | None = None,
     ) -> LLMResponse:
+        del messages, temperature, max_tokens, cache_key, response_schema
         self.calls += 1
         if self._fail:
             raise RuntimeError("fake llm down")

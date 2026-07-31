@@ -133,8 +133,20 @@ class TestStreamSessionFinalize:
             vad_adapter=vad,
             asr_adapter=asr,
         )
+        # A confirmed transcript is publishable only after VAD supplies real
+        # source geometry. Drive the deterministic mock into speech so
+        # finalize can pair its trailing segment with an ASR confirmation.
+        for seq in range(50):
+            _ = [
+                event
+                async for event in session.on_pcm_chunk(
+                    b"\x01" * 1024,
+                    seq=seq,
+                )
+            ]
         events = [e async for e in session.on_finalize()]
-        # MockStreamingASRAdapter.finalize yields one confirmed delta.
+        # MockStreamingASRAdapter.finalize yields a confirmation and VAD
+        # finalize yields the corresponding source interval.
         confirmed = [e for e in events if e["type"] == "segment_confirmed"]
         assert len(confirmed) == 1
         assert session.status == SessionStatus.CLOSED
@@ -172,8 +184,11 @@ class TestStreamSessionFinalize:
             asr_adapter=asr,
         )
         events = [e async for e in session.on_finalize()]
-        # Finalize should still complete and yield ASR deltas.
-        assert any(e["type"] == "segment_confirmed" for e in events)
+        # Finalize still closes, but ASR text without VAD geometry must remain
+        # unpublished rather than masquerading as a durable segment.
+        assert not any(e["type"] == "segment_confirmed" for e in events)
+        assert len(session.pending_confirmed) == 1
+        assert session.status == SessionStatus.CLOSED
         assert session.error_count >= 1
 
     @pytest.mark.asyncio

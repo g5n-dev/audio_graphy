@@ -27,8 +27,9 @@ Protocol (architecture §6 + Appendix A):
           "min_confidence": "EXTRACTED"}`` → one ``retrieval_result`` event.
           Only available when ``settings.enable_streaming_retrieval=True``.
 
-Auth: JWT via ``?token=`` query param (TTL 5 minutes; refresh via REST).
-Tenant: derived from JWT claims (``tid``).
+Auth: short-lived, single-use capability via ``?ticket=``. A legacy JWT query
+path exists only behind an explicit emergency compatibility setting.
+Tenant: bound into the consumed ticket.
 Consent: ``consent_token`` required in init frame (PRD §5.3 R10).
 
 Backpressure:
@@ -44,15 +45,30 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
+import secrets
 import struct
 import time
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
+from fastapi import (
+    APIRouter,
+    Depends,
+    Query,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+    WebSocketException,
+)
+from pydantic import BaseModel, Field
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from audio_graphy.adapters.protocols import StreamSessionId
+from audio_graphy.api.deps import get_current_user, get_db
 from audio_graphy.api.metrics import (
     STREAMING_ASR_LATENCY,
     STREAMING_SEGMENTS_TOTAL,
@@ -62,6 +78,8 @@ from audio_graphy.api.metrics import (
     STREAMING_VAD_RESETS_TOTAL,
 )
 from audio_graphy.auth.jwt_utils import JWTManager
+from audio_graphy.auth.middleware import AuthUser
+from audio_graphy.auth.roles import require_role
 from audio_graphy.auth.ws_auth import WS_AUTH_FAILED_CODE, WSAuthUser, verify_ws_token
 from audio_graphy.core.stream_session import (
     DEFAULT_CONFIRMED_FLUSH_THRESHOLD,
@@ -70,11 +88,13 @@ from audio_graphy.core.stream_session import (
     StreamSession,
     hash_consent_token,
 )
+from audio_graphy.errors import EntityNotFoundError
 
 if TYPE_CHECKING:
     from audio_graphy.config import Settings
     from audio_graphy.core.streaming_retrieval import StreamingRetriever
     from audio_graphy.core.streaming_tag_scheduler import StreamingTagScheduler
+    from audio_graphy.services.streaming_durability import StreamingDurabilityWriter
 
 logger = logging.getLogger(__name__)
 
@@ -87,10 +107,74 @@ WS_CLOSE_CONSENT_MISSING: int = 4002
 WS_CLOSE_TIMEOUT: int = 4003
 
 
+class StreamingTicketRequest(BaseModel):
+    recording_id: int = Field(gt=0)
+    consent_token: str = Field(min_length=1, max_length=512)
+
+
+class StreamingTicketResponse(BaseModel):
+    ticket: str
+    expires_at: str
+    ws_url: str
+
+
+@router.post(
+    "/ws/tickets",
+    response_model=StreamingTicketResponse,
+    status_code=201,
+    dependencies=[Depends(require_role("admin", "inspector", "agent"))],
+)
+@router.post(
+    "/api/v1/ws/tickets",
+    response_model=StreamingTicketResponse,
+    status_code=201,
+    dependencies=[Depends(require_role("admin", "inspector", "agent"))],
+    include_in_schema=False,
+)
+async def create_streaming_ticket(
+    body: StreamingTicketRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    user: AuthUser = Depends(get_current_user),
+) -> StreamingTicketResponse:
+    """Exchange authenticated HTTP authority for a 60-second WS capability."""
+    from audio_graphy.core.ws_ticket import WSTicketError, issue_ws_ticket
+
+    settings: Settings = request.app.state.settings
+    try:
+        issued = await issue_ws_ticket(
+            db,
+            tenant_id=user.tenant_id,
+            recording_id=body.recording_id,
+            user_id=user.id,
+            role=user.role,
+            consent_token_hash=hash_consent_token(body.consent_token),
+            ttl_sec=int(settings.streaming_ws_ticket_ttl_sec),
+        )
+    except WSTicketError as exc:
+        # Deliberately hide whether a foreign-tenant recording exists.
+        raise EntityNotFoundError(
+            message="Recording is not available for streaming",
+            detail={"recording_id": body.recording_id},
+        ) from exc
+    return StreamingTicketResponse(
+        ticket=issued.token,
+        expires_at=issued.expires_at.isoformat(),
+        ws_url=f"/ws/stream?ticket={issued.token}",
+    )
+
+
 @router.websocket("/ws/stream")
 async def ws_stream(
     ws: WebSocket,
-    token: str = Query(..., description="JWT access token (TTL 5min)"),
+    ticket: str | None = Query(
+        default=None,
+        description="Short-lived, single-use streaming ticket",
+    ),
+    token: str | None = Query(
+        default=None,
+        description="Legacy JWT compatibility path",
+    ),
 ) -> None:
     """Main streaming endpoint — PCM in, server events out.
 
@@ -100,12 +184,41 @@ async def ws_stream(
     settings: Settings = ws.app.state.settings
     jwt_manager: JWTManager = ws.app.state.jwt_manager
 
-    # --- 2. Auth via query string ---
-    try:
-        user = await verify_ws_token(token, jwt_manager)
-    except Exception:
-        # verify_ws_token raises WebSocketException which FastAPI closes with.
-        raise
+    # --- 2. Authenticate with a one-time ticket; JWT is emergency-only ---
+    ticket_binding: Any | None = None
+    if ticket and token:
+        raise WebSocketException(
+            code=WS_AUTH_FAILED_CODE,
+            reason="ambiguous websocket credentials",
+        )
+    if ticket:
+        from audio_graphy.core.ws_ticket import WSTicketError, consume_ws_ticket
+
+        session_factory = getattr(ws.app.state, "session_factory", None)
+        if session_factory is None:
+            raise WebSocketException(
+                code=WS_AUTH_FAILED_CODE,
+                reason="ticket store unavailable",
+            )
+        try:
+            ticket_binding = await consume_ws_ticket(session_factory, ticket)
+        except WSTicketError as exc:
+            raise WebSocketException(
+                code=WS_AUTH_FAILED_CODE,
+                reason=str(exc),
+            ) from exc
+        user = WSAuthUser(
+            user_id=ticket_binding.user_id,
+            tenant_id=ticket_binding.tenant_id,
+            role=ticket_binding.role,
+        )
+    elif settings.streaming_allow_legacy_jwt_query:
+        user = await verify_ws_token(token or "", jwt_manager)
+    else:
+        raise WebSocketException(
+            code=WS_AUTH_FAILED_CODE,
+            reason="one-time websocket ticket required",
+        )
 
     # --- 3. Accept the WS after auth (so 4001 closes cleanly) ---
     await ws.accept()
@@ -146,6 +259,9 @@ async def ws_stream(
     if not isinstance(recording_id_raw, int) or recording_id_raw <= 0:
         await ws.close(code=WS_AUTH_FAILED_CODE, reason="missing/invalid recording_id")
         return
+    if ticket_binding is not None and recording_id_raw != ticket_binding.recording_id:
+        await ws.close(code=WS_AUTH_FAILED_CODE, reason="ticket recording mismatch")
+        return
 
     consent_token = str(init_payload.get("consent_token", "")).strip()
     if not consent_token:
@@ -158,6 +274,56 @@ async def ws_stream(
         await ws.close(code=WS_CLOSE_CONSENT_MISSING, reason="consent_token required")
         return
     consent_hash = hash_consent_token(consent_token)
+    if (
+        ticket_binding is not None
+        and consent_hash != ticket_binding.consent_token_hash
+    ):
+        await ws.close(code=WS_AUTH_FAILED_CODE, reason="ticket consent mismatch")
+        return
+    resume_requested = "resume_from_seq" in init_payload
+    resume_from_seq = init_payload.get("resume_from_seq", 0)
+    if (
+        isinstance(resume_from_seq, bool)
+        or not isinstance(resume_from_seq, int)
+        or resume_from_seq < 0
+    ):
+        await ws.close(code=WS_AUTH_FAILED_CODE, reason="invalid resume_from_seq")
+        return
+    resume_token_raw = init_payload.get("resume_token")
+    if resume_token_raw is not None and (
+        not isinstance(resume_token_raw, str)
+        or not resume_token_raw
+        or len(resume_token_raw) > 128
+    ):
+        await ws.close(code=WS_AUTH_FAILED_CODE, reason="invalid resume_token")
+        return
+    resume_token = (
+        resume_token_raw if isinstance(resume_token_raw, str) else None
+    )
+
+    try:
+        (
+            persistence_id,
+            epoch,
+            generation,
+            pipeline_run_id,
+            lease_token,
+        ) = await _reserve_session_row(
+            ws.app,
+            tenant_id=user.tenant_id,
+            session_id=session_id_value,
+            recording_id=recording_id_raw,
+            user_id=user.user_id,
+            consent_token_hash=consent_hash,
+            timeout_sec=settings.streaming_session_timeout_sec,
+            resume_from_seq=resume_from_seq,
+            resume_requested=resume_requested,
+            resume_token=resume_token,
+        )
+    except Exception as exc:
+        logger.warning("streaming session reservation failed: %s", exc)
+        await ws.close(code=WS_AUTH_FAILED_CODE, reason="recording/session unavailable")
+        return
 
     # --- 5. Build streaming session (adapters from bundle factory) ---
     from audio_graphy.adapters.bundle import (
@@ -168,36 +334,86 @@ async def ws_stream(
     hotwords: tuple[str, ...] = ()
     app_pool = getattr(ws.app.state, "streaming_pool", None)
 
-    streaming_bundle = await acquire_streaming_adapters_for_session(
-        settings,
-        tenant_id=user.tenant_id,
-        session_id=session_id_value,
-        hotwords=hotwords,
-        pool=app_pool,
-    )
-    # Mock mode: the ASR adapter must be connect()ed before push_pcm works.
-    # Real mode: FunASRConnectionPool.acquire() already connects.
-    if settings.adapter_streaming_asr_mode != "real":
-        await streaming_bundle.asr.connect(
+    streaming_bundle: Any | None = None
+    session: StreamSession | None = None
+    try:
+        streaming_bundle = await acquire_streaming_adapters_for_session(
+            settings,
             session_id=session_id_value,
             tenant_id=user.tenant_id,
             hotwords=hotwords,
+            pool=app_pool,
         )
-    session = StreamSession(
-        session_id=StreamSessionId(value=session_id_value),
-        tenant_id=user.tenant_id,
-        recording_id=recording_id_raw,
-        user_id=user.user_id,
-        consent_token_hash=consent_hash,
-        vad_adapter=streaming_bundle.vad,
-        asr_adapter=streaming_bundle.asr,
-        seq_gap_threshold=settings.streaming_vad_reset_seq_gap,
-        pcm_buffer_max_sec=settings.streaming_session_pcm_buffer_max_sec,
-        realtime_window=DEFAULT_REALTIME_WINDOW,
-        confirmed_flush_threshold=DEFAULT_CONFIRMED_FLUSH_THRESHOLD,
-    )
-    _register_session(ws.app, session)
-    session.mark_active()
+        # Mock mode: the ASR adapter must be connect()ed before push_pcm works.
+        # Real mode: FunASRConnectionPool.acquire() already connects.
+        if settings.adapter_streaming_asr_mode != "real":
+            await streaming_bundle.asr.connect(
+                session_id=session_id_value,
+                tenant_id=user.tenant_id,
+                hotwords=hotwords,
+            )
+        session = StreamSession(
+            session_id=StreamSessionId(value=session_id_value),
+            tenant_id=user.tenant_id,
+            recording_id=recording_id_raw,
+            user_id=user.user_id,
+            consent_token_hash=consent_hash,
+            vad_adapter=streaming_bundle.vad,
+            asr_adapter=streaming_bundle.asr,
+            seq_gap_threshold=settings.streaming_vad_reset_seq_gap,
+            pcm_buffer_max_sec=settings.streaming_session_pcm_buffer_max_sec,
+            realtime_window=DEFAULT_REALTIME_WINDOW,
+            confirmed_flush_threshold=DEFAULT_CONFIRMED_FLUSH_THRESHOLD,
+            close_asr_on_finalize=settings.adapter_streaming_asr_mode != "real",
+            epoch=epoch,
+            generation=generation,
+            pipeline_run_id=pipeline_run_id,
+            lease_token=lease_token,
+            lease_ttl_seconds=max(
+                1.0,
+                float(settings.streaming_session_timeout_sec),
+            ),
+            persistence_id=persistence_id,
+        )
+        _register_session(ws.app, session)
+        session.mark_active()
+        await _mark_session_row_active(ws.app, session)
+    except Exception as exc:
+        logger.exception(
+            "streaming adapter/session activation failed session=%s: %s",
+            session_id_value,
+            exc,
+        )
+        await _fail_reserved_session(
+            ws.app,
+            persistence_id=persistence_id,
+            tenant_id=user.tenant_id,
+            pipeline_run_id=pipeline_run_id,
+            reason=str(exc),
+        )
+        if session is not None:
+            _unregister_session(ws.app, session)
+        await _release_unopened_streaming_bundle(
+            streaming_bundle,
+            real_asr=settings.adapter_streaming_asr_mode == "real",
+            pool=app_pool,
+        )
+        with contextlib.suppress(Exception):
+            await ws.close(code=1011, reason="streaming adapters unavailable")
+        return
+
+    assert session is not None
+    assert streaming_bundle is not None
+    durability_writer: StreamingDurabilityWriter | None = None
+    if persistence_id is not None:
+        from audio_graphy.services.streaming_durability import (
+            StreamingDurabilityWriter,
+        )
+
+        durability_writer = StreamingDurabilityWriter(
+            ws.app.state.session_factory,
+            pii_scrubber=getattr(ws.app.state, "pii_scrubber", None),
+        )
 
     # --- 5b. WS-3 per-session helpers: tag scheduler + retriever (optional DI) ---
     tag_scheduler = _build_tag_scheduler(ws.app, settings, user, recording_id_raw)
@@ -214,6 +430,10 @@ async def ws_stream(
                 "type": "session_opened",
                 "session_id": session_id_value,
                 "server_time": session.started_at.isoformat(),
+                "epoch": session.epoch,
+                "generation": session.generation,
+                "resume_from_seq": resume_from_seq,
+                "resume_token": session.lease_token,
                 "capabilities": {
                     "max_buffer_chunks": settings.ws_max_recv_queue,
                     "vad_reset_strategy": f"seq_gap_{settings.streaming_vad_reset_seq_gap}",
@@ -222,16 +442,36 @@ async def ws_stream(
             ensure_ascii=False,
         )
     )
+    if durability_writer is not None:
+        for staged in await durability_writer.pending_frames(session):
+            frame = struct.pack(">I", staged.source_seq) + staged.pcm
+            await _handle_binary(
+                ws,
+                session,
+                frame,
+                tag_scheduler,
+                durability_writer,
+            )
+            if session.status == SessionStatus.DRAINING:
+                break
 
     # --- 7. Receive / heartbeat loop ---
     try:
-        await _run_recv_loop(ws, session, settings, user, tag_scheduler, retriever)
+        await _run_recv_loop(
+            ws,
+            session,
+            settings,
+            user,
+            tag_scheduler,
+            retriever,
+            durability_writer,
+        )
     except WebSocketDisconnect:
         logger.info("WS /ws/stream client disconnect session=%s", session_id_value)
-        session.mark_end(reason="client_disconnect")
+        session.begin_drain(reason="client_disconnect")
     except Exception as exc:
         logger.exception("WS /ws/stream error session=%s: %s", session_id_value, exc)
-        session.mark_end(reason="error")
+        session.begin_drain(reason="error")
         session.error_count += 1
         with contextlib.suppress(Exception):
             await ws.send_text(
@@ -246,7 +486,21 @@ async def ws_stream(
                 )
             )
     finally:
-        # --- 8. Flush pending tag batch + emit session_closed + persist ---
+        # --- 8. Drain adapters, flush tags, persist, and return pooled ASR ---
+        with contextlib.suppress(Exception):
+            await _mark_session_row_status(ws.app, session, "DRAINING")
+        if session.status != SessionStatus.CLOSED:
+            with contextlib.suppress(Exception):
+                async for event in session.on_finalize():
+                    await _send_stream_event(
+                        ws,
+                        session,
+                        event,
+                        durability_writer,
+                        tag_scheduler,
+                    )
+        with contextlib.suppress(Exception):
+            await _mark_session_row_status(ws.app, session, "COMMITTING")
         if tag_scheduler is not None:
             with contextlib.suppress(Exception):
                 flushed = await tag_scheduler.flush()
@@ -255,22 +509,37 @@ async def ws_stream(
                         status="error" if flushed.error else "ok"
                     ).inc()
         STREAMING_SESSIONS_ACTIVE.dec()
-        with contextlib.suppress(Exception):
-            await _persist_session_row(ws.app, session)
-            await ws.send_text(
-                json.dumps(
-                    {
-                        "type": "session_closed",
-                        "session_id": session_id_value,
-                        "reason": session.end_reason or "normal",
-                        "stats": session.stats(),
-                    },
-                    ensure_ascii=False,
+        persisted = await _persist_session_row(ws.app, session)
+        if persisted:
+            with contextlib.suppress(Exception):
+                await ws.send_text(
+                    json.dumps(
+                        {
+                            "type": "session_closed",
+                            "session_id": session_id_value,
+                            "reason": session.end_reason or "normal",
+                            "stats": session.stats(),
+                        },
+                        ensure_ascii=False,
+                    )
                 )
+        else:
+            session.end_reason = "error"
+            session.error_count += 1
+            await _send_error(
+                ws,
+                session,
+                "SESSION_COMMIT_FAILED",
+                "streaming session could not be committed",
             )
         _unregister_session(ws.app, session)
+        if settings.adapter_streaming_asr_mode == "real" and app_pool is not None:
+            with contextlib.suppress(Exception):
+                await app_pool.release(streaming_bundle.asr)
         with contextlib.suppress(Exception):
-            await ws.close(code=WS_CLOSE_NORMAL)
+            await ws.close(
+                code=WS_CLOSE_NORMAL if persisted else WS_CLOSE_BACKPRESSURE,
+            )
 
 
 # ------------------------------------------------------------------
@@ -283,6 +552,7 @@ async def _run_recv_loop(
     user: WSAuthUser,
     tag_scheduler: StreamingTagScheduler | None = None,
     retriever: StreamingRetriever | None = None,
+    durability_writer: StreamingDurabilityWriter | None = None,
 ) -> None:
     """Main recv loop — handle binary + control frames + heartbeat."""
     last_pong = time.monotonic()
@@ -319,7 +589,7 @@ async def _run_recv_loop(
             > settings.streaming_session_timeout_sec
         ):
             await ws.close(code=WS_CLOSE_TIMEOUT, reason="session idle timeout")
-            session.mark_end(reason="timeout")
+            session.begin_drain(reason="timeout")
             return
 
         try:
@@ -349,18 +619,32 @@ async def _run_recv_loop(
                 return
         if pending > max_queue:
             await ws.close(code=WS_CLOSE_BACKPRESSURE, reason="backpressure overflow")
-            session.mark_end(reason="backpressure")
+            session.begin_drain(reason="backpressure")
             return
 
         # Route by frame type.
         if "bytes" in msg and msg["bytes"] is not None:
             pending += 1
             try:
-                await _handle_binary(ws, session, msg["bytes"], tag_scheduler)
+                await _handle_binary(
+                    ws,
+                    session,
+                    msg["bytes"],
+                    tag_scheduler,
+                    durability_writer,
+                )
             finally:
                 pending -= 1
         elif "text" in msg and msg["text"] is not None:
-            await _handle_text(ws, session, msg["text"], settings, retriever)
+            await _handle_text(
+                ws,
+                session,
+                msg["text"],
+                settings,
+                retriever,
+                tag_scheduler,
+                durability_writer,
+            )
 
 
 async def _handle_binary(
@@ -368,6 +652,7 @@ async def _handle_binary(
     session: StreamSession,
     data: bytes,
     tag_scheduler: StreamingTagScheduler | None = None,
+    durability_writer: StreamingDurabilityWriter | None = None,
 ) -> None:
     """Parse [4-byte seq BE][N PCM] and route to StreamSession.on_pcm_chunk.
 
@@ -379,29 +664,70 @@ async def _handle_binary(
         return
     seq = struct.unpack(">I", data[:4])[0]
     pcm = data[4:]
+    if durability_writer is not None:
+        try:
+            staged = await durability_writer.stage_frame(
+                session,
+                source_seq=seq,
+                pcm=pcm,
+            )
+        except Exception as exc:
+            logger.exception(
+                "streaming PCM staging failed session=%s seq=%s: %s",
+                session.session_id.value,
+                seq,
+                exc,
+            )
+            session.error_count += 1
+            session.begin_drain(reason="error")
+            await _send_error(
+                ws,
+                session,
+                "FRAME_STAGING_FAILED",
+                "PCM frame could not be staged",
+            )
+            return
+        if staged.state == "CONSUMED":
+            await ws.send_text(
+                json.dumps(
+                    {
+                        "type": "frame_ack",
+                        "session_id": session.session_id.value,
+                        "seq": seq,
+                        "duplicate": True,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            return
     t0 = time.perf_counter()
     async for event in session.on_pcm_chunk(pcm, seq=seq):
         event_type = event.get("type")
         if event_type == "segment_confirmed":
-            STREAMING_SEGMENTS_TOTAL.labels(mode="confirmed").inc()
             STREAMING_ASR_LATENCY.observe(time.perf_counter() - t0)
-            if tag_scheduler is not None:
-                await _maybe_emit_tag_update(ws, session, tag_scheduler, seq)
         elif event_type == "realtime_text":
             STREAMING_SEGMENTS_TOTAL.labels(mode="realtime").inc()
         elif event_type == "vad_reset":
             STREAMING_VAD_RESETS_TOTAL.labels(reason=str(event.get("reason", "unknown"))).inc()
-        await ws.send_text(json.dumps(event, ensure_ascii=False))
+        sent = await _send_stream_event(
+            ws,
+            session,
+            event,
+            durability_writer,
+            tag_scheduler,
+        )
+        if not sent:
+            return
 
 
 async def _maybe_emit_tag_update(
     ws: WebSocket,
     session: StreamSession,
     tag_scheduler: StreamingTagScheduler,
-    seq: int,
+    segment_id: int,
 ) -> None:
     """Feed one confirmed segment to the scheduler; emit ``tags_updated`` on trigger."""
-    batch = await tag_scheduler.on_segment_confirmed(seq)
+    batch = await tag_scheduler.on_segment_confirmed(segment_id)
     if batch is None:
         return
     STREAMING_TAG_RECOMPUTES_TOTAL.labels(status="error" if batch.error else "ok").inc()
@@ -419,12 +745,70 @@ async def _maybe_emit_tag_update(
         await ws.send_text(json.dumps(event, ensure_ascii=False))
 
 
+async def _send_stream_event(
+    ws: WebSocket,
+    session: StreamSession,
+    event: dict[str, Any],
+    durability_writer: StreamingDurabilityWriter | None,
+    tag_scheduler: StreamingTagScheduler | None,
+) -> bool:
+    """Make confirmed speech durable before exposing it as confirmed."""
+
+    if event.get("type") == "segment_confirmed":
+        if durability_writer is None:
+            session.error_count += 1
+            session.begin_drain(reason="error")
+            await _send_error(
+                ws,
+                session,
+                "DURABILITY_UNAVAILABLE",
+                "confirmed speech could not be persisted",
+            )
+            return False
+        try:
+            durable = await durability_writer.persist_confirmed(session, event)
+        except Exception as exc:
+            logger.exception(
+                "streaming durable segment failed session=%s: %s",
+                session.session_id.value,
+                exc,
+            )
+            session.error_count += 1
+            session.begin_drain(reason="error")
+            await _send_error(
+                ws,
+                session,
+                "DURABILITY_FAILED",
+                "confirmed speech could not be persisted",
+            )
+            return False
+        event = {
+            **event,
+            "segment_id": durable.segment_id,
+            "chunk_id": durable.chunk_id,
+            "generation": durable.generation,
+            "durable": True,
+        }
+        STREAMING_SEGMENTS_TOTAL.labels(mode="confirmed").inc()
+        if tag_scheduler is not None:
+            await _maybe_emit_tag_update(
+                ws,
+                session,
+                tag_scheduler,
+                durable.segment_id,
+            )
+    await ws.send_text(json.dumps(event, ensure_ascii=False))
+    return True
+
+
 async def _handle_text(
     ws: WebSocket,
     session: StreamSession,
     text: str,
     settings: Settings,
     retriever: StreamingRetriever | None = None,
+    tag_scheduler: StreamingTagScheduler | None = None,
+    durability_writer: StreamingDurabilityWriter | None = None,
 ) -> None:
     """Parse control JSON frame."""
     try:
@@ -438,9 +822,13 @@ async def _handle_text(
     msg_type = payload.get("type")
     if msg_type == "finalize":
         async for event in session.on_finalize():
-            if event.get("type") == "segment_confirmed":
-                STREAMING_SEGMENTS_TOTAL.labels(mode="confirmed").inc()
-            await ws.send_text(json.dumps(event, ensure_ascii=False))
+            await _send_stream_event(
+                ws,
+                session,
+                event,
+                durability_writer,
+                tag_scheduler,
+            )
         session.mark_end(reason="normal")
     elif msg_type == "reset":
         async for event in session.on_control_reset():
@@ -496,6 +884,10 @@ async def _handle_query(
             session_id=session.session_id.value,
             top_k=top_k,
             min_confidence=min_confidence,
+            permission_scope={
+                "actor_user_id": session.user_id,
+                "recording_id": session.recording_id,
+            },
         )
     except Exception as exc:
         logger.warning(
@@ -583,13 +975,325 @@ def _build_tag_scheduler(
 # ------------------------------------------------------------------
 # Session registry + DB persistence
 # ------------------------------------------------------------------
+async def _release_unopened_streaming_bundle(
+    bundle: Any | None,
+    *,
+    real_asr: bool,
+    pool: Any | None,
+) -> None:
+    if bundle is None:
+        return
+    with contextlib.suppress(Exception):
+        await bundle.vad.aclose()
+    if real_asr and pool is not None:
+        with contextlib.suppress(Exception):
+            await pool.release(bundle.asr)
+    else:
+        with contextlib.suppress(Exception):
+            await bundle.asr.aclose()
+
+
+async def _fail_reserved_session(
+    app: Any,
+    *,
+    persistence_id: int | None,
+    tenant_id: str,
+    pipeline_run_id: int | None,
+    reason: str,
+) -> None:
+    session_factory = getattr(app.state, "session_factory", None)
+    if session_factory is None or persistence_id is None:
+        return
+    from audio_graphy.models.pipeline import RecordingPipelineRun
+    from audio_graphy.models.streaming_session import StreamingSession as StreamingSessionORM
+
+    async with session_factory() as db, db.begin():
+        row = await db.get(
+            StreamingSessionORM,
+            persistence_id,
+            with_for_update=True,
+        )
+        if row is not None and str(row.tenant_id) == tenant_id:
+            row.status = "FAILED"
+            row.end_reason = "error"
+            row.error_count = int(row.error_count) + 1
+            row.ended_at = datetime.now(UTC)
+            row.lease_token = None
+            row.lease_expires_at = None
+            row.stats = {"activation_error": reason[:500]}
+        if pipeline_run_id is not None:
+            run = await db.get(
+                RecordingPipelineRun,
+                pipeline_run_id,
+                with_for_update=True,
+            )
+            if (
+                run is not None
+                and str(run.tenant_id) == tenant_id
+                and run.state
+                not in {
+                    "ready",
+                    "ready_no_speech",
+                    "failed_terminal",
+                    "superseded",
+                }
+            ):
+                run.state = "failed_retryable"
+                run.error_code = "STREAM_ACTIVATION_FAILED"
+                run.error_message = reason[:1000]
+
+
+async def _reserve_session_row(
+    app: Any,
+    *,
+    tenant_id: str,
+    session_id: str,
+    recording_id: int,
+    user_id: int | None,
+    consent_token_hash: str,
+    timeout_sec: float,
+    resume_from_seq: int,
+    resume_requested: bool,
+    resume_token: str | None,
+) -> tuple[int | None, int, int, int | None, str | None]:
+    """Persist ``RESERVING`` before any stateful streaming work begins."""
+    session_factory = getattr(app.state, "session_factory", None)
+    if session_factory is None:
+        return None, 1, 1, None, None
+
+    from audio_graphy.models.pipeline import RecordingPipelineRun
+    from audio_graphy.models.recording import Recording
+    from audio_graphy.models.streaming_pcm_frame import StreamingPCMFrame
+    from audio_graphy.models.streaming_session import StreamingSession as StreamingSessionORM
+
+    started_at = datetime.now(UTC)
+    async with session_factory() as db, db.begin():
+        recording = (
+            await db.execute(
+                select(Recording)
+                .where(
+                    Recording.id == recording_id,
+                    Recording.tenant_id == tenant_id,
+                )
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if recording is None:
+            raise ValueError("recording not found in tenant")
+
+        latest_session = (
+            await db.execute(
+                select(StreamingSessionORM)
+                .where(
+                    StreamingSessionORM.tenant_id == tenant_id,
+                    StreamingSessionORM.session_id == session_id,
+                )
+                .order_by(StreamingSessionORM.epoch.desc())
+                .limit(1)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if latest_session is not None:
+            if not resume_requested:
+                raise ValueError("streaming session already exists; resume is required")
+            if latest_session.recording_id != recording_id:
+                raise ValueError("streaming session cannot cross recordings")
+            if latest_session.status == "CLOSED":
+                raise ValueError("streaming session is already closed")
+            if resume_from_seq > int(latest_session.ack_seq_high_watermark) + 1:
+                raise ValueError("resume sequence is ahead of the durable watermark")
+            if latest_session.status in {
+                "RESERVING",
+                "ACTIVE",
+                "DRAINING",
+                "COMMITTING",
+            }:
+                if (
+                    latest_session.lease_token is None
+                    or resume_token is None
+                    or not secrets.compare_digest(
+                        latest_session.lease_token,
+                        resume_token,
+                    )
+                ):
+                    raise ValueError("active streaming lease cannot be preempted")
+                latest_session.status = "INCOMPLETE"
+                latest_session.end_reason = "client_disconnect"
+                latest_session.ended_at = started_at
+                latest_session.lease_token = None
+                latest_session.lease_expires_at = None
+            epoch = int(latest_session.epoch) + 1
+        else:
+            epoch = 1
+        run_idempotency_key = f"stream:{session_id}"
+        run = (
+            await db.execute(
+                select(RecordingPipelineRun)
+                .where(
+                    RecordingPipelineRun.tenant_id == tenant_id,
+                    RecordingPipelineRun.recording_id == recording_id,
+                    RecordingPipelineRun.idempotency_key == run_idempotency_key,
+                )
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if run is None:
+            max_generation = int(
+                (
+                    await db.execute(
+                        select(func.max(RecordingPipelineRun.generation)).where(
+                            RecordingPipelineRun.tenant_id == tenant_id,
+                            RecordingPipelineRun.recording_id == recording_id,
+                        )
+                    )
+                ).scalar_one_or_none()
+                or 0
+            )
+            generation = max_generation + 1
+            source_fingerprint = hashlib.sha256(
+                f"stream:{tenant_id}:{recording_id}:{session_id}".encode()
+            ).hexdigest()
+            config_fingerprint = hashlib.sha256(
+                b"streaming-v1:pcm-s16le:16000:mono"
+            ).hexdigest()
+            run = RecordingPipelineRun(
+                tenant_id=tenant_id,
+                recording_id=recording_id,
+                generation=generation,
+                idempotency_key=run_idempotency_key,
+                source_fingerprint=source_fingerprint,
+                config_fingerprint=config_fingerprint,
+                state="asr",
+                attempt_count=1,
+                required_projections=["vector", "graph", "file_index", "tag"],
+                completed_projections=[],
+                started_at=started_at,
+            )
+            db.add(run)
+            await db.flush()
+        elif run.state in {
+            "ready",
+            "ready_no_speech",
+            "failed_terminal",
+            "superseded",
+        }:
+            raise ValueError("streaming session is already terminal")
+        generation = int(run.generation)
+        max_acknowledged_seq = (
+            await db.execute(
+                select(func.max(StreamingPCMFrame.source_seq)).where(
+                    StreamingPCMFrame.tenant_id == tenant_id,
+                    StreamingPCMFrame.session_key == session_id,
+                    StreamingPCMFrame.recording_id == recording_id,
+                )
+            )
+        ).scalar_one_or_none()
+        acknowledged_seq = (
+            int(max_acknowledged_seq)
+            if max_acknowledged_seq is not None
+            else -1
+        )
+
+        session_lease_token = secrets.token_hex(16)
+        row = StreamingSessionORM(
+            tenant_id=tenant_id,
+            session_id=session_id,
+            epoch=epoch,
+            status="RESERVING",
+            generation=generation,
+            pipeline_run_id=int(run.id),
+            ack_seq_high_watermark=acknowledged_seq,
+            durable_segment_high_watermark=0,
+            lease_expires_at=started_at
+            + timedelta(seconds=max(1.0, float(timeout_sec))),
+            lease_token=session_lease_token,
+            recording_id=recording_id,
+            user_id=user_id,
+            started_at=started_at,
+            ended_at=None,
+            last_chunk_at=None,
+            seg_confirmed_count=0,
+            seg_realtime_count=0,
+            bytes_in=0,
+            error_count=0,
+            end_reason=None,
+            consent_token_hash=consent_token_hash,
+            stats=None,
+        )
+        db.add(row)
+        await db.flush()
+        return int(row.id), epoch, generation, int(run.id), session_lease_token
+
+
+async def _mark_session_row_active(app: Any, session: StreamSession) -> None:
+    """Move a reserved row to ACTIVE after adapters are ready."""
+    if session.persistence_id is None:
+        return
+    session_factory = getattr(app.state, "session_factory", None)
+    if session_factory is None:
+        return
+    from audio_graphy.models.streaming_session import StreamingSession as StreamingSessionORM
+
+    async with session_factory() as db, db.begin():
+        row = await db.get(
+            StreamingSessionORM,
+            session.persistence_id,
+            with_for_update=True,
+        )
+        if (
+            row is None
+            or str(row.tenant_id) != session.tenant_id
+            or row.lease_token != session.lease_token
+            or row.status != "RESERVING"
+        ):
+            raise RuntimeError("reserved streaming session disappeared")
+        row.status = "ACTIVE"
+        row.lease_expires_at = _streaming_lease_deadline(session)
+
+
+async def _mark_session_row_status(
+    app: Any,
+    session: StreamSession,
+    status: str,
+) -> None:
+    if session.persistence_id is None:
+        return
+    session_factory = getattr(app.state, "session_factory", None)
+    if session_factory is None:
+        return
+    from audio_graphy.models.streaming_session import StreamingSession as StreamingSessionORM
+
+    async with session_factory() as db, db.begin():
+        row = await db.get(
+            StreamingSessionORM,
+            session.persistence_id,
+            with_for_update=True,
+        )
+        if (
+            row is None
+            or str(row.tenant_id) != session.tenant_id
+            or row.lease_token != session.lease_token
+        ):
+            raise RuntimeError("reserved streaming session disappeared")
+        legal_predecessors = {
+            "DRAINING": {"ACTIVE", "DRAINING"},
+            "COMMITTING": {"DRAINING", "COMMITTING"},
+        }
+        if status not in legal_predecessors or row.status not in legal_predecessors[status]:
+            raise RuntimeError(
+                f"illegal streaming session transition {row.status} -> {status}"
+            )
+        row.status = status
+        row.lease_expires_at = _streaming_lease_deadline(session)
+
+
 def _register_session(app: Any, session: StreamSession) -> None:
     """Add session to ``app.state.stream_sessions`` (M8 in-memory)."""
     registry = getattr(app.state, "stream_sessions", None)
     if registry is None:
         registry = {}
         app.state.stream_sessions = registry
-    registry[session.session_id.value] = session
+    registry[(session.tenant_id, session.session_id.value, session.epoch)] = session
 
 
 def _unregister_session(app: Any, session: StreamSession) -> None:
@@ -597,40 +1301,112 @@ def _unregister_session(app: Any, session: StreamSession) -> None:
     registry = getattr(app.state, "stream_sessions", None)
     if registry is None:
         return
-    registry.pop(session.session_id.value, None)
+    registry.pop((session.tenant_id, session.session_id.value, session.epoch), None)
 
 
-async def _persist_session_row(app: Any, session: StreamSession) -> None:
-    """Best-effort INSERT into streaming_sessions table.
-
-    Failures are logged + swallowed (audit failure must not roll back
-    the WS close). Mirrors ``AuditWriter`` resilience policy.
-    """
+async def _persist_session_row(app: Any, session: StreamSession) -> bool:
+    """Commit the terminal session/run state; false forbids ``session_closed``."""
     session_factory = getattr(app.state, "session_factory", None)
     if session_factory is None:
-        return
+        return True
     try:
         from audio_graphy.models.streaming_session import StreamingSession as StreamingSessionORM
 
         async with session_factory() as db:
-            db.add(
-                StreamingSessionORM(
-                    tenant_id=session.tenant_id,
-                    session_id=session.session_id.value,
-                    recording_id=session.recording_id,
-                    user_id=session.user_id,
-                    started_at=session.started_at,
-                    ended_at=session.last_chunk_at or session.started_at,
-                    last_chunk_at=session.last_chunk_at,
-                    seg_confirmed_count=session.seg_confirmed_count,
-                    seg_realtime_count=session.seg_realtime_count,
-                    bytes_in=session.bytes_in,
-                    error_count=session.error_count,
-                    end_reason=session.end_reason,
-                    consent_token_hash=session.consent_token_hash,
-                    stats=session.stats(),
+            values = {
+                "tenant_id": session.tenant_id,
+                "session_id": session.session_id.value,
+                "recording_id": session.recording_id,
+                "user_id": session.user_id,
+                "started_at": session.started_at,
+                "epoch": session.epoch,
+                "status": (
+                    "CLOSED"
+                    if session.end_reason == "normal"
+                    else ("FAILED" if session.end_reason == "error" else "INCOMPLETE")
+                ),
+                "generation": session.generation,
+                "pipeline_run_id": session.pipeline_run_id,
+                "ack_seq_high_watermark": session.last_seq,
+                "durable_segment_high_watermark": (
+                    session.durable_segment_high_watermark
+                ),
+                "lease_token": None,
+                "lease_expires_at": None,
+                "ended_at": datetime.now(UTC),
+                "last_chunk_at": session.last_chunk_at,
+                "seg_confirmed_count": session.seg_confirmed_count,
+                "seg_realtime_count": session.seg_realtime_count,
+                "bytes_in": session.bytes_in,
+                "error_count": session.error_count,
+                "end_reason": session.end_reason,
+                "consent_token_hash": session.consent_token_hash,
+                "stats": session.stats(),
+            }
+            if session.persistence_id is not None:
+                row = await db.get(
+                    StreamingSessionORM,
+                    session.persistence_id,
+                    with_for_update=True,
                 )
-            )
+                if (
+                    row is None
+                    or str(row.tenant_id) != session.tenant_id
+                    or row.lease_token != session.lease_token
+                    or row.status != "COMMITTING"
+                ):
+                    raise RuntimeError("reserved streaming session disappeared")
+                for key, value in values.items():
+                    setattr(row, key, value)
+            else:
+                db.add(
+                    StreamingSessionORM(
+                        **values,
+                    )
+                )
+            if session.pipeline_run_id is not None:
+                from audio_graphy.models.pipeline import RecordingPipelineRun
+
+                run = await db.get(
+                    RecordingPipelineRun,
+                    session.pipeline_run_id,
+                    with_for_update=True,
+                )
+                if (
+                    run is not None
+                    and run.tenant_id == session.tenant_id
+                    and run.recording_id == session.recording_id
+                    and run.state
+                    not in {
+                        "ready",
+                        "ready_no_speech",
+                        "failed_terminal",
+                        "superseded",
+                    }
+                ):
+                    if session.end_reason == "normal":
+                        if session.durable_segment_high_watermark > 0:
+                            run.state = "projections"
+                        else:
+                            run.state = "partial"
+                            run.error_code = "NO_DURABLE_SPEECH"
+                            run.error_message = (
+                                "stream closed without a durable confirmed segment"
+                            )
+                    else:
+                        run.state = "failed_retryable"
+                        run.error_code = "STREAM_INCOMPLETE"
+                        run.error_message = (
+                            f"stream ended before commit: {session.end_reason}"
+                        )
             await db.commit()
+        return True
     except Exception as exc:
         logger.warning("streaming_sessions insert failed: %s", exc)
+        return False
+
+
+def _streaming_lease_deadline(session: StreamSession) -> datetime:
+    return datetime.now(UTC) + timedelta(
+        seconds=max(1.0, float(session.lease_ttl_seconds))
+    )

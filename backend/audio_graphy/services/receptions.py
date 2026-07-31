@@ -8,14 +8,15 @@ import hashlib
 import hmac
 import json
 import logging
+import math
 import os
 import re
 import secrets
 import tempfile
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from itertools import combinations
 from pathlib import Path
@@ -27,7 +28,19 @@ from sqlalchemy import cast as sql_cast
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from audio_graphy.core.audio_assembler import AudioAssembler, AudioAssemblyManifest
+from audio_graphy.adapters.protocols import EmbedAdapter
+from audio_graphy.core.audio_assembler import (
+    AudioAssembler,
+    AudioAssemblyManifest,
+    AudioAssemblySource,
+)
+from audio_graphy.core.audio_timeline import (
+    AudioTimelinePlanner,
+    AudioTimelineSource,
+    milliseconds_to_seconds,
+    seconds_to_milliseconds,
+    verified_recording_duration_ms,
+)
 from audio_graphy.core.dialogue_segmentation import (
     DialogueSegment,
     DialogueSegmenter,
@@ -47,6 +60,7 @@ from audio_graphy.errors import (
     RecordingNotFoundError,
     ValidationError,
 )
+from audio_graphy.models.pipeline import RecordingPipelineRun
 from audio_graphy.models.reception import (
     DialogueStateTransition,
     DialogueTagAssignment,
@@ -55,8 +69,13 @@ from audio_graphy.models.reception import (
     Reception,
     ReceptionRecording,
 )
+from audio_graphy.models.reception_audio import ReceptionAudioOperation
 from audio_graphy.models.recording import Recording
 from audio_graphy.models.segment import Segment
+from audio_graphy.models.tag_governance import (
+    TagAssignmentCurrent,
+    TagAssignmentFact,
+)
 from audio_graphy.schemas.receptions import (
     MAX_WORKSPACE_DIALOGUE_UNITS,
     MAX_WORKSPACE_PROVENANCE_EVENTS,
@@ -71,6 +90,10 @@ from audio_graphy.schemas.receptions import (
     ReceptionSegmentRequest,
 )
 from audio_graphy.services.agent_identity import resolve_unique_agent_user_id
+from audio_graphy.services.tag_invalidation import (
+    invalidate_dialogue_unit_currents_in_session,
+    invalidate_dialogue_units_in_session,
+)
 
 if TYPE_CHECKING:
     from audio_graphy.core.crypto import AudioCrypto
@@ -89,6 +112,19 @@ _PLAYBACK_GRANT_VERSION = 1
 _PLAYBACK_GRANT_TTL_SEC = 5 * 60
 _PLAYBACK_GRANT_CLOCK_SKEW_SEC = 30
 logger = logging.getLogger(__name__)
+
+
+def _actor_user_id(actor: str) -> int:
+    """Resolve the audit user encoded by API actors; system jobs use 0."""
+
+    prefix, separator, raw_id = actor.partition(":")
+    if prefix == "user" and separator:
+        try:
+            value = int(raw_id)
+        except ValueError:
+            return 0
+        return value if value >= 0 else 0
+    return 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,6 +150,23 @@ class ReceptionAudioAsset:
     path: Path
     media_type: str
     delete_after_open: bool = False
+    time_origin_ms: int = 0
+    legal_source_start_ms: int = 0
+    legal_source_end_ms: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ReceptionPlaybackGeometry:
+    """Canonical integer playback coordinates for one reception source."""
+
+    source_start_ms: int
+    source_end_ms: int | None
+    timeline_start_ms: int
+    timeline_end_ms: int
+    gap_before_ms: int
+    time_origin_ms: int
+    legal_source_start_ms: int
+    legal_source_end_ms: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,6 +181,64 @@ class PlaybackGrantClaims:
     expires_at: int
 
 
+def reception_mapping_playback_geometry(
+    mapping: ReceptionRecording,
+) -> ReceptionPlaybackGeometry:
+    """Read persisted millisecond geometry with a legacy-seconds fallback."""
+
+    persisted_source_start_ms = int(getattr(mapping, "source_start_ms", 0) or 0)
+    source_start_ms = (
+        persisted_source_start_ms
+        if persisted_source_start_ms > 0
+        else seconds_to_milliseconds(mapping.source_start_sec)
+    )
+    persisted_source_end_ms = mapping.source_end_ms
+    source_end_ms = (
+        int(persisted_source_end_ms)
+        if persisted_source_end_ms is not None
+        else (
+            seconds_to_milliseconds(mapping.source_end_sec)
+            if mapping.source_end_sec is not None
+            else None
+        )
+    )
+    persisted_timeline_start_ms = int(
+        getattr(mapping, "timeline_start_ms", 0) or 0
+    )
+    timeline_start_ms = (
+        persisted_timeline_start_ms
+        if persisted_timeline_start_ms > 0
+        else seconds_to_milliseconds(mapping.timeline_start_sec)
+    )
+    persisted_timeline_end_ms = int(getattr(mapping, "timeline_end_ms", 0) or 0)
+    timeline_end_ms = (
+        persisted_timeline_end_ms
+        if persisted_timeline_end_ms > 0
+        else seconds_to_milliseconds(mapping.timeline_end_sec)
+    )
+    persisted_gap_before_ms = int(getattr(mapping, "gap_before_ms", 0) or 0)
+    gap_before_ms = (
+        persisted_gap_before_ms
+        if persisted_gap_before_ms > 0
+        else seconds_to_milliseconds(mapping.gap_before_sec)
+    )
+    legal_source_end_ms = source_end_ms
+    if legal_source_end_ms is None:
+        legal_source_end_ms = source_start_ms + (
+            timeline_end_ms - timeline_start_ms
+        )
+    return ReceptionPlaybackGeometry(
+        source_start_ms=source_start_ms,
+        source_end_ms=source_end_ms,
+        timeline_start_ms=timeline_start_ms,
+        timeline_end_ms=timeline_end_ms,
+        gap_before_ms=gap_before_ms,
+        time_origin_ms=timeline_start_ms - source_start_ms,
+        legal_source_start_ms=source_start_ms,
+        legal_source_end_ms=legal_source_end_ms,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class ReceptionMergeProposalResult:
     """Pure merge analysis; no reception row is created by this result."""
@@ -138,13 +249,190 @@ class ReceptionMergeProposalResult:
 
 
 @dataclass(frozen=True, slots=True)
+class ReceptionTimelineSliceOverride:
+    """Service-internal exact geometry supplied by a verified audio plan."""
+
+    source_start_sec: float
+    source_end_sec: float
+    gap_before_sec: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class _DialogueSegmentationInputs:
+    """One immutable, generation-scoped read snapshot for dialogue derivation."""
+
+    segments: tuple[DialogueSegment, ...]
+    evidence_by_segment: dict[str, dict[str, Any]]
+    speaker_by_segment: dict[str, str | None]
+    input_generation: dict[str, int | str]
+    legacy_fallback_recording_ids: tuple[int, ...]
+    fingerprint: str
+
+
+@dataclass(frozen=True, slots=True)
+class _SemanticSegmentationCapability:
+    """What semantic signal was actually available for this concrete run."""
+
+    segments: tuple[DialogueSegment, ...]
+    status: str
+    model: str | None = None
+    dim: int | None = None
+    error_type: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _RecordingSourceSnapshot:
+    """Audio identity plus timeline geometry checked again before publication."""
+
+    recording_id: int
+    path: str
+    encrypted_path: str | None
+    source_start_sec: float
+    source_end_sec: float | None
+    gap_before_sec: float
+    audio_sha256: str | None
+    audio_size_bytes: int | None
+    audio_duration_ms: int | None
+    audio_sample_rate: int | None
+    audio_channels: int | None
+    source_revision: int | None
+
+
+@dataclass(frozen=True, slots=True)
 class _PreparedPhysicalMerge:
     """External audio build bound to one optimistic reception snapshot."""
 
     manifest: AudioAssemblyManifest
     merged_audio_path: str
     durations: dict[int, float]
-    recording_sources: tuple[tuple[int, str, str | None], ...]
+    recording_sources: tuple[_RecordingSourceSnapshot, ...]
+
+
+ReceptionMergeBeforeCommitHook = Callable[
+    [
+        AsyncSession,
+        Reception,
+        tuple[ReceptionRecording, ...],
+        _PreparedPhysicalMerge | None,
+        str | None,
+    ],
+    Awaitable[None],
+]
+ReceptionPhysicalPrepareHook = Callable[
+    [_PreparedPhysicalMerge],
+    Awaitable[None],
+]
+ReceptionPhysicalStageHook = Callable[[str], Awaitable[None]]
+
+
+def _recording_source_snapshot(
+    recording: Recording,
+    mapping: ReceptionRecording | None,
+    *,
+    gap_before_sec: float,
+    geometry_override: ReceptionTimelineSliceOverride | None = None,
+) -> _RecordingSourceSnapshot:
+    def optional_positive_int(field_name: str) -> int | None:
+        raw = getattr(recording, field_name, None)
+        if isinstance(raw, bool) or not isinstance(raw, int) or raw <= 0:
+            return None
+        return raw
+
+    raw_hash = getattr(recording, "audio_sha256", None)
+    return _RecordingSourceSnapshot(
+        recording_id=recording.id,
+        path=str(recording.path),
+        encrypted_path=(
+            str(recording.audio_encrypted_path)
+            if recording.audio_encrypted_path is not None
+            else None
+        ),
+        source_start_sec=(
+            geometry_override.source_start_sec
+            if geometry_override is not None
+            else mapping.source_start_sec
+            if mapping is not None
+            else 0.0
+        ),
+        source_end_sec=(
+            geometry_override.source_end_sec
+            if geometry_override is not None
+            else mapping.source_end_sec
+            if mapping is not None
+            else None
+        ),
+        gap_before_sec=gap_before_sec,
+        audio_sha256=raw_hash if isinstance(raw_hash, str) and raw_hash else None,
+        audio_size_bytes=optional_positive_int("audio_size_bytes"),
+        audio_duration_ms=verified_recording_duration_ms(recording),
+        audio_sample_rate=optional_positive_int("audio_sample_rate"),
+        audio_channels=optional_positive_int("audio_channels"),
+        source_revision=optional_positive_int("source_revision"),
+    )
+
+
+def _normalize_timeline_override(
+    recording_ids: Sequence[int],
+    timeline_override: Mapping[int, ReceptionTimelineSliceOverride] | None,
+) -> dict[int, ReceptionTimelineSliceOverride] | None:
+    """Freeze and canonicalize an internal plan on the millisecond grid."""
+
+    if timeline_override is None:
+        return None
+    if any(isinstance(key, bool) or not isinstance(key, int) for key in timeline_override):
+        raise ValidationError(
+            "Audio timeline override keys must be recording IDs",
+            code="RECEPTION_TIMELINE_OVERRIDE_INVALID",
+        )
+    expected_ids = set(recording_ids)
+    supplied_ids = set(timeline_override)
+    if supplied_ids != expected_ids:
+        raise ValidationError(
+            "Audio timeline override must cover exactly the requested recordings",
+            code="RECEPTION_TIMELINE_OVERRIDE_INVALID",
+            detail={
+                "missing_recording_ids": sorted(expected_ids - supplied_ids),
+                "unexpected_recording_ids": sorted(supplied_ids - expected_ids),
+            },
+        )
+
+    normalized: dict[int, ReceptionTimelineSliceOverride] = {}
+    for sequence_no, recording_id in enumerate(recording_ids):
+        geometry = timeline_override[recording_id]
+        if not isinstance(geometry, ReceptionTimelineSliceOverride):
+            raise ValidationError(
+                "Audio timeline override contains an invalid geometry",
+                code="RECEPTION_TIMELINE_OVERRIDE_INVALID",
+                detail={"recording_id": recording_id},
+            )
+        try:
+            source_start_ms = seconds_to_milliseconds(geometry.source_start_sec)
+            source_end_ms = seconds_to_milliseconds(geometry.source_end_sec)
+            gap_before_ms = seconds_to_milliseconds(geometry.gap_before_sec)
+        except ValueError as exc:
+            raise ValidationError(
+                "Audio timeline override contains non-finite geometry",
+                code="RECEPTION_TIMELINE_OVERRIDE_INVALID",
+                detail={"recording_id": recording_id},
+            ) from exc
+        if source_end_ms <= source_start_ms:
+            raise ValidationError(
+                "Audio timeline override source interval must be positive",
+                code="RECEPTION_TIMELINE_OVERRIDE_INVALID",
+                detail={"recording_id": recording_id},
+            )
+        if sequence_no == 0 and gap_before_ms != 0:
+            raise ValidationError(
+                "The first audio timeline source cannot have a gap",
+                code="RECEPTION_TIMELINE_OVERRIDE_INVALID",
+                detail={"recording_id": recording_id},
+            )
+        normalized[recording_id] = ReceptionTimelineSliceOverride(
+            source_start_sec=milliseconds_to_seconds(source_start_ms),
+            source_end_sec=milliseconds_to_seconds(source_end_ms),
+            gap_before_sec=milliseconds_to_seconds(gap_before_ms),
+        )
+    return normalized
 
 
 class _PhysicalArtifactGuard:
@@ -152,7 +440,6 @@ class _PhysicalArtifactGuard:
 
     def __init__(self, prepared: _PreparedPhysicalMerge | None) -> None:
         self._prepared = prepared
-        self._keep = False
 
     async def __aenter__(self) -> Self:
         return self
@@ -164,14 +451,14 @@ class _PhysicalArtifactGuard:
         traceback: TracebackType | None,
     ) -> None:
         del exc, traceback
-        if self._prepared is not None and (exc_type is not None or not self._keep):
+        # This guard is the outermost context around ``session.begin()``.
+        # Therefore a normal exit is observable only after the transaction
+        # commit has succeeded; a commit failure reaches us as ``exc_type``.
+        if self._prepared is not None and exc_type is not None:
             await asyncio.to_thread(
                 Path(self._prepared.merged_audio_path).unlink,
                 missing_ok=True,
             )
-
-    def keep(self) -> None:
-        self._keep = True
 
 
 @dataclass(slots=True)
@@ -187,6 +474,9 @@ class ReceptionWorkspace:
     transcript_items: list[ReceptionTranscriptItem]
     provenance_events: list[ProvenanceEvent]
     window: ReceptionWorkspaceWindow | None = None
+    previous_dialogue_unit: DialogueUnit | None = None
+    next_dialogue_unit: DialogueUnit | None = None
+    active_audio_operation: ReceptionAudioOperation | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -402,6 +692,36 @@ def resolve_safe_audio_output(root: Path, candidate: str) -> Path:
     return resolved
 
 
+_PHYSICAL_GENERATION_PATTERN = re.compile(r"[A-Za-z0-9_-]{8,96}")
+
+
+def reception_physical_generation_relative_path(
+    *,
+    tenant_id: str,
+    reception_id: int,
+    reception_version: int,
+    generation: str,
+) -> str:
+    """Return the sole generated-file namespace for one immutable generation."""
+    tenant_component = Path(tenant_id)
+    if (
+        not tenant_id
+        or "\x00" in tenant_id
+        or tenant_component.is_absolute()
+        or len(tenant_component.parts) != 1
+        or tenant_component.name in {".", ".."}
+    ):
+        raise ValueError("tenant_id is not a safe path component")
+    if reception_id <= 0 or reception_version <= 0:
+        raise ValueError("reception identity and version must be positive")
+    if _PHYSICAL_GENERATION_PATTERN.fullmatch(generation) is None:
+        raise ValueError("physical generation is invalid")
+    return (
+        f"assembled_audio/{tenant_id}/receptions/"
+        f"reception-{reception_id}/v{reception_version}-{generation}.wav"
+    )
+
+
 def _resolve_confined_regular_file(root: Path, candidate: str) -> Path:
     """Resolve a regular file without escaping root or traversing symlinks."""
     try:
@@ -513,6 +833,82 @@ def _tag_snapshot(tag: DialogueTagAssignment) -> dict[str, Any]:
     }
 
 
+def _canonical_tag_assignment(fact: TagAssignmentFact) -> DialogueTagAssignment:
+    """Expose one canonical fact through the existing workspace response contract.
+
+    This is a transient compatibility projection only.  The authoritative row
+    remains ``tag_assignment_facts`` and can be resolved through ``fact:{id}``.
+    """
+
+    value = fact.tag_value
+    label_value = (
+        value
+        if isinstance(value, str)
+        else json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    )
+    tagger_ref = (
+        f"tagger:{fact.tagger_version_id}"
+        if fact.tagger_version_id is not None
+        else "tagger:manual"
+    )
+    evidence_refs: list[Any] = []
+    for index, raw_ref in enumerate(fact.evidence_refs):
+        if not isinstance(raw_ref, Mapping):
+            evidence_refs.append(deepcopy(raw_ref))
+            continue
+        ref = deepcopy(dict(raw_ref))
+        segment_id = ref.get("segment_id")
+        start_sec = _finite_number(ref.get("start_sec"))
+        end_sec = _finite_number(ref.get("end_sec"))
+        timeline_start_sec = _finite_number(ref.get("timeline_start_sec"))
+        timeline_end_sec = _finite_number(ref.get("timeline_end_sec"))
+        ref.setdefault(
+            "ref_id",
+            (
+                f"segment:{segment_id}"
+                if segment_id is not None
+                else f"fact:{fact.id}:evidence:{index}"
+            ),
+        )
+        ref.setdefault("kind", "audio")
+        ref.setdefault(
+            "coordinate_space",
+            "both" if timeline_start_sec is not None and timeline_end_sec is not None else "source",
+        )
+        if start_sec is not None:
+            ref.setdefault("start_ms", round(start_sec * 1_000))
+            ref.setdefault("source_start_ms", round(start_sec * 1_000))
+        if end_sec is not None:
+            ref.setdefault("end_ms", round(end_sec * 1_000))
+            ref.setdefault("source_end_ms", round(end_sec * 1_000))
+        if timeline_start_sec is not None:
+            ref.setdefault("timeline_start_ms", round(timeline_start_sec * 1_000))
+        if timeline_end_sec is not None:
+            ref.setdefault("timeline_end_ms", round(timeline_end_sec * 1_000))
+        if "text_excerpt" not in ref and isinstance(ref.get("text"), str):
+            ref["text_excerpt"] = ref["text"]
+        evidence_refs.append(ref)
+
+    assignment = DialogueTagAssignment(
+        id=fact.id,
+        tenant_id=fact.tenant_id,
+        reception_id=cast(int, fact.reception_id),
+        dialogue_unit_id=fact.dialogue_unit_id or fact.subject_id,
+        group_key="canonical",
+        group_version=f"schema:{fact.schema_version_id}|{tagger_ref}",
+        label_key=fact.tag_key,
+        label_value=label_value,
+        confidence=fact.confidence,
+        source=fact.source,
+        priority=1_000 if fact.source == "manual" else 500,
+        evidence_refs=evidence_refs,
+        model_run_id=f"fact:{fact.id}",
+        is_current=True,
+        assigned_at=fact.assigned_at,
+    )
+    return assignment
+
+
 def _state_transition_snapshot(
     transition: DialogueStateTransition,
 ) -> dict[str, Any]:
@@ -533,7 +929,21 @@ def _finite_number(value: object) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     parsed = float(value)
-    return parsed if parsed >= 0 else None
+    return parsed if math.isfinite(parsed) and parsed >= 0 else None
+
+
+def _unit_stage_confidence(unit: DialogueUnit) -> float:
+    """Read stage certainty without reusing unrelated boundary certainty."""
+    direct = _finite_number(getattr(unit, "stage_confidence", None))
+    if direct is not None:
+        return min(1.0, direct)
+    for reason in unit.boundary_reasons:
+        if not isinstance(reason, Mapping):
+            continue
+        candidate = _finite_number(reason.get("stage_confidence"))
+        if candidate is not None:
+            return min(1.0, candidate)
+    return 1.0 if unit.business_stage else 0.0
 
 
 def _clip_evidence_refs(
@@ -682,11 +1092,18 @@ class ReceptionService:
         audio_root: Path,
         audio_assembler: AudioAssembler | None = None,
         audio_crypto: AudioCrypto | None = None,
+        embed_adapter: EmbedAdapter | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._audio_root = audio_root
         self._audio_assembler = audio_assembler
         self._audio_crypto = audio_crypto
+        self._embed_adapter = embed_adapter
+
+    @property
+    def audio_root(self) -> Path:
+        """Root used for generated artifacts and safety confinement."""
+        return self._audio_root
 
     async def _decrypt_audio_asset(
         self,
@@ -772,6 +1189,141 @@ class ReceptionService:
                 "Audio asset not found",
                 code="AUDIO_NOT_FOUND",
             ) from exc
+
+    @staticmethod
+    def _mapping_requires_clipped_playback(
+        mapping: ReceptionRecording,
+        recording: Recording,
+    ) -> bool:
+        reasons = mapping.merge_reasons if isinstance(mapping.merge_reasons, Mapping) else {}
+        if reasons.get("candidate_type") == "recording_split":
+            return True
+        verified_duration_ms = verified_recording_duration_ms(recording)
+        # Full-source playback is the privileged fast path.  It is permitted
+        # only when immutable media facts prove that the mapping spans the
+        # complete source and its logical geometry is isomorphic.  Unknown
+        # duration/endpoints fail closed to a bounded materialized clip.
+        if verified_duration_ms is None or mapping.source_end_sec is None:
+            return True
+        source_start_ms = seconds_to_milliseconds(mapping.source_start_sec)
+        source_end_ms = seconds_to_milliseconds(mapping.source_end_sec)
+        timeline_duration_ms = seconds_to_milliseconds(
+            mapping.timeline_end_sec - mapping.timeline_start_sec
+        )
+        source_duration_ms = source_end_ms - source_start_ms
+        return not (
+            source_start_ms == 0
+            and abs(source_end_ms - verified_duration_ms) <= 1
+            and timeline_duration_ms == source_duration_ms
+        )
+
+    async def _materialize_mapping_audio_asset(
+        self,
+        *,
+        mapping: ReceptionRecording,
+        recording: Recording,
+        tenant_id: str,
+    ) -> ReceptionAudioAsset:
+        """Create an unlink-after-open WAV bounded to one legal source slice."""
+        if self._audio_assembler is None:
+            raise APIError(
+                "Clipped recording playback is temporarily unavailable",
+                code="AUDIO_CLIP_ASSEMBLER_UNAVAILABLE",
+                status_code=503,
+            )
+        source_asset = await self._recording_audio_asset(
+            recording,
+            tenant_id=tenant_id,
+        )
+        source_end_sec = mapping.source_end_sec
+        if source_end_sec is None:
+            source_end_sec = mapping.source_start_sec + (
+                mapping.timeline_end_sec - mapping.timeline_start_sec
+            )
+        tenant_token = hashlib.sha256(tenant_id.encode("utf-8")).hexdigest()[:16]
+        target_relative = (
+            f"runtime_plaintext/{tenant_token}/"
+            f"reception-{mapping.reception_id}-mapping-{mapping.id}-"
+            f"{secrets.token_hex(8)}.wav"
+        )
+        target = resolve_safe_audio_output(self._audio_root, target_relative)
+        try:
+            manifest = await self._audio_assembler.assemble(
+                [
+                    AudioAssemblySource(
+                        path=source_asset.path,
+                        source_start_sec=mapping.source_start_sec,
+                        source_end_sec=source_end_sec,
+                    )
+                ],
+                target_relative,
+            )
+            resolved_output = resolve_safe_audio_output(
+                self._audio_root,
+                manifest.output_path,
+            )
+            if (
+                resolved_output != target
+                or not resolved_output.is_file()
+                or len(manifest.inputs) != 1
+            ):
+                raise ValueError("clip assembler returned an invalid output")
+            return ReceptionAudioAsset(
+                path=resolved_output,
+                media_type="audio/wav",
+                delete_after_open=True,
+            )
+        except Exception as exc:
+            await asyncio.to_thread(target.unlink, missing_ok=True)
+            raise APIError(
+                "Clipped recording playback could not be prepared",
+                code="AUDIO_CLIP_PLAYBACK_FAILED",
+                status_code=503,
+            ) from exc
+        finally:
+            if source_asset.delete_after_open:
+                await asyncio.to_thread(source_asset.path.unlink, missing_ok=True)
+
+    async def _retire_physical_artifact(
+        self,
+        persisted_path: str | None,
+        *,
+        reception_id: int,
+        tenant_id: str,
+    ) -> None:
+        """Best-effort cleanup restricted to this reception's generated directory."""
+        if not persisted_path:
+            return
+        try:
+            resolved = _resolve_confined_regular_file(
+                self._audio_root,
+                persisted_path,
+            )
+            expected_root = (
+                self._audio_root.resolve(strict=True)
+                / "assembled_audio"
+                / tenant_id
+                / "receptions"
+                / f"reception-{reception_id}"
+            ).resolve(strict=False)
+            if not resolved.is_relative_to(expected_root):
+                logger.warning(
+                    "Refusing to retire non-generated reception audio",
+                    extra={
+                        "reception_id": reception_id,
+                        "tenant_id": tenant_id,
+                    },
+                )
+                return
+            await asyncio.to_thread(resolved.unlink, missing_ok=True)
+        except (OSError, RuntimeError, ValueError):
+            logger.exception(
+                "Failed to retire reception audio artifact",
+                extra={
+                    "reception_id": reception_id,
+                    "tenant_id": tenant_id,
+                },
+            )
 
     @staticmethod
     def _reception_not_found(reception_id: int) -> NotFoundError:
@@ -970,8 +1522,138 @@ class ReceptionService:
         else:
             tag_total = 0
         tags_result = await session.execute(tags_stmt)
-        tag_assignments = list(tags_result.scalars().all())
-        if not bounded:
+        legacy_tag_assignments = list(tags_result.scalars().all())
+
+        canonical_stmt = (
+            select(TagAssignmentFact)
+            .join(
+                TagAssignmentCurrent,
+                and_(
+                    TagAssignmentCurrent.fact_id == TagAssignmentFact.id,
+                    TagAssignmentCurrent.tenant_id == TagAssignmentFact.tenant_id,
+                ),
+            )
+            .join(
+                DialogueUnit,
+                and_(
+                    DialogueUnit.id == TagAssignmentCurrent.subject_id,
+                    DialogueUnit.tenant_id == reception.tenant_id,
+                    DialogueUnit.reception_id == reception.id,
+                ),
+            )
+            .where(
+                TagAssignmentCurrent.tenant_id == reception.tenant_id,
+                TagAssignmentCurrent.subject_type == "dialogue_unit",
+                TagAssignmentFact.tenant_id == reception.tenant_id,
+                TagAssignmentFact.subject_type == "dialogue_unit",
+                TagAssignmentFact.reception_id == reception.id,
+                *tag_query_unit_filters,
+            )
+            .order_by(
+                DialogueUnit.unit_index,
+                TagAssignmentFact.tag_key,
+                TagAssignmentFact.assigned_at,
+                TagAssignmentFact.id,
+            )
+        )
+        canonical_facts = list((await session.execute(canonical_stmt)).scalars().all())
+        canonical_identities = {(fact.subject_id, fact.tag_key) for fact in canonical_facts}
+        canonical_assignments = [
+            _canonical_tag_assignment(fact) for fact in canonical_facts if not fact.tombstone
+        ]
+        legacy_supplements = [
+            assignment
+            for assignment in legacy_tag_assignments
+            if (assignment.dialogue_unit_id, assignment.label_key) not in canonical_identities
+        ]
+        unit_order = {unit.id: unit.unit_index for unit in units}
+        tag_assignments = sorted(
+            [*canonical_assignments, *legacy_supplements],
+            key=lambda assignment: (
+                unit_order.get(assignment.dialogue_unit_id, 2**31),
+                assignment.label_key,
+                -assignment.priority,
+                assignment.group_key,
+                assignment.group_version,
+                assignment.id,
+            ),
+        )
+        if bounded:
+            tag_assignments = tag_assignments[:MAX_WORKSPACE_TAG_ASSIGNMENTS]
+            canonical_visible_total = int(
+                (
+                    await session.execute(
+                        select(func.count(TagAssignmentCurrent.id))
+                        .select_from(TagAssignmentCurrent)
+                        .join(
+                            TagAssignmentFact,
+                            and_(
+                                TagAssignmentFact.id == TagAssignmentCurrent.fact_id,
+                                TagAssignmentFact.tenant_id == TagAssignmentCurrent.tenant_id,
+                            ),
+                        )
+                        .join(
+                            DialogueUnit,
+                            and_(
+                                DialogueUnit.id == TagAssignmentCurrent.subject_id,
+                                DialogueUnit.tenant_id == reception.tenant_id,
+                                DialogueUnit.reception_id == reception.id,
+                            ),
+                        )
+                        .where(
+                            TagAssignmentCurrent.tenant_id == reception.tenant_id,
+                            TagAssignmentCurrent.subject_type == "dialogue_unit",
+                            TagAssignmentFact.tenant_id == reception.tenant_id,
+                            TagAssignmentFact.subject_type == "dialogue_unit",
+                            TagAssignmentFact.reception_id == reception.id,
+                            TagAssignmentFact.tombstone.is_(False),
+                            *unit_filters,
+                        )
+                    )
+                ).scalar_one()
+            )
+            current_for_legacy = (
+                select(TagAssignmentCurrent.id)
+                .join(
+                    TagAssignmentFact,
+                    and_(
+                        TagAssignmentFact.id == TagAssignmentCurrent.fact_id,
+                        TagAssignmentFact.tenant_id == TagAssignmentCurrent.tenant_id,
+                    ),
+                )
+                .where(
+                    TagAssignmentCurrent.tenant_id == reception.tenant_id,
+                    TagAssignmentCurrent.subject_type == "dialogue_unit",
+                    TagAssignmentCurrent.subject_id == DialogueTagAssignment.dialogue_unit_id,
+                    TagAssignmentCurrent.tag_key == DialogueTagAssignment.label_key,
+                    TagAssignmentFact.tenant_id == reception.tenant_id,
+                    TagAssignmentFact.subject_type == "dialogue_unit",
+                )
+                .exists()
+            )
+            legacy_supplement_total = int(
+                (
+                    await session.execute(
+                        select(func.count(DialogueTagAssignment.id))
+                        .select_from(DialogueTagAssignment)
+                        .join(
+                            DialogueUnit,
+                            and_(
+                                DialogueUnit.id == DialogueTagAssignment.dialogue_unit_id,
+                                DialogueUnit.tenant_id == reception.tenant_id,
+                                DialogueUnit.reception_id == reception.id,
+                            ),
+                        )
+                        .where(
+                            *tag_filters,
+                            *unit_filters,
+                            ~current_for_legacy,
+                        )
+                    )
+                ).scalar_one()
+            )
+            tag_total = canonical_visible_total + legacy_supplement_total
+        else:
             tag_total = len(tag_assignments)
         tags_by_unit: dict[int, list[DialogueTagAssignment]] = {}
         for assignment in tag_assignments:
@@ -1201,7 +1883,7 @@ class ReceptionService:
                     and_(
                         ProvenanceEvent.object_type == "dialogue_tag_assignment",
                         ProvenanceEvent.object_ref.in_(
-                            [str(assignment.id) for assignment in tag_assignments]
+                            [str(assignment.id) for assignment in legacy_tag_assignments]
                         ),
                     ),
                     and_(
@@ -1304,6 +1986,70 @@ class ReceptionService:
         if not bounded:
             provenance_total = len(provenance_events)
 
+        previous_dialogue_unit: DialogueUnit | None = None
+        next_dialogue_unit: DialogueUnit | None = None
+        if bounded:
+            if units:
+                previous_predicate = DialogueUnit.unit_index < min(
+                    unit.unit_index for unit in units
+                )
+                next_predicate = DialogueUnit.unit_index > max(
+                    unit.unit_index for unit in units
+                )
+            else:
+                previous_predicate = (
+                    DialogueUnit.end_sec <= effective_window_start
+                )
+                next_predicate = DialogueUnit.start_sec >= effective_window_end
+            previous_dialogue_unit = (
+                await session.execute(
+                    select(DialogueUnit)
+                    .where(*all_unit_filters, previous_predicate)
+                    .order_by(
+                        DialogueUnit.unit_index.desc(),
+                        DialogueUnit.version.desc(),
+                        DialogueUnit.id.desc(),
+                    )
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            next_dialogue_unit = (
+                await session.execute(
+                    select(DialogueUnit)
+                    .where(*all_unit_filters, next_predicate)
+                    .order_by(
+                        DialogueUnit.unit_index,
+                        DialogueUnit.version.desc(),
+                        DialogueUnit.id,
+                    )
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+
+        active_audio_operation = (
+            await session.execute(
+                select(ReceptionAudioOperation)
+                .where(
+                    ReceptionAudioOperation.tenant_id == reception.tenant_id,
+                    ReceptionAudioOperation.reception_id == reception.id,
+                    ReceptionAudioOperation.status.in_(
+                        (
+                            "queued",
+                            "claimed",
+                            "probing",
+                            "slicing",
+                            "assembling",
+                            "encrypting",
+                            "verifying",
+                            "committing",
+                        )
+                    ),
+                )
+                .order_by(ReceptionAudioOperation.created_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+
         window = (
             ReceptionWorkspaceWindow(
                 start_sec=effective_window_start,
@@ -1352,6 +2098,9 @@ class ReceptionService:
             transcript_items=transcript_items,
             provenance_events=provenance_events,
             window=window,
+            previous_dialogue_unit=previous_dialogue_unit,
+            next_dialogue_unit=next_dialogue_unit,
+            active_audio_operation=active_audio_operation,
         )
 
     async def _renumber_dialogue_units(
@@ -1402,6 +2151,45 @@ class ReceptionService:
         )
         return [_state_transition_snapshot(transition) for transition in result.scalars().all()]
 
+    @staticmethod
+    async def _speaker_refs_for_evidence(
+        session: AsyncSession,
+        *,
+        tenant_id: str,
+        evidence_refs: Sequence[Any],
+    ) -> list[str]:
+        segment_ids: set[int] = set()
+        for raw_ref in evidence_refs:
+            if not isinstance(raw_ref, Mapping):
+                continue
+            raw_segment_id = raw_ref.get("segment_id")
+            if raw_segment_id is None or isinstance(raw_segment_id, bool):
+                continue
+            try:
+                segment_id = int(raw_segment_id)
+            except (TypeError, ValueError):
+                continue
+            if segment_id > 0:
+                segment_ids.add(segment_id)
+        if not segment_ids:
+            return []
+        result = await session.execute(
+            select(Segment.speaker)
+            .where(
+                Segment.tenant_id == tenant_id,
+                Segment.id.in_(segment_ids),
+                Segment.speaker.is_not(None),
+            )
+            .order_by(Segment.id)
+        )
+        return list(
+            dict.fromkeys(
+                speaker
+                for speaker in result.scalars().all()
+                if speaker is not None and speaker
+            )
+        )
+
     async def _rebuild_state_transitions(
         self,
         session: AsyncSession,
@@ -1436,10 +2224,7 @@ class ReceptionService:
         rebuilt: list[DialogueStateTransition] = []
         for sequence_no, unit in enumerate(units):
             to_state = unit.business_stage or "__unknown__"
-            confidence = unit.boundary_confidence
-            if confidence is None:
-                confidence = 1.0
-            confidence = min(1.0, max(0.0, confidence))
+            confidence = _unit_stage_confidence(unit)
             rebuilt.append(
                 DialogueStateTransition(
                     tenant_id=tenant_id,
@@ -1488,6 +2273,38 @@ class ReceptionService:
                 raise RecordingNotFoundError(
                     detail={"recording_ids": missing},
                 )
+            active_assignments = (
+                await session.execute(
+                    select(
+                        ReceptionRecording.recording_id,
+                        ReceptionRecording.reception_id,
+                    )
+                    .join(
+                        Reception,
+                        Reception.id == ReceptionRecording.reception_id,
+                    )
+                    .where(
+                        ReceptionRecording.tenant_id == tenant_id,
+                        ReceptionRecording.recording_id.in_(recording_ids),
+                        Reception.tenant_id == tenant_id,
+                        Reception.status != "archived",
+                    )
+                )
+            ).all()
+            if active_assignments:
+                raise ConflictError(
+                    "A recording already belongs to an active reception",
+                    code="RECORDING_ALREADY_ASSIGNED",
+                    detail={
+                        "assignments": [
+                            {
+                                "recording_id": int(recording_id),
+                                "reception_id": int(assigned_reception_id),
+                            }
+                            for recording_id, assigned_reception_id in active_assignments
+                        ]
+                    },
+                )
 
             mismatched_store = [
                 recording.id
@@ -1502,6 +2319,37 @@ class ReceptionService:
                         "store_id": body.store_id,
                         "recording_ids": sorted(mismatched_store),
                     },
+                )
+            normalized_source_ends: dict[int, float | None] = {}
+            out_of_bounds: list[int] = []
+            for mapping in body.recordings:
+                recording = recordings[mapping.recording_id]
+                verified_duration_ms = verified_recording_duration_ms(recording)
+                verified_duration_sec = (
+                    verified_duration_ms / 1_000
+                    if verified_duration_ms is not None
+                    else None
+                )
+                source_end = mapping.source_end_sec
+                if source_end is None and verified_duration_sec is not None:
+                    source_end = verified_duration_sec
+                if (
+                    verified_duration_sec is not None
+                    and (
+                        mapping.source_start_sec >= verified_duration_sec
+                        or (
+                            source_end is not None
+                            and source_end > verified_duration_sec + 0.001
+                        )
+                    )
+                ):
+                    out_of_bounds.append(mapping.recording_id)
+                normalized_source_ends[mapping.recording_id] = source_end
+            if out_of_bounds:
+                raise ValidationError(
+                    "Reception source interval exceeds verified audio duration",
+                    code="RECEPTION_SOURCE_OUT_OF_BOUNDS",
+                    detail={"recording_ids": sorted(set(out_of_bounds))},
                 )
 
             if body.external_session_id is not None:
@@ -1547,6 +2395,7 @@ class ReceptionService:
             await session.flush()
 
             for mapping in body.recordings:
+                source_end = normalized_source_ends[mapping.recording_id]
                 session.add(
                     ReceptionRecording(
                         tenant_id=tenant_id,
@@ -1556,7 +2405,24 @@ class ReceptionService:
                         timeline_start_sec=mapping.timeline_start_sec,
                         timeline_end_sec=mapping.timeline_end_sec,
                         source_start_sec=mapping.source_start_sec,
-                        source_end_sec=mapping.source_end_sec,
+                        source_end_sec=source_end,
+                        source_start_ms=seconds_to_milliseconds(
+                            mapping.source_start_sec
+                        ),
+                        source_end_ms=(
+                            seconds_to_milliseconds(source_end)
+                            if source_end is not None
+                            else None
+                        ),
+                        timeline_start_ms=seconds_to_milliseconds(
+                            mapping.timeline_start_sec
+                        ),
+                        timeline_end_ms=seconds_to_milliseconds(
+                            mapping.timeline_end_sec
+                        ),
+                        gap_before_ms=seconds_to_milliseconds(
+                            mapping.gap_before_sec
+                        ),
                         gap_before_sec=mapping.gap_before_sec,
                         decision_source=mapping.decision_source,
                         merge_confidence=mapping.merge_confidence,
@@ -1579,7 +2445,7 @@ class ReceptionService:
                             "kind": "audio",
                             "recording_id": mapping.recording_id,
                             "source_start_sec": mapping.source_start_sec,
-                            "source_end_sec": mapping.source_end_sec,
+                            "source_end_sec": normalized_source_ends[mapping.recording_id],
                             "timeline_start_sec": mapping.timeline_start_sec,
                             "timeline_end_sec": mapping.timeline_end_sec,
                         }
@@ -1652,6 +2518,8 @@ class ReceptionService:
         agent_user_id: int | None = None,
     ) -> ReceptionAudioAsset:
         """Authorize one source/merged audio file and confine it to working_dir."""
+        playback_geometry: ReceptionPlaybackGeometry | None = None
+        merged_legal_end_ms: int | None = None
         async with self._session_factory() as session:
             reception = await self._find_reception(
                 session,
@@ -1662,12 +2530,28 @@ class ReceptionService:
             if recording_id is None:
                 persisted_path = reception.merged_audio_path
                 recording = None
+                mapping = None
+                mappings = list(
+                    (
+                        await session.execute(
+                            select(ReceptionRecording).where(
+                                ReceptionRecording.tenant_id == tenant_id,
+                                ReceptionRecording.reception_id == reception_id,
+                            )
+                        )
+                    ).scalars()
+                )
+                if mappings:
+                    merged_legal_end_ms = max(
+                        reception_mapping_playback_geometry(item).timeline_end_ms
+                        for item in mappings
+                    )
             else:
                 result = await session.execute(
-                    select(Recording)
+                    select(ReceptionRecording, Recording)
                     .join(
-                        ReceptionRecording,
-                        ReceptionRecording.recording_id == Recording.id,
+                        Recording,
+                        Recording.id == ReceptionRecording.recording_id,
                     )
                     .where(
                         ReceptionRecording.tenant_id == tenant_id,
@@ -1676,8 +2560,11 @@ class ReceptionService:
                         Recording.tenant_id == tenant_id,
                     )
                 )
-                recording = result.scalar_one_or_none()
+                row = result.one_or_none()
+                mapping, recording = row if row is not None else (None, None)
                 persisted_path = recording.path if recording is not None else None
+                if mapping is not None:
+                    playback_geometry = reception_mapping_playback_geometry(mapping)
 
         if not persisted_path:
             raise NotFoundError(
@@ -1685,26 +2572,48 @@ class ReceptionService:
                 code="AUDIO_NOT_FOUND",
             )
         if recording is not None:
-            return await self._recording_audio_asset(
-                recording,
-                tenant_id=tenant_id,
+            assert mapping is not None
+            assert playback_geometry is not None
+            if self._mapping_requires_clipped_playback(mapping, recording):
+                asset = await self._materialize_mapping_audio_asset(
+                    mapping=mapping,
+                    recording=recording,
+                    tenant_id=tenant_id,
+                )
+            else:
+                asset = await self._recording_audio_asset(
+                    recording,
+                    tenant_id=tenant_id,
+                )
+            return replace(
+                asset,
+                time_origin_ms=playback_geometry.time_origin_ms,
+                legal_source_start_ms=playback_geometry.legal_source_start_ms,
+                legal_source_end_ms=playback_geometry.legal_source_end_ms,
             )
         if str(persisted_path).casefold().endswith(".enc"):
-            return await self._decrypt_audio_asset(
+            asset = await self._decrypt_audio_asset(
                 str(persisted_path),
                 original_path=str(persisted_path)[: -len(".enc")],
                 tenant_id=tenant_id,
             )
-        try:
-            return resolve_confined_audio_file(
-                self._audio_root,
-                str(persisted_path),
-            )
-        except ValueError as exc:
-            raise NotFoundError(
-                "Audio asset not found",
-                code="AUDIO_NOT_FOUND",
-            ) from exc
+        else:
+            try:
+                asset = resolve_confined_audio_file(
+                    self._audio_root,
+                    str(persisted_path),
+                )
+            except ValueError as exc:
+                raise NotFoundError(
+                    "Audio asset not found",
+                    code="AUDIO_NOT_FOUND",
+                ) from exc
+        return replace(
+            asset,
+            time_origin_ms=0,
+            legal_source_start_ms=0,
+            legal_source_end_ms=merged_legal_end_ms,
+        )
 
     async def propose_reception_groups(
         self,
@@ -1730,18 +2639,14 @@ class ReceptionService:
                     detail={"recording_ids": missing},
                 )
 
-            duration_result = await session.execute(
-                select(Segment.recording_id, func.max(Segment.end_sec))
-                .where(
-                    Segment.tenant_id == tenant_id,
-                    Segment.recording_id.in_(body.recording_ids),
-                )
-                .group_by(Segment.recording_id)
-            )
             durations = {
-                int(recording_id): float(duration)
-                for recording_id, duration in duration_result.all()
-                if duration is not None and float(duration) > 0
+                recording_id: verified_duration_ms / 1_000
+                for recording_id, recording in by_id.items()
+                if (
+                    verified_duration_ms
+                    := verified_recording_duration_ms(recording)
+                )
+                is not None
             }
 
         unavailable_duration = [
@@ -1781,13 +2686,15 @@ class ReceptionService:
         for recording_id in body.recording_ids:
             recording = by_id[recording_id]
             assert recording.recorded_at is not None
+            duration = durations[recording.id]
+            assert duration is not None
             candidates.append(
                 RecordingCandidate(
                     recording_id=str(recording.id),
                     tenant_id=tenant_id,
                     store_id=recording.store_id,
                     started_at=recording.recorded_at,
-                    ended_at=(recording.recorded_at + timedelta(seconds=durations[recording.id])),
+                    ended_at=(recording.recorded_at + timedelta(seconds=duration)),
                     agent_id=recording.agent_name,
                     customer_voiceprint_id=recording.customer_hash,
                 )
@@ -1805,16 +2712,13 @@ class ReceptionService:
             groups=groups,
         )
 
-    async def _recording_durations(
-        self,
-        session: AsyncSession,
+    @staticmethod
+    def _recording_durations(
         *,
-        tenant_id: str,
         recordings: Sequence[Recording],
         existing: dict[int, ReceptionRecording],
     ) -> dict[int, float]:
         durations: dict[int, float] = {}
-        missing_ids: list[int] = []
         for recording in recordings:
             mapping = existing.get(recording.id)
             if mapping is not None:
@@ -1823,20 +2727,9 @@ class ReceptionService:
                 else:
                     durations[recording.id] = mapping.timeline_end_sec - mapping.timeline_start_sec
             else:
-                missing_ids.append(recording.id)
-
-        if missing_ids:
-            segment_result = await session.execute(
-                select(Segment.recording_id, func.max(Segment.end_sec))
-                .where(
-                    Segment.tenant_id == tenant_id,
-                    Segment.recording_id.in_(missing_ids),
-                )
-                .group_by(Segment.recording_id)
-            )
-            for recording_id, duration in segment_result.all():
-                if duration is not None and float(duration) > 0:
-                    durations[int(recording_id)] = float(duration)
+                verified_duration_ms = verified_recording_duration_ms(recording)
+                if verified_duration_ms is not None:
+                    durations[recording.id] = verified_duration_ms / 1_000
 
         unavailable = [recording.id for recording in recordings if recording.id not in durations]
         if unavailable:
@@ -1852,9 +2745,17 @@ class ReceptionService:
         reception_id: int,
         tenant_id: str,
         body: ReceptionMergeRequest,
+        *,
+        timeline_override: Mapping[int, ReceptionTimelineSliceOverride] | None = None,
+        physical_generation: str | None = None,
+        on_physical_stage: ReceptionPhysicalStageHook | None = None,
     ) -> _PreparedPhysicalMerge:
         """Build one unique physical generation without holding DB locks."""
         assert self._audio_assembler is not None
+        normalized_override = _normalize_timeline_override(
+            body.recording_ids,
+            timeline_override,
+        )
         async with self._session_factory() as session:
             reception = await self._find_reception(
                 session,
@@ -1897,63 +2798,96 @@ class ReceptionService:
                 )
             )
             existing = {row.recording_id: row for row in existing_result.scalars().all()}
-            clipped_recording_ids = [
-                recording.id
-                for recording in recordings
-                if (
-                    existing.get(recording.id) is not None
-                    and abs(existing[recording.id].source_start_sec) > 0.001
-                )
-            ]
-            if clipped_recording_ids:
-                raise ValidationError(
-                    "Physical merge currently supports complete source files only",
-                    code="AUDIO_CLIP_ASSEMBLY_UNSUPPORTED",
-                    detail={"recording_ids": clipped_recording_ids},
-                )
             recording_sources = tuple(
-                (
-                    recording.id,
-                    str(recording.path),
-                    (
-                        str(recording.audio_encrypted_path)
-                        if recording.audio_encrypted_path is not None
+                _recording_source_snapshot(
+                    recording,
+                    existing.get(recording.id),
+                    gap_before_sec=(
+                        normalized_override[recording.id].gap_before_sec
+                        if normalized_override is not None
+                        else existing[recording.id].gap_before_sec
+                        if sequence_no > 0 and recording.id in existing
+                        else 0.0
+                    ),
+                    geometry_override=(
+                        normalized_override[recording.id]
+                        if normalized_override is not None
                         else None
                     ),
                 )
-                for recording in recordings
+                for sequence_no, recording in enumerate(recordings)
             )
+            assembly_sources = [
+                AudioAssemblySource(
+                    path=recording.path,
+                    source_start_sec=(
+                        normalized_override[recording.id].source_start_sec
+                        if normalized_override is not None
+                        else existing[recording.id].source_start_sec
+                        if recording.id in existing
+                        else 0.0
+                    ),
+                    source_end_sec=(
+                        normalized_override[recording.id].source_end_sec
+                        if normalized_override is not None
+                        else existing[recording.id].source_end_sec
+                        if recording.id in existing
+                        else None
+                    ),
+                    gap_before_sec=(
+                        normalized_override[recording.id].gap_before_sec
+                        if normalized_override is not None
+                        else existing[recording.id].gap_before_sec
+                        if sequence_no > 0 and recording.id in existing
+                        else 0.0
+                    ),
+                )
+                for sequence_no, recording in enumerate(recordings)
+            ]
 
-        generation = secrets.token_hex(8)
-        target_relative = (
-            f"assembled_audio/{tenant_id}/receptions/"
-            f"reception-{reception_id}/v{body.expected_version + 1}-{generation}.wav"
+        generation = physical_generation or secrets.token_hex(8)
+        target_relative = reception_physical_generation_relative_path(
+            tenant_id=tenant_id,
+            reception_id=reception_id,
+            reception_version=body.expected_version + 1,
+            generation=generation,
         )
         output = resolve_safe_audio_output(self._audio_root, target_relative)
         encrypted_output = Path(f"{output}.enc")
         source_assets: list[ReceptionAudioAsset] = []
+        resolved_assembly_sources: list[AudioAssemblySource] = []
         try:
-            for recording in recordings:
+            for recording, assembly_source in zip(
+                recordings,
+                assembly_sources,
+                strict=True,
+            ):
                 if recording.audio_encrypted_path:
-                    source_assets.append(
-                        await self._recording_audio_asset(
-                            recording,
-                            tenant_id=tenant_id,
-                        )
+                    asset = await self._recording_audio_asset(
+                        recording,
+                        tenant_id=tenant_id,
                     )
+                    source_assets.append(asset)
                 else:
                     # The production assembler performs strict root, symlink,
                     # extension, identity, and size validation immediately
                     # before launching ffmpeg.
-                    source_assets.append(
-                        ReceptionAudioAsset(
-                            path=Path(str(recording.path)),
-                            media_type="application/octet-stream",
-                        )
+                    asset = ReceptionAudioAsset(
+                        path=Path(str(recording.path)),
+                        media_type="application/octet-stream",
                     )
+                    source_assets.append(asset)
+                resolved_assembly_sources.append(
+                    AudioAssemblySource(
+                        path=asset.path,
+                        source_start_sec=assembly_source.source_start_sec,
+                        source_end_sec=assembly_source.source_end_sec,
+                        gap_before_sec=assembly_source.gap_before_sec,
+                    )
+                )
             try:
                 audio_manifest = await self._audio_assembler.assemble(
-                    [asset.path for asset in source_assets],
+                    resolved_assembly_sources,
                     target_relative,
                 )
             except Exception as exc:
@@ -1993,6 +2927,8 @@ class ReceptionService:
                     status_code=503,
                 )
 
+            if on_physical_stage is not None:
+                await on_physical_stage("encrypting")
             if self._audio_crypto is None:
                 merged_audio_path = str(output)
             else:
@@ -2013,6 +2949,8 @@ class ReceptionService:
                 await asyncio.to_thread(output.unlink, missing_ok=True)
                 merged_audio_path = str(encrypted_output)
 
+            if on_physical_stage is not None:
+                await on_physical_stage("verifying")
             return _PreparedPhysicalMerge(
                 manifest=audio_manifest,
                 merged_audio_path=merged_audio_path,
@@ -2037,8 +2975,17 @@ class ReceptionService:
         body: ReceptionMergeRequest,
         *,
         actor: str,
+        timeline_override: Mapping[int, ReceptionTimelineSliceOverride] | None = None,
+        before_commit: ReceptionMergeBeforeCommitHook | None = None,
+        physical_generation: str | None = None,
+        on_physical_stage: ReceptionPhysicalStageHook | None = None,
+        after_physical_prepare: ReceptionPhysicalPrepareHook | None = None,
     ) -> ReceptionWorkspace:
-        """Append/reorder recording mappings and optionally assemble physical WAV."""
+        """Append/reorder mappings and optionally publish a verified internal plan."""
+        normalized_override = _normalize_timeline_override(
+            body.recording_ids,
+            timeline_override,
+        )
         if body.mode in {"physical", "both"} and self._audio_assembler is None:
             raise APIError(
                 "Physical audio assembler is not configured",
@@ -2052,15 +2999,21 @@ class ReceptionService:
                 reception_id,
                 tenant_id,
                 body,
+                timeline_override=normalized_override,
+                physical_generation=physical_generation,
+                on_physical_stage=on_physical_stage,
             )
             if body.mode in {"physical", "both"}
             else None
         )
+        retired_audio_path: str | None = None
         async with (
-            _PhysicalArtifactGuard(prepared) as artifact_guard,
+            _PhysicalArtifactGuard(prepared),
             self._session_factory() as session,
             session.begin(),
         ):
+            if prepared is not None and after_physical_prepare is not None:
+                await after_physical_prepare(prepared)
             reception = await self._find_reception(
                 session,
                 reception_id,
@@ -2074,6 +3027,7 @@ class ReceptionService:
                     expected=body.expected_version,
                     actual=reception.version,
                 )
+            previous_merged_audio_path = reception.merged_audio_path
 
             recording_result = await session.execute(
                 select(Recording).where(
@@ -2099,26 +3053,6 @@ class ReceptionService:
                     code="RECEPTION_STORE_MISMATCH",
                     detail={"recording_ids": store_mismatch},
                 )
-            if prepared is not None:
-                current_recording_sources = tuple(
-                    (
-                        recording.id,
-                        str(recording.path),
-                        (
-                            str(recording.audio_encrypted_path)
-                            if recording.audio_encrypted_path is not None
-                            else None
-                        ),
-                    )
-                    for recording in recordings
-                )
-                if current_recording_sources != prepared.recording_sources:
-                    raise ConflictError(
-                        "A recording audio source changed during physical assembly",
-                        code="RECORDING_AUDIO_CHANGED",
-                        detail={"recording_ids": body.recording_ids},
-                    )
-
             existing_result = await session.execute(
                 select(ReceptionRecording).where(
                     ReceptionRecording.tenant_id == tenant_id,
@@ -2127,6 +3061,32 @@ class ReceptionService:
             )
             existing_rows = list(existing_result.scalars().all())
             existing = {row.recording_id: row for row in existing_rows}
+            if prepared is not None:
+                current_recording_sources = tuple(
+                    _recording_source_snapshot(
+                        recording,
+                        existing.get(recording.id),
+                        gap_before_sec=(
+                            normalized_override[recording.id].gap_before_sec
+                            if normalized_override is not None
+                            else existing[recording.id].gap_before_sec
+                            if sequence_no > 0 and recording.id in existing
+                            else 0.0
+                        ),
+                        geometry_override=(
+                            normalized_override[recording.id]
+                            if normalized_override is not None
+                            else None
+                        ),
+                    )
+                    for sequence_no, recording in enumerate(recordings)
+                )
+                if current_recording_sources != prepared.recording_sources:
+                    raise ConflictError(
+                        "A recording audio source or timeline changed during physical assembly",
+                        code="RECORDING_AUDIO_CHANGED",
+                        detail={"recording_ids": body.recording_ids},
+                    )
             dialogue_result = await session.execute(
                 select(DialogueUnit)
                 .where(
@@ -2140,59 +3100,111 @@ class ReceptionService:
             locked_unit_ids = [unit.id for unit in dialogue_units if unit.edit_status == "locked"]
 
             if prepared is not None:
-                clipped_recording_ids = [
-                    recording.id
-                    for recording in recordings
-                    if (
-                        existing.get(recording.id) is not None
-                        and abs(existing[recording.id].source_start_sec) > 0.001
-                    )
-                ]
-                if clipped_recording_ids:
-                    raise ValidationError(
-                        "Physical merge currently supports complete source files only",
-                        code="AUDIO_CLIP_ASSEMBLY_UNSUPPORTED",
-                        detail={"recording_ids": clipped_recording_ids},
-                    )
                 merged_audio_path: str | None = prepared.merged_audio_path
                 audio_manifest: AudioAssemblyManifest | None = prepared.manifest
                 durations = dict(prepared.durations)
             else:
                 merged_audio_path = None
                 audio_manifest = None
-                durations = await self._recording_durations(
-                    session,
-                    tenant_id=tenant_id,
+                durations = self._recording_durations(
                     recordings=recordings,
                     existing=existing,
                 )
 
-            plans: list[dict[str, Any]] = []
-            cursor = 0.0
-            for sequence_no, recording in enumerate(recordings):
+            manifest_inputs = (
+                list(audio_manifest.inputs)
+                if audio_manifest is not None
+                else [None] * len(recordings)
+            )
+            requested_geometry: list[
+                tuple[Recording, float, float, float]
+            ] = []
+            timeline_sources: list[AudioTimelineSource] = []
+            for _sequence_no, (recording, manifest_input) in enumerate(
+                zip(recordings, manifest_inputs, strict=True)
+            ):
                 old = existing.get(recording.id)
                 duration = durations[recording.id]
                 source_start = (
-                    old.source_start_sec if old is not None and body.mode == "logical" else 0.0
+                    normalized_override[recording.id].source_start_sec
+                    if normalized_override is not None
+                    else manifest_input.source_start_sec
+                    if manifest_input is not None
+                    else old.source_start_sec
+                    if old is not None and body.mode == "logical"
+                    else 0.0
                 )
-                source_end = source_start + duration
+                source_end = (
+                    normalized_override[recording.id].source_end_sec
+                    if normalized_override is not None
+                    else manifest_input.source_end_sec
+                    if manifest_input is not None
+                    else source_start + duration
+                )
+                assert source_end is not None
+                gap_before = (
+                    normalized_override[recording.id].gap_before_sec
+                    if normalized_override is not None
+                    else manifest_input.gap_before_sec
+                    if manifest_input is not None
+                    else 0.0
+                )
+                source_start_ms = seconds_to_milliseconds(source_start)
+                source_end_ms = seconds_to_milliseconds(source_end)
+                verified_duration_ms = (
+                    verified_recording_duration_ms(recording)
+                    or source_end_ms
+                )
+                requested_geometry.append(
+                    (recording, source_start, source_end, gap_before)
+                )
+                timeline_sources.append(
+                    AudioTimelineSource(
+                        source_id=recording.id,
+                        source_start_ms=source_start_ms,
+                        source_end_ms=source_end_ms,
+                        verified_duration_ms=max(
+                            verified_duration_ms,
+                            source_end_ms,
+                        ),
+                        gap_before_ms=seconds_to_milliseconds(gap_before),
+                    )
+                )
+
+            canonical_timeline = AudioTimelinePlanner().plan(timeline_sources)
+            plans: list[dict[str, Any]] = []
+            for (recording, _source_start, _source_end, _gap), planned in zip(
+                requested_geometry,
+                canonical_timeline.slices,
+                strict=True,
+            ):
                 plans.append(
                     {
                         "recording": recording,
-                        "sequence_no": sequence_no,
-                        "timeline_start_sec": cursor,
-                        "timeline_end_sec": cursor + duration,
-                        "source_start_sec": source_start,
-                        "source_end_sec": source_end,
+                        "sequence_no": planned.sequence_no,
+                        "timeline_start_sec": milliseconds_to_seconds(
+                            planned.timeline_start_ms
+                        ),
+                        "timeline_end_sec": milliseconds_to_seconds(
+                            planned.timeline_end_ms
+                        ),
+                        "source_start_sec": milliseconds_to_seconds(
+                            planned.source_start_ms
+                        ),
+                        "source_end_sec": milliseconds_to_seconds(
+                            planned.source_end_ms
+                        ),
                         "decision_source": "manual",
                         "merge_confidence": 1.0,
+                        "gap_before_sec": milliseconds_to_seconds(
+                            planned.gap_before_ms
+                        ),
                         "merge_reasons": {
                             "manual_reorder": True,
                             "actor": actor,
                         },
                     }
                 )
-                cursor += duration
 
             normalized_existing_geometry = [
                 (
@@ -2226,7 +3238,7 @@ class ReceptionService:
                     round(float(plan["timeline_end_sec"]), 6),
                     round(float(plan["source_start_sec"]), 6),
                     round(float(plan["source_end_sec"]), 6),
-                    0.0,
+                    round(float(plan["gap_before_sec"]), 6),
                 )
                 for plan in plans
             ]
@@ -2378,6 +3390,11 @@ class ReceptionService:
                         DialogueTagAssignment.reception_id == reception.id,
                     )
                 )
+                await invalidate_dialogue_unit_currents_in_session(
+                    session,
+                    tenant_id=tenant_id,
+                    dialogue_unit_ids=[unit.id for unit in dialogue_units],
+                )
                 await session.execute(
                     delete(DialogueUnit).where(
                         DialogueUnit.tenant_id == tenant_id,
@@ -2393,24 +3410,40 @@ class ReceptionService:
                 )
             )
             await session.flush()
+            final_mappings: list[ReceptionRecording] = []
             for plan in plans:
                 recording = plan["recording"]
-                session.add(
-                    ReceptionRecording(
-                        tenant_id=tenant_id,
-                        reception_id=reception.id,
-                        recording_id=recording.id,
-                        sequence_no=int(plan["sequence_no"]),
-                        timeline_start_sec=float(plan["timeline_start_sec"]),
-                        timeline_end_sec=float(plan["timeline_end_sec"]),
-                        source_start_sec=float(plan["source_start_sec"]),
-                        source_end_sec=float(plan["source_end_sec"]),
-                        gap_before_sec=0.0,
-                        decision_source="manual",
-                        merge_confidence=1.0,
-                        merge_reasons=dict(plan["merge_reasons"]),
-                    )
+                final_mapping = ReceptionRecording(
+                    tenant_id=tenant_id,
+                    reception_id=reception.id,
+                    recording_id=recording.id,
+                    sequence_no=int(plan["sequence_no"]),
+                    timeline_start_sec=float(plan["timeline_start_sec"]),
+                    timeline_end_sec=float(plan["timeline_end_sec"]),
+                    source_start_sec=float(plan["source_start_sec"]),
+                    source_end_sec=float(plan["source_end_sec"]),
+                    source_start_ms=seconds_to_milliseconds(
+                        float(plan["source_start_sec"])
+                    ),
+                    source_end_ms=seconds_to_milliseconds(
+                        float(plan["source_end_sec"])
+                    ),
+                    timeline_start_ms=seconds_to_milliseconds(
+                        float(plan["timeline_start_sec"])
+                    ),
+                    timeline_end_ms=seconds_to_milliseconds(
+                        float(plan["timeline_end_sec"])
+                    ),
+                    gap_before_ms=seconds_to_milliseconds(
+                        float(plan["gap_before_sec"])
+                    ),
+                    gap_before_sec=float(plan["gap_before_sec"]),
+                    decision_source="manual",
+                    merge_confidence=1.0,
+                    merge_reasons=dict(plan["merge_reasons"]),
                 )
+                session.add(final_mapping)
+                final_mappings.append(final_mapping)
 
             next_version = body.expected_version + 1
             cas_result = await session.execute(
@@ -2487,6 +3520,9 @@ class ReceptionService:
                                         "sha256": item.sha256,
                                         "size_bytes": item.size_bytes,
                                         "duration_sec": item.duration_sec,
+                                        "source_start_sec": item.source_start_sec,
+                                        "source_end_sec": item.source_end_sec,
+                                        "gap_before_sec": item.gap_before_sec,
                                         "timeline_start_sec": item.timeline_start_sec,
                                         "timeline_end_sec": item.timeline_end_sec,
                                         "codec": item.codec,
@@ -2503,19 +3539,39 @@ class ReceptionService:
                     occurred_at=datetime.now(UTC),
                 )
             )
-            artifact_guard.keep()
+            if (
+                previous_merged_audio_path
+                and previous_merged_audio_path != merged_audio_path
+            ):
+                retired_audio_path = previous_merged_audio_path
+            if before_commit is not None:
+                # Flush gives the hook stable mapping IDs while keeping every
+                # operation/artifact/revision mutation inside this transaction.
+                await session.flush()
+                await session.refresh(reception)
+                await before_commit(
+                    session,
+                    reception,
+                    tuple(final_mappings),
+                    prepared,
+                    previous_merged_audio_path,
+                )
+                await session.flush()
 
+        await self._retire_physical_artifact(
+            retired_audio_path,
+            reception_id=reception_id,
+            tenant_id=tenant_id,
+        )
         return await self.get_workspace(reception_id, tenant_id)
 
     async def _segmentation_inputs(
         self,
         session: AsyncSession,
         reception: Reception,
-    ) -> tuple[
-        list[DialogueSegment],
-        dict[str, dict[str, Any]],
-        dict[str, str | None],
-    ]:
+        *,
+        lock_recordings: bool = False,
+    ) -> _DialogueSegmentationInputs:
         mapping_result = await session.execute(
             select(ReceptionRecording)
             .where(
@@ -2525,17 +3581,109 @@ class ReceptionService:
             .order_by(ReceptionRecording.sequence_no)
         )
         mappings = list(mapping_result.scalars().all())
-        recording_ids = [mapping.recording_id for mapping in mappings]
+        recording_ids = sorted({mapping.recording_id for mapping in mappings})
         if not recording_ids:
-            return [], {}, {}
+            return _DialogueSegmentationInputs(
+                segments=(),
+                evidence_by_segment={},
+                speaker_by_segment={},
+                input_generation={},
+                legacy_fallback_recording_ids=(),
+                fingerprint=hashlib.sha256(b"[]").hexdigest(),
+            )
+
+        recording_statement = select(Recording).where(
+            Recording.tenant_id == reception.tenant_id,
+            Recording.id.in_(recording_ids),
+        )
+        if lock_recordings:
+            recording_statement = recording_statement.with_for_update()
+        recording_result = await session.execute(recording_statement)
+        recordings = {item.id: item for item in recording_result.scalars().all()}
+        missing_recording_ids = sorted(set(recording_ids) - recordings.keys())
+        if missing_recording_ids:
+            raise ValidationError(
+                "Reception references unavailable recordings",
+                code="RECEPTION_RECORDING_INVALID",
+                detail={"recording_ids": missing_recording_ids},
+            )
+
+        active_run_ids = {
+            int(recording.active_pipeline_run_id)
+            for recording in recordings.values()
+            if recording.active_pipeline_run_id is not None
+        }
+        active_runs: dict[int, RecordingPipelineRun] = {}
+        if active_run_ids:
+            run_result = await session.execute(
+                select(RecordingPipelineRun).where(
+                    RecordingPipelineRun.id.in_(active_run_ids),
+                    RecordingPipelineRun.tenant_id == reception.tenant_id,
+                )
+            )
+            active_runs = {item.id: item for item in run_result.scalars().all()}
+
+        segment_scopes = []
+        input_generation: dict[str, int | str] = {}
+        legacy_fallback_recording_ids: list[int] = []
+        generation_by_recording: dict[int, int | str] = {}
+        pipeline_run_by_recording: dict[int, int | None] = {}
+        for recording_id in recording_ids:
+            recording = recordings[recording_id]
+            active_run_id = recording.active_pipeline_run_id
+            if active_run_id is None:
+                input_generation[str(recording_id)] = "legacy"
+                generation_by_recording[recording_id] = "legacy"
+                pipeline_run_by_recording[recording_id] = None
+                legacy_fallback_recording_ids.append(recording_id)
+                segment_scopes.append(
+                    and_(
+                        Segment.recording_id == recording_id,
+                        Segment.pipeline_run_id.is_(None),
+                        Segment.generation == 0,
+                    )
+                )
+                continue
+
+            run = active_runs.get(active_run_id)
+            if (
+                run is None
+                or run.recording_id != recording_id
+                or run.state not in {"ready", "ready_no_speech"}
+            ):
+                raise ValidationError(
+                    "Recording has no valid active pipeline generation",
+                    code="ACTIVE_PIPELINE_RUN_INVALID",
+                    detail={
+                        "recording_id": recording_id,
+                        "active_pipeline_run_id": active_run_id,
+                        "state": run.state if run is not None else None,
+                    },
+                )
+            input_generation[str(recording_id)] = run.generation
+            generation_by_recording[recording_id] = run.generation
+            pipeline_run_by_recording[recording_id] = run.id
+            segment_scopes.append(
+                and_(
+                    Segment.recording_id == recording_id,
+                    Segment.pipeline_run_id == run.id,
+                    Segment.generation == run.generation,
+                )
+            )
 
         segment_result = await session.execute(
             select(Segment)
             .where(
                 Segment.tenant_id == reception.tenant_id,
-                Segment.recording_id.in_(recording_ids),
+                or_(*segment_scopes),
             )
-            .order_by(Segment.recording_id, Segment.idx)
+            .order_by(
+                Segment.recording_id,
+                Segment.start_sec,
+                Segment.end_sec,
+                Segment.idx,
+                Segment.id,
+            )
         )
         by_recording: dict[int, list[Segment]] = {}
         for segment in segment_result.scalars().all():
@@ -2544,12 +3692,25 @@ class ReceptionService:
         inputs: list[DialogueSegment] = []
         evidence_by_segment: dict[str, dict[str, Any]] = {}
         speaker_by_segment: dict[str, str | None] = {}
+        fingerprint_mappings: list[dict[str, Any]] = []
+        fingerprint_segments: list[dict[str, Any]] = []
         for mapping in mappings:
             source_end = mapping.source_end_sec
             if source_end is None:
                 source_end = mapping.source_start_sec + (
                     mapping.timeline_end_sec - mapping.timeline_start_sec
                 )
+            fingerprint_mappings.append(
+                {
+                    "mapping_id": mapping.id,
+                    "recording_id": mapping.recording_id,
+                    "sequence_no": mapping.sequence_no,
+                    "source_start_sec": round(float(mapping.source_start_sec), 6),
+                    "source_end_sec": round(float(source_end), 6),
+                    "timeline_start_sec": round(float(mapping.timeline_start_sec), 6),
+                    "timeline_end_sec": round(float(mapping.timeline_end_sec), 6),
+                }
+            )
             for segment in by_recording.get(mapping.recording_id, []):
                 transcript = scrubbed_segment_text(
                     segment.text_scrubbed,
@@ -2588,15 +3749,244 @@ class ReceptionService:
                     "kind": "transcript_segment",
                     "segment_id": segment.id,
                     "recording_id": segment.recording_id,
+                    "generation": generation_by_recording[segment.recording_id],
+                    "pipeline_run_id": pipeline_run_by_recording[segment.recording_id],
                     "source_start_sec": source_start,
                     "source_end_sec": clipped_source_end,
                     "timeline_start_sec": timeline_start,
                     "timeline_end_sec": timeline_end,
                 }
                 speaker_by_segment[segment_ref] = segment.speaker
+                fingerprint_segments.append(
+                    {
+                        "segment_id": segment.id,
+                        "recording_id": segment.recording_id,
+                        "generation": generation_by_recording[segment.recording_id],
+                        "pipeline_run_id": pipeline_run_by_recording[segment.recording_id],
+                        "idx": segment.idx,
+                        "start_sec": round(float(segment.start_sec), 6),
+                        "end_sec": round(float(segment.end_sec), 6),
+                        "transcript": transcript,
+                        "speaker": segment.speaker,
+                        "vad_conf": (
+                            round(float(segment.vad_conf), 6)
+                            if segment.vad_conf is not None
+                            else None
+                        ),
+                    }
+                )
 
         inputs.sort(key=lambda item: (item.start_sec, item.end_sec, item.segment_id))
-        return inputs, evidence_by_segment, speaker_by_segment
+        fingerprint = hashlib.sha256(
+            json.dumps(
+                {
+                    "input_generation": input_generation,
+                    "mappings": fingerprint_mappings,
+                    "segments": fingerprint_segments,
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest()
+        return _DialogueSegmentationInputs(
+            segments=tuple(inputs),
+            evidence_by_segment=evidence_by_segment,
+            speaker_by_segment=speaker_by_segment,
+            input_generation=input_generation,
+            legacy_fallback_recording_ids=tuple(legacy_fallback_recording_ids),
+            fingerprint=fingerprint,
+        )
+
+    async def _semantic_segmentation_inputs(
+        self,
+        inputs: tuple[DialogueSegment, ...],
+    ) -> _SemanticSegmentationCapability:
+        """Batch semantic vectors outside the write transaction, with honest fallback."""
+        if self._embed_adapter is None:
+            return _SemanticSegmentationCapability(
+                segments=inputs,
+                status="not_configured",
+            )
+
+        try:
+            results = tuple(
+                await self._embed_adapter.embed_texts(
+                    tuple(item.transcript for item in inputs)
+                )
+            )
+            if len(results) != len(inputs):
+                raise ValueError("embedding result count does not match segment count")
+
+            vectors: list[tuple[float, ...]] = []
+            result_model: str | None = None
+            result_dim: int | None = None
+            for result in results:
+                vector = tuple(float(value) for value in result.vector)
+                if (
+                    not vector
+                    or result.dim != len(vector)
+                    or any(not math.isfinite(value) for value in vector)
+                ):
+                    raise ValueError("embedding result has invalid dimensions or values")
+                if result_model is None:
+                    result_model = result.model
+                    result_dim = result.dim
+                elif result.model != result_model or result.dim != result_dim:
+                    raise ValueError("embedding batch used inconsistent models or dimensions")
+                vectors.append(vector)
+
+            return _SemanticSegmentationCapability(
+                segments=tuple(
+                    replace(item, semantic_embedding=vector)
+                    for item, vector in zip(inputs, vectors, strict=True)
+                ),
+                status="enabled",
+                model=result_model,
+                dim=result_dim,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Dialogue semantic embeddings unavailable; using rules-only "
+                "(segments=%d, error_type=%s)",
+                len(inputs),
+                type(exc).__name__,
+            )
+            return _SemanticSegmentationCapability(
+                segments=inputs,
+                status="unavailable",
+                model=getattr(self._embed_adapter, "model", None),
+                dim=getattr(self._embed_adapter, "dim", None),
+                error_type=type(exc).__name__,
+            )
+
+    @staticmethod
+    def _segmentation_run_provenance(
+        *,
+        segmenter: DialogueSegmenter,
+        scenario: SalesScenario,
+        snapshot: _DialogueSegmentationInputs,
+        semantic: _SemanticSegmentationCapability,
+        requested_algorithm_version: str,
+    ) -> dict[str, Any]:
+        """Build the canonical replay/capability manifest for one v2 run."""
+        algorithm_version = str(
+            getattr(
+                segmenter,
+                "ALGORITHM_VERSION",
+                DialogueSegmenter.ALGORITHM_VERSION,
+            )
+        )
+        if not algorithm_version:
+            algorithm_version = DialogueSegmenter.ALGORITHM_VERSION
+        enabled_signals = [
+            "pause",
+            "long_pause",
+            "business_stage_change",
+            "topic_change",
+            "speaker_change",
+        ]
+        if semantic.status == "enabled":
+            enabled_signals.append("semantic_shift")
+        config = {
+            "algorithm_version": algorithm_version,
+            "scenario": scenario.value,
+            "boundary_threshold": float(segmenter.boundary_threshold),
+            "medium_pause_sec": float(segmenter.medium_pause_sec),
+            "long_pause_sec": float(segmenter.long_pause_sec),
+            "summary_max_chars": int(segmenter.summary_max_chars),
+            "semantic_status": semantic.status,
+            "semantic_model": semantic.model,
+            "semantic_dim": semantic.dim,
+        }
+        config_hash = hashlib.sha256(
+            json.dumps(
+                config,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest()
+        return {
+            "algorithm_version": algorithm_version,
+            "requested_algorithm_version": requested_algorithm_version,
+            "config_hash": config_hash,
+            "enabled_signals": enabled_signals,
+            "capability": (
+                "rules+semantic" if semantic.status == "enabled" else "rules-only"
+            ),
+            "semantic_embedding": {
+                "status": semantic.status,
+                "model": semantic.model,
+                "dim": semantic.dim,
+                "error_type": semantic.error_type,
+            },
+            "input_generation": dict(snapshot.input_generation),
+            "legacy_fallback_recording_ids": list(
+                snapshot.legacy_fallback_recording_ids
+            ),
+            "input_fingerprint": snapshot.fingerprint,
+        }
+
+    async def _automatic_segmentation_existing_units(
+        self,
+        session: AsyncSession,
+        *,
+        reception_id: int,
+        tenant_id: str,
+        body: ReceptionSegmentRequest,
+        for_update: bool,
+    ) -> list[DialogueUnit]:
+        """Validate replacement policy both before provider I/O and under lock."""
+        statement = (
+            select(DialogueUnit)
+            .where(
+                DialogueUnit.tenant_id == tenant_id,
+                DialogueUnit.reception_id == reception_id,
+            )
+            .order_by(DialogueUnit.unit_index)
+        )
+        if for_update:
+            statement = statement.with_for_update()
+        existing_result = await session.execute(statement)
+        existing = list(existing_result.scalars().all())
+        locked_ids = [unit.id for unit in existing if unit.edit_status == "locked"]
+        if locked_ids:
+            raise ConflictError(
+                "Locked dialogue units cannot be replaced automatically",
+                code="LOCKED_DIALOGUE_UNITS_PRESENT",
+                detail={"dialogue_unit_ids": locked_ids},
+            )
+        manual_ids = [unit.id for unit in existing if unit.edit_status != "auto"]
+        if manual_ids:
+            raise ConflictError(
+                "Manually edited dialogue units cannot be replaced automatically",
+                code="MANUAL_DIALOGUE_UNITS_PRESENT",
+                detail={"dialogue_unit_ids": manual_ids},
+            )
+        if existing and not body.replace_auto:
+            raise ConflictError(
+                "Dialogue units already exist; replacement must be explicit",
+                code="DIALOGUE_UNITS_EXIST",
+                detail={"dialogue_unit_ids": [unit.id for unit in existing]},
+            )
+        if existing:
+            tag_count_result = await session.execute(
+                select(func.count(DialogueTagAssignment.id)).where(
+                    DialogueTagAssignment.tenant_id == tenant_id,
+                    DialogueTagAssignment.reception_id == reception_id,
+                    DialogueTagAssignment.dialogue_unit_id.in_(
+                        [unit.id for unit in existing]
+                    ),
+                )
+            )
+            if int(tag_count_result.scalar_one()) > 0:
+                raise ConflictError(
+                    "Tagged dialogue units require manual review before replacement",
+                    code="TAGGED_DIALOGUE_UNITS_PRESENT",
+                    detail={"dialogue_unit_ids": [unit.id for unit in existing]},
+                )
+        return existing
 
     async def segment_reception(
         self,
@@ -2608,6 +3998,70 @@ class ReceptionService:
         segmenter: DialogueSegmenter | None = None,
     ) -> ReceptionWorkspace:
         """Derive dialogue units and state transitions from persisted segments."""
+        effective_segmenter = segmenter or DialogueSegmenter()
+        async with self._session_factory() as read_session:
+            preflight_reception = await self._find_reception(
+                read_session,
+                reception_id,
+                tenant_id,
+                for_update=False,
+            )
+            if preflight_reception.version != body.expected_version:
+                raise self._version_conflict(
+                    object_type="reception",
+                    object_id=preflight_reception.id,
+                    expected=body.expected_version,
+                    actual=preflight_reception.version,
+                )
+            await self._automatic_segmentation_existing_units(
+                read_session,
+                reception_id=preflight_reception.id,
+                tenant_id=tenant_id,
+                body=body,
+                for_update=False,
+            )
+            snapshot = await self._segmentation_inputs(
+                read_session,
+                preflight_reception,
+            )
+            reception_scenario = preflight_reception.scenario
+
+        if not snapshot.segments:
+            raise ValidationError(
+                "No persisted transcript segments overlap this reception",
+                code="NO_SEGMENTS_FOR_RECEPTION",
+                detail={"reception_id": reception_id},
+            )
+
+        # Provider I/O deliberately occurs after the read session closes and
+        # before any reception/recording row is locked for publication.
+        semantic = await self._semantic_segmentation_inputs(snapshot.segments)
+        scenario = {
+            "gold": SalesScenario.GOLD_JEWELRY,
+            "automotive": SalesScenario.AUTOMOTIVE,
+            "custom": SalesScenario.GENERIC,
+        }[reception_scenario]
+        derived_units = effective_segmenter.segment(
+            semantic.segments,
+            scenario=scenario,
+        )
+        if not derived_units:
+            raise ValidationError(
+                "Dialogue segmentation produced no units",
+                code="DIALOGUE_SEGMENTATION_EMPTY",
+                detail={"reception_id": reception_id},
+            )
+        run_provenance = self._segmentation_run_provenance(
+            segmenter=effective_segmenter,
+            scenario=scenario,
+            snapshot=snapshot,
+            semantic=semantic,
+            requested_algorithm_version=body.algorithm_version,
+        )
+        algorithm_version = str(run_provenance["algorithm_version"])
+        evidence_by_segment = snapshot.evidence_by_segment
+        speaker_by_segment = snapshot.speaker_by_segment
+
         async with self._session_factory() as session, session.begin():
             reception = await self._find_reception(
                 session,
@@ -2623,77 +4077,30 @@ class ReceptionService:
                     actual=reception.version,
                 )
 
-            existing_result = await session.execute(
-                select(DialogueUnit)
-                .where(
-                    DialogueUnit.tenant_id == tenant_id,
-                    DialogueUnit.reception_id == reception.id,
-                )
-                .order_by(DialogueUnit.unit_index)
-                .with_for_update()
+            existing = await self._automatic_segmentation_existing_units(
+                session,
+                reception_id=reception.id,
+                tenant_id=tenant_id,
+                body=body,
+                for_update=True,
             )
-            existing = list(existing_result.scalars().all())
-            locked_ids = [unit.id for unit in existing if unit.edit_status == "locked"]
-            if locked_ids:
-                raise ConflictError(
-                    "Locked dialogue units cannot be replaced automatically",
-                    code="LOCKED_DIALOGUE_UNITS_PRESENT",
-                    detail={"dialogue_unit_ids": locked_ids},
-                )
-            manual_ids = [unit.id for unit in existing if unit.edit_status != "auto"]
-            if manual_ids:
-                raise ConflictError(
-                    "Manually edited dialogue units cannot be replaced automatically",
-                    code="MANUAL_DIALOGUE_UNITS_PRESENT",
-                    detail={"dialogue_unit_ids": manual_ids},
-                )
-            if existing and not body.replace_auto:
-                raise ConflictError(
-                    "Dialogue units already exist; replacement must be explicit",
-                    code="DIALOGUE_UNITS_EXIST",
-                    detail={"dialogue_unit_ids": [unit.id for unit in existing]},
-                )
-            if existing:
-                tag_count_result = await session.execute(
-                    select(func.count(DialogueTagAssignment.id)).where(
-                        DialogueTagAssignment.tenant_id == tenant_id,
-                        DialogueTagAssignment.reception_id == reception.id,
-                        DialogueTagAssignment.dialogue_unit_id.in_([unit.id for unit in existing]),
-                    )
-                )
-                if int(tag_count_result.scalar_one()) > 0:
-                    raise ConflictError(
-                        "Tagged dialogue units require manual review before replacement",
-                        code="TAGGED_DIALOGUE_UNITS_PRESENT",
-                        detail={"dialogue_unit_ids": [unit.id for unit in existing]},
-                    )
 
-            (
-                segment_inputs,
-                evidence_by_segment,
-                speaker_by_segment,
-            ) = await self._segmentation_inputs(session, reception)
-            if not segment_inputs:
-                raise ValidationError(
-                    "No persisted transcript segments overlap this reception",
-                    code="NO_SEGMENTS_FOR_RECEPTION",
-                    detail={"reception_id": reception.id},
-                )
-
-            scenario = {
-                "gold": SalesScenario.GOLD_JEWELRY,
-                "automotive": SalesScenario.AUTOMOTIVE,
-                "custom": SalesScenario.GENERIC,
-            }[reception.scenario]
-            derived_units = (segmenter or DialogueSegmenter()).segment(
-                segment_inputs,
-                scenario=scenario,
+            current_snapshot = await self._segmentation_inputs(
+                session,
+                reception,
+                lock_recordings=True,
             )
-            if not derived_units:
-                raise ValidationError(
-                    "Dialogue segmentation produced no units",
-                    code="DIALOGUE_SEGMENTATION_EMPTY",
-                    detail={"reception_id": reception.id},
+            if current_snapshot.fingerprint != snapshot.fingerprint:
+                raise ConflictError(
+                    "Recording generation or reception timeline changed during segmentation",
+                    code="SEGMENTATION_INPUT_CHANGED",
+                    detail={
+                        "reception_id": reception.id,
+                        "expected_input_fingerprint": snapshot.fingerprint,
+                        "actual_input_fingerprint": current_snapshot.fingerprint,
+                        "expected_input_generation": snapshot.input_generation,
+                        "actual_input_generation": current_snapshot.input_generation,
+                    },
                 )
 
             before = [_unit_snapshot(unit) for unit in existing]
@@ -2742,6 +4149,13 @@ class ReceptionService:
                             "detail": "dialogue segment start",
                         }
                     ]
+                boundary_reasons.append(
+                    {
+                        "code": "stage_inference",
+                        "stage": derived.stage,
+                        "stage_confidence": derived.stage_confidence,
+                    }
+                )
                 boundary_reasons_by_unit.append(boundary_reasons)
                 persisted_units.append(
                     DialogueUnit(
@@ -2760,6 +4174,7 @@ class ReceptionService:
                         business_stage=derived.stage,
                         summary=derived.summary,
                         boundary_confidence=derived.boundary_score,
+                        stage_confidence=derived.stage_confidence,
                         boundary_reasons=boundary_reasons,
                         segment_refs=evidence_refs,
                         speaker_refs=speaker_refs,
@@ -2779,7 +4194,7 @@ class ReceptionService:
                         object_ref=str(old_unit.id),
                         event_type="superseded",
                         actor=actor,
-                        algorithm_version=body.algorithm_version,
+                        algorithm_version=algorithm_version,
                         parent_refs=[
                             {
                                 "type": "reception",
@@ -2792,6 +4207,7 @@ class ReceptionService:
                             "reception_id": reception.id,
                             "before": _unit_snapshot(old_unit),
                             "reason": "replace_auto",
+                            **deepcopy(run_provenance),
                         },
                         occurred_at=now,
                     )
@@ -2823,9 +4239,9 @@ class ReceptionService:
                         from_state=previous_state,
                         to_state=derived.stage,
                         trigger=derived.boundary_reason[:128],
-                        confidence=derived.confidence,
+                        confidence=derived.stage_confidence,
                         evidence_refs=deepcopy(evidence_refs),
-                        algorithm_version=body.algorithm_version,
+                        algorithm_version=algorithm_version,
                     )
                 )
                 session.add(
@@ -2836,12 +4252,14 @@ class ReceptionService:
                         object_ref=str(unit.id),
                         event_type="derived",
                         actor=actor,
-                        algorithm_version=body.algorithm_version,
+                        algorithm_version=algorithm_version,
                         parent_refs=[
                             {
                                 "type": "segment",
                                 "id": ref["segment_id"],
                                 "recording_id": ref["recording_id"],
+                                "generation": ref["generation"],
+                                "pipeline_run_id": ref["pipeline_run_id"],
                             }
                             for ref in evidence_refs
                         ],
@@ -2852,6 +4270,7 @@ class ReceptionService:
                             "unit_version": unit.version,
                             "business_stage": unit.business_stage,
                             "boundary_reasons": deepcopy(boundary_reasons),
+                            **deepcopy(run_provenance),
                         },
                         occurred_at=now,
                     )
@@ -2859,6 +4278,23 @@ class ReceptionService:
                 previous_state = derived.stage
 
             reception.version += 1
+            await invalidate_dialogue_units_in_session(
+                session,
+                tenant_id=tenant_id,
+                reception_id=reception.id,
+                dialogue_unit_ids=[
+                    *[unit.id for unit in existing],
+                    *[unit.id for unit in persisted_units],
+                ],
+                recompute_dialogue_unit_ids=[unit.id for unit in persisted_units],
+                cause=(
+                    "automatic_resegmentation"
+                    if existing
+                    else "automatic_segmentation"
+                ),
+                reception_version=reception.version,
+                actor_user_id=_actor_user_id(actor),
+            )
             session.add(
                 ProvenanceEvent(
                     tenant_id=tenant_id,
@@ -2867,11 +4303,12 @@ class ReceptionService:
                     object_ref=str(reception.id),
                     event_type="derived",
                     actor=actor,
-                    algorithm_version=body.algorithm_version,
+                    algorithm_version=algorithm_version,
                     parent_refs=[
                         {
                             "type": "recording",
                             "id": recording_id,
+                            "generation": snapshot.input_generation[str(recording_id)],
                         }
                         for recording_id in sorted(
                             {int(ref["recording_id"]) for refs in refs_by_unit for ref in refs}
@@ -2885,6 +4322,7 @@ class ReceptionService:
                         "superseded_units": before,
                         "dialogue_unit_ids": [unit.id for unit in persisted_units],
                         "version": reception.version,
+                        **deepcopy(run_provenance),
                     },
                     occurred_at=now,
                 )
@@ -2977,6 +4415,8 @@ class ReceptionService:
             old_start = unit.start_sec
             old_end = unit.end_sec
             original_segment_refs = deepcopy(unit.segment_refs)
+            original_boundary_reasons = deepcopy(unit.boundary_reasons)
+            stage_confidence = _unit_stage_confidence(unit)
             left_segment_refs = _clip_evidence_refs(
                 original_segment_refs,
                 start_sec=old_start,
@@ -2987,22 +4427,25 @@ class ReceptionService:
                 start_sec=body.split_at_sec,
                 end_sec=old_end,
             )
+            left_speaker_refs = await self._speaker_refs_for_evidence(
+                session,
+                tenant_id=tenant_id,
+                evidence_refs=left_segment_refs,
+            )
+            right_speaker_refs = await self._speaker_refs_for_evidence(
+                session,
+                tenant_id=tenant_id,
+                evidence_refs=right_segment_refs,
+            )
 
             unit.end_sec = body.split_at_sec
             unit.version += 1
             unit.edit_status = "manual_edited"
             unit.summary = None
             unit.segment_refs = left_segment_refs
-            unit.boundary_reasons = _merge_json_values(
-                unit.boundary_reasons,
-                [
-                    {
-                        "code": "manual_split",
-                        "at_sec": body.split_at_sec,
-                        "reason": body.reason,
-                    }
-                ],
-            )
+            unit.speaker_refs = left_speaker_refs
+            unit.stage_confidence = stage_confidence
+            unit.boundary_reasons = original_boundary_reasons
             right = DialogueUnit(
                 tenant_id=tenant_id,
                 reception_id=reception_id,
@@ -3014,10 +4457,22 @@ class ReceptionService:
                 topic=unit.topic,
                 business_stage=unit.business_stage,
                 summary=None,
-                boundary_confidence=unit.boundary_confidence,
-                boundary_reasons=deepcopy(unit.boundary_reasons),
+                boundary_confidence=1.0,
+                stage_confidence=stage_confidence,
+                boundary_reasons=[
+                    {
+                        "code": "manual_split",
+                        "at_sec": body.split_at_sec,
+                        "reason": body.reason,
+                    },
+                    {
+                        "code": "stage_inference",
+                        "stage": unit.business_stage,
+                        "stage_confidence": stage_confidence,
+                    },
+                ],
                 segment_refs=right_segment_refs,
-                speaker_refs=deepcopy(unit.speaker_refs),
+                speaker_refs=right_speaker_refs,
                 edit_status="manual_edited",
             )
             session.add(right)
@@ -3086,6 +4541,15 @@ class ReceptionService:
             )
 
             reception.version += 1
+            await invalidate_dialogue_units_in_session(
+                session,
+                tenant_id=tenant_id,
+                reception_id=reception.id,
+                dialogue_unit_ids=[unit.id, right.id],
+                cause="manual_split",
+                reception_version=reception.version,
+                actor_user_id=_actor_user_id(actor),
+            )
             left_evidence = _merge_json_values(
                 unit.segment_refs,
                 left_tag_evidence,
@@ -3323,6 +4787,16 @@ class ReceptionService:
                 reception_id=reception_id,
             )
             removed_segment_refs = deepcopy(removed.segment_refs)
+            survivor_boundary_reasons = [
+                deepcopy(reason)
+                for reason in survivor.boundary_reasons
+                if not (
+                    isinstance(reason, Mapping)
+                    and reason.get("code") == "stage_inference"
+                )
+            ]
+            survivor_stage_confidence = _unit_stage_confidence(survivor)
+            removed_stage_confidence = _unit_stage_confidence(removed)
             tag_evidence, tag_snapshots, tag_conflicts = await self._merge_tag_assignments(
                 session,
                 tenant_id=tenant_id,
@@ -3332,28 +4806,36 @@ class ReceptionService:
 
             survivor.start_sec = min(survivor.start_sec, removed.start_sec)
             survivor.end_sec = max(survivor.end_sec, removed.end_sec)
-            topics = [value for value in (survivor.topic, removed.topic) if value is not None]
-            survivor.topic = " / ".join(dict.fromkeys(topics)) or None
-            summaries = [
-                value for value in (survivor.summary, removed.summary) if value is not None
-            ]
-            survivor.summary = "\n".join(dict.fromkeys(summaries)) or None
-            survivor.segment_refs = _merge_json_values(
+            survivor.topic = survivor.topic if survivor.topic == removed.topic else None
+            survivor.business_stage = (
+                survivor.business_stage
+                if survivor.business_stage == removed.business_stage
+                else None
+            )
+            survivor.summary = None
+            merged_segment_refs = _merge_json_values(
                 survivor.segment_refs,
                 removed_segment_refs,
             )
-            survivor.speaker_refs = _merge_json_values(
-                survivor.speaker_refs,
-                removed.speaker_refs,
+            survivor.segment_refs = merged_segment_refs
+            survivor.speaker_refs = await self._speaker_refs_for_evidence(
+                session,
+                tenant_id=tenant_id,
+                evidence_refs=merged_segment_refs,
             )
+            merged_stage_confidence = (
+                min(survivor_stage_confidence, removed_stage_confidence)
+                if survivor.business_stage
+                else 0.0
+            )
+            survivor.stage_confidence = merged_stage_confidence
             survivor.boundary_reasons = _merge_json_values(
-                survivor.boundary_reasons,
-                removed.boundary_reasons,
+                survivor_boundary_reasons,
                 [
                     {
-                        "code": "manual_merge",
-                        "reason": body.reason,
-                        "merged_unit_id": removed.id,
+                        "code": "stage_inference",
+                        "stage": survivor.business_stage,
+                        "stage_confidence": merged_stage_confidence,
                     }
                 ],
             )
@@ -3375,6 +4857,16 @@ class ReceptionService:
             )
 
             reception.version += 1
+            await invalidate_dialogue_units_in_session(
+                session,
+                tenant_id=tenant_id,
+                reception_id=reception.id,
+                dialogue_unit_ids=[survivor.id, removed.id],
+                recompute_dialogue_unit_ids=[survivor.id],
+                cause="manual_merge",
+                reception_version=reception.version,
+                actor_user_id=_actor_user_id(actor),
+            )
             evidence = _merge_json_values(
                 survivor.segment_refs,
                 removed_segment_refs,
@@ -3707,10 +5199,15 @@ __all__ = [
     "PlaybackGrantClaims",
     "ReceptionAudioAsset",
     "ReceptionMergeProposalResult",
+    "ReceptionPhysicalPrepareHook",
+    "ReceptionPhysicalStageHook",
+    "ReceptionPlaybackGeometry",
     "ReceptionService",
     "ReceptionTranscriptItem",
     "ReceptionWorkspace",
     "create_playback_grant",
+    "reception_mapping_playback_geometry",
+    "reception_physical_generation_relative_path",
     "resolve_confined_audio_file",
     "resolve_safe_audio_output",
     "verify_playback_grant",

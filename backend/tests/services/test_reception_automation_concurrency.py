@@ -70,6 +70,12 @@ async def _seed_recording(
             pipeline_state="done",
             recorded_at=recorded_at,
             indexed_at=recorded_at,
+            audio_duration_ms=30_000,
+            audio_sha256="a" * 64,
+            audio_size_bytes=960_044,
+            audio_sample_rate=16_000,
+            audio_channels=1,
+            source_revision=1,
         )
         session.add(recording)
         await session.flush()
@@ -108,6 +114,12 @@ async def _seed_dense_short_recordings(
                 pipeline_state="done",
                 recorded_at=recorded_at + timedelta(milliseconds=index),
                 indexed_at=recorded_at,
+                audio_duration_ms=30_000,
+                audio_sha256=f"{index + 1:064x}",
+                audio_size_bytes=960_044,
+                audio_sample_rate=16_000,
+                audio_channels=1,
+                source_revision=1,
             )
             for index in range(count)
         ]
@@ -146,6 +158,12 @@ async def _seed_long_recording_over_segment_budget(
             pipeline_state="done",
             recorded_at=recorded_at,
             indexed_at=recorded_at,
+            audio_duration_ms=1_026_000,
+            audio_sha256="b" * 64,
+            audio_size_bytes=32_832_044,
+            audio_sample_rate=16_000,
+            audio_channels=1,
+            source_revision=1,
         )
         session.add(recording)
         await session.flush()

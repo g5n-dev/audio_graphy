@@ -27,13 +27,24 @@ RWLock discipline (shared knowledge §17):
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from audio_graphy.adapters.protocols import EdgeConfidence
+from audio_graphy.core.language_detection import (
+    detect_semantic_language,
+    semantic_protected_identifiers,
+)
+from audio_graphy.services.llm_gateway import (
+    CachePolicy,
+    LLMProvenance,
+    LLMRequest,
+    execute_llm,
+)
 
 if TYPE_CHECKING:
     from audio_graphy.adapters.bundle import AdapterBundle
@@ -47,6 +58,11 @@ logger = logging.getLogger(__name__)
 DEFAULT_AMBIGUOUS_EDGE_WEIGHT = 0.5
 DEFAULT_INFERRED_EDGE_WEIGHT = 0.8
 EXTRACTED_EDGE_WEIGHT = 1.0
+_KEYWORD_PROMPT_VERSION = "query-keywords-prefix-v2"
+_KEYWORD_SCHEMA_VERSION = "comma-separated-keywords-v1"
+_KEYWORD_PARSER_VERSION = "keyword-delimiters-v1"
+_KEYWORD_POSTPROCESSOR_VERSION = "keyword-min-length-v1"
+_QUERY_HELPER_TTL_SECONDS = 7 * 24 * 60 * 60
 
 # Confidence rank used for min_confidence strict-mode filtering.
 # DEPRECATED (M9 L7) is ranked below AMBIGUOUS so it is always filtered
@@ -169,6 +185,7 @@ class StreamingRetriever:
         session_id: str | None = None,
         top_k: int = 5,
         min_confidence: EdgeConfidence | None = None,
+        permission_scope: Mapping[str, Any] | None = None,
     ) -> StreamingRetrievalResult:
         """Graph-channel-only retrieval over the live subgraph.
 
@@ -187,11 +204,17 @@ class StreamingRetriever:
             session_id: Optional session id (telemetry / future filtering).
             top_k: Max candidates returned.
             min_confidence: Strict mode — drop edges below this confidence.
+            permission_scope: Authorization scope that constrains result reuse.
 
         Returns:
             StreamingRetrievalResult.
         """
-        keywords = await self._extract_keywords(query)
+        keywords = await self._extract_keywords(
+            query,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            permission_scope=permission_scope,
+        )
         if not keywords:
             return StreamingRetrievalResult(
                 query=query,
@@ -292,16 +315,65 @@ class StreamingRetriever:
     # ------------------------------------------------------------------
     # Keyword extraction (reuses M7 fallback strategy)
     # ------------------------------------------------------------------
-    async def _extract_keywords(self, query: str) -> list[str]:
+    async def _extract_keywords(
+        self,
+        query: str,
+        *,
+        tenant_id: str = "default",
+        session_id: str | None = None,
+        permission_scope: Mapping[str, Any] | None = None,
+    ) -> list[str]:
         """Extract keywords via weak_llm; fall back to regex segmentation."""
         try:
             messages: list[dict[str, str]] = [
                 {
-                    "role": "user",
-                    "content": f"请从以下问题中提取关键词，用逗号分隔返回：\n{query}",
-                }
+                    "role": "system",
+                    "content": "从用户问题中提取关键词，只用逗号分隔返回关键词。",
+                },
+                {"role": "user", "content": query},
             ]
-            response = await self._bundle.weak_llm.complete(messages=messages)
+            adapter = self._bundle.weak_llm
+            query_sha256 = hashlib.sha256(query.encode("utf-8")).hexdigest()
+            semantic_language = detect_semantic_language(query)
+            provenance: list[LLMProvenance] = [
+                LLMProvenance("query", query_sha256),
+            ]
+            if session_id:
+                provenance.append(LLMProvenance("streaming_session", session_id))
+            request = LLMRequest(
+                tenant_id=tenant_id,
+                purpose="keyword_extract",
+                model_tier="weak",
+                provider=str(getattr(adapter, "provider", "openai-compatible")),
+                model_epoch=str(getattr(adapter, "model_epoch", adapter.model)),
+                messages=messages,
+                prompt_version=_KEYWORD_PROMPT_VERSION,
+                schema_version=_KEYWORD_SCHEMA_VERSION,
+                parser_version=_KEYWORD_PARSER_VERSION,
+                postprocessor_version=_KEYWORD_POSTPROCESSOR_VERSION,
+                temperature=0.0,
+                top_p=1.0,
+                response_schema={
+                    "type": "string",
+                    "description": "Comma-separated query keywords",
+                },
+                business_snapshot={
+                    "query_sha256": query_sha256,
+                    "language": semantic_language,
+                    "session_id": session_id,
+                },
+                permission_scope=(
+                    dict(permission_scope) if permission_scope else {"tenant_id": tenant_id}
+                ),
+                provenance=tuple(provenance),
+                cache_policy=CachePolicy.QUERY_SEMANTIC,
+                ttl_seconds=_QUERY_HELPER_TTL_SECONDS,
+                semantic_text=query,
+                semantic_language=semantic_language,
+                semantic_protected_values=semantic_protected_identifiers(query),
+                response_validator=lambda response: bool(self._parse_keywords(response.text)),
+            )
+            response = await execute_llm(adapter, request)
             keywords = self._parse_keywords(response.text)
             if keywords:
                 return keywords

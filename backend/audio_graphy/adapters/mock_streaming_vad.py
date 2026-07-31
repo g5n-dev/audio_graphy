@@ -18,7 +18,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-import time
 from typing import TYPE_CHECKING
 
 from audio_graphy.adapters.protocols import (
@@ -98,7 +97,9 @@ class MockStreamingVADAdapter:
             )
 
         self._chunk_count += 1
-        ts = time.monotonic()
+        # Source geometry is recording-relative, never process-monotonic wall
+        # time. This keeps mock WS integration identical to production VAD.
+        ts = (self._chunk_count - 1) * CHUNK_SEC
 
         # Deterministic onset: hash the PCM to produce a stable score.
         digest = hashlib.sha512(pcm).hexdigest()

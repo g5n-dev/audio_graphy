@@ -30,6 +30,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Literal, cast
 
+from audio_graphy.core.audio_timeline import (
+    AudioTimelinePlanner,
+    AudioTimelineSource,
+    milliseconds_to_seconds,
+    seconds_to_milliseconds,
+)
+
 CommandMode = Literal["concat_copy", "transcode_pcm", "transcode_aac"]
 PathInput = str | os.PathLike[str]
 
@@ -68,6 +75,38 @@ class AudioAssemblyProcessError(AudioAssemblyError, RuntimeError):
 
 
 @dataclass(frozen=True, slots=True)
+class AudioAssemblySource:
+    """One exact source interval and the silence that precedes it."""
+
+    path: PathInput
+    source_start_sec: float = 0.0
+    source_end_sec: float | None = None
+    gap_before_sec: float = 0.0
+
+    def __post_init__(self) -> None:
+        for field_name in ("source_start_sec", "gap_before_sec"):
+            value = getattr(self, field_name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+                or float(value) < 0
+            ):
+                raise AudioAssemblyValidationError(
+                    f"{field_name} must be a finite non-negative number"
+                )
+        if self.source_end_sec is not None and (
+            isinstance(self.source_end_sec, bool)
+            or not isinstance(self.source_end_sec, (int, float))
+            or not math.isfinite(float(self.source_end_sec))
+            or float(self.source_end_sec) <= float(self.source_start_sec)
+        ):
+            raise AudioAssemblyValidationError(
+                "source_end_sec must be finite and greater than source_start_sec"
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class AudioInputManifest:
     """Provenance record and merged-timeline position of one source."""
 
@@ -80,6 +119,9 @@ class AudioInputManifest:
     codec: str
     sample_rate: int
     channels: int
+    source_start_sec: float = 0.0
+    source_end_sec: float | None = None
+    gap_before_sec: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +134,8 @@ class AudioAssemblyManifest:
     total_duration_sec: float
     command_mode: CommandMode
     inputs: tuple[AudioInputManifest, ...]
+    output_sample_rate: int | None = None
+    output_channels: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,6 +154,9 @@ class _ValidatedSource:
     device: int
     inode: int
     modified_ns: int
+    source_start_sec: float
+    source_end_sec: float | None
+    gap_before_sec: float
 
 
 class AudioAssembler:
@@ -189,7 +236,7 @@ class AudioAssembler:
 
     async def assemble(
         self,
-        sources: Sequence[PathInput],
+        sources: Sequence[PathInput | AudioAssemblySource],
         target_relative_path: PathInput,
     ) -> AudioAssemblyManifest:
         """Build and atomically publish one physical audio artifact.
@@ -205,6 +252,7 @@ class AudioAssembler:
         probed: list[tuple[_ValidatedSource, _AudioMetadata, str]] = []
         for source in validated_sources:
             metadata = await self._probe(source.path)
+            self._validate_source_interval(source, metadata)
             digest = await asyncio.to_thread(_sha256_file, source.path)
             probed.append((source, metadata, digest))
 
@@ -212,16 +260,25 @@ class AudioAssembler:
         mode = self._select_mode(
             [metadata for _, metadata, _ in probed],
             target.suffix.lower(),
+            transformed=any(
+                self._source_requires_transform(source, metadata)
+                for source, metadata, _digest in probed
+            ),
         )
         self._validate_processing_budget(
             validated_sources,
-            [metadata for _, metadata, _ in probed],
+            input_manifest,
             mode=mode,
         )
 
         self._create_and_revalidate_target_parent(target)
         target = self._validate_target(target_relative_path, source_paths)
-        self._validate_temporary_disk_capacity(target.parent, validated_sources, probed, mode=mode)
+        self._validate_temporary_disk_capacity(
+            target.parent,
+            validated_sources,
+            input_manifest,
+            mode=mode,
+        )
 
         with tempfile.TemporaryDirectory(
             prefix=".audio-assembly-",
@@ -230,10 +287,15 @@ class AudioAssembler:
             temporary_root = Path(temporary_directory)
             concat_manifest = temporary_root / "sources.ffconcat"
             temporary_output = temporary_root / f"output{target.suffix.lower()}"
-            _write_concat_manifest(concat_manifest, [source.path for source in validated_sources])
+            if mode == "concat_copy":
+                _write_concat_manifest(
+                    concat_manifest,
+                    [source.path for source in validated_sources],
+                )
 
             command = self._build_ffmpeg_command(
-                sources=[source.path for source in validated_sources],
+                sources=validated_sources,
+                input_manifest=input_manifest,
                 concat_manifest=concat_manifest,
                 temporary_output=temporary_output,
                 mode=mode,
@@ -244,9 +306,32 @@ class AudioAssembler:
                 temporary_output,
                 max_bytes=self.max_temporary_bytes,
             )
+            output_metadata = await self._probe(temporary_output)
+            self._validate_output_metadata(
+                output_metadata,
+                target_extension=target.suffix.lower(),
+                expected_duration_sec=input_manifest[-1].timeline_end_sec,
+            )
             output_sha256 = await asyncio.to_thread(_sha256_file, temporary_output)
 
             self._revalidate_sources(validated_sources)
+            current_hashes = await asyncio.gather(
+                *(
+                    asyncio.to_thread(_sha256_file, source.path)
+                    for source in validated_sources
+                )
+            )
+            if any(
+                current_hash != expected_hash
+                for current_hash, (_source, _metadata, expected_hash) in zip(
+                    current_hashes,
+                    probed,
+                    strict=True,
+                )
+            ):
+                raise AudioAssemblyValidationError(
+                    "source content changed during assembly"
+                )
             target = self._validate_target(target_relative_path, source_paths)
             if target.parent != temporary_root.parent:
                 raise AudioAssemblyValidationError("target parent changed during assembly")
@@ -259,9 +344,11 @@ class AudioAssembler:
             output_path=target.relative_to(self.allowed_root).as_posix(),
             output_sha256=output_sha256,
             output_bytes=output_size,
-            total_duration_sec=sum(item.duration_sec for item in input_manifest),
+            total_duration_sec=input_manifest[-1].timeline_end_sec,
             command_mode=mode,
             inputs=input_manifest,
+            output_sample_rate=output_metadata.sample_rate,
+            output_channels=output_metadata.channels,
         )
 
     @staticmethod
@@ -282,7 +369,7 @@ class AudioAssembler:
 
     def _validate_sources(
         self,
-        sources: Sequence[PathInput],
+        sources: Sequence[PathInput | AudioAssemblySource],
     ) -> tuple[_ValidatedSource, ...]:
         if isinstance(sources, (str, bytes, os.PathLike)):
             raise AudioAssemblyValidationError("sources must be a sequence of paths")
@@ -294,8 +381,17 @@ class AudioAssembler:
         validated: list[_ValidatedSource] = []
         seen: set[Path] = set()
         total_bytes = 0
-        for source_input in sources:
-            raw = os.fspath(source_input)
+        for index, source_input in enumerate(sources):
+            request = (
+                source_input
+                if isinstance(source_input, AudioAssemblySource)
+                else AudioAssemblySource(path=source_input)
+            )
+            if index == 0 and float(request.gap_before_sec) != 0:
+                raise AudioAssemblyValidationError(
+                    "the first source cannot have a preceding gap"
+                )
+            raw = os.fspath(request.path)
             self._reject_control_characters(raw, label="source path")
             candidate = Path(raw).expanduser()
             if not candidate.is_absolute():
@@ -330,9 +426,57 @@ class AudioAssembler:
                     device=source_stat.st_dev,
                     inode=source_stat.st_ino,
                     modified_ns=source_stat.st_mtime_ns,
+                    source_start_sec=milliseconds_to_seconds(
+                        seconds_to_milliseconds(request.source_start_sec)
+                    ),
+                    source_end_sec=(
+                        milliseconds_to_seconds(
+                            seconds_to_milliseconds(request.source_end_sec)
+                        )
+                        if request.source_end_sec is not None
+                        else None
+                    ),
+                    gap_before_sec=milliseconds_to_seconds(
+                        seconds_to_milliseconds(request.gap_before_sec)
+                    ),
                 )
             )
         return tuple(validated)
+
+    @staticmethod
+    def _validate_source_interval(
+        source: _ValidatedSource,
+        metadata: _AudioMetadata,
+    ) -> None:
+        source_end = (
+            metadata.duration_sec
+            if source.source_end_sec is None
+            else source.source_end_sec
+        )
+        # ffprobe duration precision varies by container.  One millisecond is
+        # enough to absorb decimal representation without allowing an actual
+        # out-of-bounds clip.
+        if (
+            source.source_start_sec >= metadata.duration_sec
+            or source_end > metadata.duration_sec + 0.001
+        ):
+            raise AudioAssemblyValidationError(
+                "source interval exceeds verified media duration"
+            )
+
+    @staticmethod
+    def _source_requires_transform(
+        source: _ValidatedSource,
+        metadata: _AudioMetadata,
+    ) -> bool:
+        return bool(
+            source.gap_before_sec > 0
+            or source.source_start_sec > 0
+            or (
+                source.source_end_sec is not None
+                and source.source_end_sec < metadata.duration_sec - 0.001
+            )
+        )
 
     def _validate_target(
         self,
@@ -508,11 +652,13 @@ class AudioAssembler:
     def _validate_processing_budget(
         self,
         sources: Sequence[_ValidatedSource],
-        metadata: Sequence[_AudioMetadata],
+        manifest: Sequence[AudioInputManifest],
         *,
         mode: CommandMode,
     ) -> None:
-        estimated_pcm_bytes = self._estimated_pcm_bytes(metadata)
+        estimated_pcm_bytes = self._estimated_pcm_bytes(
+            sum(item.duration_sec + item.gap_before_sec for item in manifest)
+        )
         if mode != "concat_copy" and estimated_pcm_bytes > self.max_estimated_pcm_bytes:
             raise AudioAssemblyValidationError(
                 f"estimated decoded PCM exceeds PCM budget {self.max_estimated_pcm_bytes}"
@@ -531,11 +677,13 @@ class AudioAssembler:
         self,
         target_parent: Path,
         sources: Sequence[_ValidatedSource],
-        probed: Sequence[tuple[_ValidatedSource, _AudioMetadata, str]],
+        manifest: Sequence[AudioInputManifest],
         *,
         mode: CommandMode,
     ) -> None:
-        estimated_pcm_bytes = self._estimated_pcm_bytes([metadata for _, metadata, _ in probed])
+        estimated_pcm_bytes = self._estimated_pcm_bytes(
+            sum(item.duration_sec + item.gap_before_sec for item in manifest)
+        )
         required_bytes = self._estimated_temporary_bytes(
             sources,
             estimated_pcm_bytes,
@@ -552,8 +700,7 @@ class AudioAssembler:
                 f"insufficient temporary disk capacity: need {required_bytes}, have {free_bytes}"
             )
 
-    def _estimated_pcm_bytes(self, metadata: Sequence[_AudioMetadata]) -> int:
-        total_duration_sec = sum(item.duration_sec for item in metadata)
+    def _estimated_pcm_bytes(self, total_duration_sec: float) -> int:
         return (
             math.ceil(total_duration_sec * self.transcode_sample_rate * self.transcode_channels * 2)
             + 4096
@@ -575,20 +722,27 @@ class AudioAssembler:
         self,
         metadata: Sequence[_AudioMetadata],
         target_extension: str,
+        *,
+        transformed: bool = False,
     ) -> CommandMode:
+        # Reception physical artifacts have a single canonical representation:
+        # mono/stereo 16-bit PCM on the configured sample grid.  Stream-copying
+        # a WAV would preserve arbitrary source sample formats and channel
+        # layouts, so even already-compatible WAV inputs are normalized.
+        if target_extension == ".wav":
+            return "transcode_pcm"
         signatures = {(item.codec, item.sample_rate, item.channels) for item in metadata}
         codec = metadata[0].codec
         copy_codecs = _COPY_CODECS_BY_EXTENSION.get(target_extension, frozenset())
-        if len(signatures) == 1 and codec in copy_codecs:
+        if not transformed and len(signatures) == 1 and codec in copy_codecs:
             return "concat_copy"
-        if target_extension == ".wav":
-            return "transcode_pcm"
         return "transcode_aac"
 
     def _build_ffmpeg_command(
         self,
         *,
-        sources: Sequence[Path],
+        sources: Sequence[_ValidatedSource],
+        input_manifest: Sequence[AudioInputManifest],
         concat_manifest: Path,
         temporary_output: Path,
         mode: CommandMode,
@@ -618,19 +772,37 @@ class AudioAssembler:
             ]
 
         for source in sources:
-            base_command.extend(("-i", str(source)))
+            base_command.extend(("-i", str(source.path)))
         channel_layout = "mono" if self.transcode_channels == 1 else "stereo"
         normalized_labels: list[str] = []
         filter_parts: list[str] = []
-        for index in range(len(sources)):
+        for index, (source, manifest_item) in enumerate(
+            zip(sources, input_manifest, strict=True)
+        ):
             label = f"a{index}"
             normalized_labels.append(f"[{label}]")
+            transformations: list[str] = []
+            if source.source_start_sec > 0 or source.source_end_sec is not None:
+                transformations.append(
+                    "atrim="
+                    f"start={_ffmpeg_time(manifest_item.source_start_sec)}:"
+                    f"end={_ffmpeg_time(cast(float, manifest_item.source_end_sec))}"
+                )
+                transformations.append("asetpts=PTS-STARTPTS")
+            transformations.extend(
+                (
+                    f"aresample={self.transcode_sample_rate}",
+                    "aformat=sample_fmts=s16:"
+                    f"sample_rates={self.transcode_sample_rate}:"
+                    f"channel_layouts={channel_layout}",
+                )
+            )
+            if manifest_item.gap_before_sec > 0:
+                transformations.append(
+                    f"adelay={round(manifest_item.gap_before_sec * 1_000)}:all=1"
+                )
             filter_parts.append(
-                f"[{index}:a:0]"
-                f"aresample={self.transcode_sample_rate},"
-                f"aformat=sample_rates={self.transcode_sample_rate}:"
-                f"channel_layouts={channel_layout}"
-                f"[{label}]"
+                f"[{index}:a:0]" + ",".join(transformations) + f"[{label}]"
             )
         filter_parts.append("".join(normalized_labels) + f"concat=n={len(sources)}:v=0:a=1[outa]")
         base_command.extend(
@@ -643,10 +815,23 @@ class AudioAssembler:
                 str(self.transcode_sample_rate),
                 "-ac",
                 str(self.transcode_channels),
+                "-t",
+                _ffmpeg_time(input_manifest[-1].timeline_end_sec),
             )
         )
         if mode == "transcode_pcm":
-            base_command.extend(("-c:a", "pcm_s16le"))
+            base_command.extend(
+                (
+                    "-c:a",
+                    "pcm_s16le",
+                    "-fflags",
+                    "+bitexact",
+                    "-flags:a",
+                    "+bitexact",
+                    "-map_metadata",
+                    "-1",
+                )
+            )
         else:
             base_command.extend(("-c:a", "aac", "-b:a", self.aac_bitrate))
             if temporary_output.suffix.lower() == ".m4a":
@@ -654,28 +839,96 @@ class AudioAssembler:
         base_command.append(str(temporary_output))
         return base_command
 
+    def _validate_output_metadata(
+        self,
+        metadata: _AudioMetadata,
+        *,
+        target_extension: str,
+        expected_duration_sec: float,
+    ) -> None:
+        """Reject malformed or off-grid artifacts before atomic publication."""
+
+        if target_extension == ".wav":
+            if metadata.codec != "pcm_s16le":
+                raise AudioAssemblyProcessError(
+                    "ffmpeg output is not canonical pcm_s16le WAV"
+                )
+            if metadata.sample_rate != self.transcode_sample_rate:
+                raise AudioAssemblyProcessError(
+                    "ffmpeg output sample rate does not match the canonical grid"
+                )
+            if metadata.channels != self.transcode_channels:
+                raise AudioAssemblyProcessError(
+                    "ffmpeg output channel count is not canonical"
+                )
+        else:
+            if abs(metadata.duration_sec - expected_duration_sec) > 0.05:
+                raise AudioAssemblyProcessError(
+                    "ffmpeg output duration does not match the planned timeline"
+                )
+            return
+        expected_samples = round(expected_duration_sec * self.transcode_sample_rate)
+        actual_samples = round(metadata.duration_sec * self.transcode_sample_rate)
+        if actual_samples != expected_samples:
+            raise AudioAssemblyProcessError(
+                "ffmpeg output sample count does not match the planned timeline: "
+                f"expected {expected_samples}, got {actual_samples}"
+            )
+
     @staticmethod
     def _build_input_manifest(
         probed: Sequence[tuple[_ValidatedSource, _AudioMetadata, str]],
     ) -> tuple[AudioInputManifest, ...]:
-        timeline_cursor = 0.0
+        requested_timeline = AudioTimelinePlanner().plan(
+            [
+                AudioTimelineSource(
+                    source_id=index,
+                    source_start_ms=seconds_to_milliseconds(
+                        source.source_start_sec
+                    ),
+                    source_end_ms=seconds_to_milliseconds(
+                        metadata.duration_sec
+                        if source.source_end_sec is None
+                        else min(source.source_end_sec, metadata.duration_sec)
+                    ),
+                    verified_duration_ms=seconds_to_milliseconds(
+                        metadata.duration_sec
+                    ),
+                    gap_before_ms=seconds_to_milliseconds(
+                        source.gap_before_sec
+                    ),
+                )
+                for index, (source, metadata, _digest) in enumerate(probed)
+            ]
+        )
         manifest: list[AudioInputManifest] = []
-        for source, metadata, digest in probed:
-            timeline_end = timeline_cursor + metadata.duration_sec
+        for (source, metadata, digest), planned in zip(
+            probed,
+            requested_timeline.slices,
+            strict=True,
+        ):
+            source_start = milliseconds_to_seconds(planned.source_start_ms)
+            source_end = milliseconds_to_seconds(planned.source_end_ms)
+            duration = milliseconds_to_seconds(planned.source_duration_ms)
+            timeline_start = milliseconds_to_seconds(planned.timeline_start_ms)
+            timeline_end = milliseconds_to_seconds(planned.timeline_end_ms)
+            gap_before = milliseconds_to_seconds(planned.gap_before_ms)
             manifest.append(
                 AudioInputManifest(
                     path=source.relative_path,
                     sha256=digest,
                     size_bytes=source.size_bytes,
-                    duration_sec=metadata.duration_sec,
-                    timeline_start_sec=timeline_cursor,
+                    duration_sec=duration,
+                    timeline_start_sec=timeline_start,
                     timeline_end_sec=timeline_end,
                     codec=metadata.codec,
                     sample_rate=metadata.sample_rate,
                     channels=metadata.channels,
+                    source_start_sec=source_start,
+                    source_end_sec=source_end,
+                    gap_before_sec=gap_before,
                 )
             )
-            timeline_cursor = timeline_end
         return tuple(manifest)
 
     @staticmethod
@@ -732,6 +985,14 @@ def _finite_positive_float(value: object) -> float | None:
     if not math.isfinite(parsed) or parsed <= 0:
         return None
     return parsed
+
+
+def _ffmpeg_time(value: float) -> str:
+    """Render bounded decimal seconds without locale or exponent notation."""
+    if not math.isfinite(value) or value < 0:
+        raise AudioAssemblyValidationError("audio time must be finite and non-negative")
+    rendered = f"{value:.6f}".rstrip("0").rstrip(".")
+    return rendered or "0"
 
 
 def _sha256_file(path: Path) -> str:

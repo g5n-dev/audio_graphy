@@ -6,12 +6,22 @@ import asyncio
 import os
 import stat as stat_module
 from collections.abc import AsyncIterator
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Depends, Query, Request, Response, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    Header,
+    Query,
+    Request,
+    Response,
+    status,
+)
 from fastapi.responses import StreamingResponse
 
 from audio_graphy.api.deps import get_current_user, get_session_factory
@@ -19,7 +29,7 @@ from audio_graphy.auth.middleware import AuthUser
 from audio_graphy.auth.roles import require_write_access
 from audio_graphy.auth.tenants import get_tenant_id
 from audio_graphy.core.reception_merge import ReceptionProposal
-from audio_graphy.errors import APIError, NotFoundError
+from audio_graphy.errors import APIError, ForbiddenError, NotFoundError
 from audio_graphy.models.reception import (
     DialogueStateTransition,
     DialogueTagAssignment,
@@ -44,6 +54,11 @@ from audio_graphy.schemas.receptions import (
     MergeMode,
     ProvenanceEventResponse,
     ProvenanceListResponse,
+    ReceptionAudioOperationCreateRequest,
+    ReceptionAudioOperationResponse,
+    ReceptionAudioPlanRequest,
+    ReceptionAudioPlanResponse,
+    ReceptionAudioPlanSourceResponse,
     ReceptionAutomaticProposalResponse,
     ReceptionCreate,
     ReceptionDiscoveryRequest,
@@ -62,11 +77,16 @@ from audio_graphy.schemas.receptions import (
     ReceptionSegmentRequest,
     ReceptionSplitAcceptanceResponse,
     ReceptionStatus,
+    ReceptionWorkspaceCapabilities,
+    ReceptionWorkspaceNeighbors,
     ReceptionWorkspaceResponse,
     ReceptionWorkspaceWindow,
     StateTransitionListResponse,
     TranscriptItemResponse,
     WorkspaceCollectionWindow,
+)
+from audio_graphy.services.reception_audio_operations import (
+    ReceptionAudioOperationService,
 )
 from audio_graphy.services.reception_automation import (
     AutomaticReceptionProposal,
@@ -75,11 +95,15 @@ from audio_graphy.services.reception_automation import (
 )
 from audio_graphy.services.receptions import (
     AudioAssembler,
+    PlaybackGrantClaims,
     ReceptionAudioAsset,
     ReceptionService,
     ReceptionWorkspace,
     create_playback_grant,
+    reception_mapping_playback_geometry,
+    verify_playback_grant,
 )
+from audio_graphy.services.tag_governance import TagGovernanceService
 
 router = APIRouter(tags=["receptions"])
 _STREAM_CHUNK_SIZE = 64 * 1024
@@ -102,11 +126,77 @@ def _service(request: Request) -> ReceptionService:
         audio_root=Path(settings.working_dir),
         audio_assembler=assembler,
         audio_crypto=getattr(request.app.state, "audio_crypto", None),
+        embed_adapter=getattr(
+            getattr(request.app.state, "adapter_bundle", None),
+            "embed",
+            None,
+        ),
+    )
+
+
+def _audio_operation_service(request: Request) -> ReceptionAudioOperationService:
+    return ReceptionAudioOperationService(
+        get_session_factory(request),
+        _service(request),
+    )
+
+
+def _audio_operation_response(operation: Any) -> ReceptionAudioOperationResponse:
+    error = operation.error_message
+    if operation.error_code:
+        error = (
+            f"{operation.error_code}: {error}"
+            if error
+            else str(operation.error_code)
+        )
+    return ReceptionAudioOperationResponse(
+        id=operation.id,
+        reception_id=operation.reception_id,
+        status=operation.status,
+        mode=operation.mode,
+        progress=operation.progress,
+        error=error,
+        created_at=operation.created_at,
+        updated_at=operation.updated_at,
     )
 
 
 def _agent_user_id(user: AuthUser) -> int | None:
     return user.id if user.role == "agent" else None
+
+
+async def _has_active_blind_review(
+    request: Request,
+    user: AuthUser,
+    *,
+    reception_id: int | None = None,
+) -> bool:
+    return await TagGovernanceService(get_session_factory(request)).has_active_blind_review(
+        tenant_id=get_tenant_id(request),
+        reviewer_user_id=user.id,
+        reception_id=reception_id,
+    )
+
+
+async def _forbid_blind_semantic_access(
+    request: Request,
+    user: AuthUser,
+    *,
+    reception_id: int | None = None,
+    access_kind: str = "reception_semantic_mutation",
+) -> None:
+    allowed = await TagGovernanceService(
+        get_session_factory(request)
+    ).record_blind_sensitive_access(
+        tenant_id=get_tenant_id(request),
+        actor_user_id=user.id,
+        access_kind=access_kind,
+        reception_id=reception_id,
+    )
+    if not allowed:
+        raise ForbiddenError(
+            "Blind review isolation forbids semantic history access or mutation before submission"
+        )
 
 
 def _public_json(value: Any) -> Any:
@@ -122,27 +212,62 @@ def _public_json(value: Any) -> Any:
     return value
 
 
+@dataclass(frozen=True, slots=True)
+class _PlaybackLocation:
+    url: str
+    expires_at: datetime
+
+
 def _playback_url(
     request: Request,
     user: AuthUser,
     path: str,
-) -> str:
+    *,
+    issued_at: int | None = None,
+) -> _PlaybackLocation:
+    issued_at = (
+        int(datetime.now(UTC).timestamp())
+        if issued_at is None
+        else issued_at
+    )
     grant = create_playback_grant(
         secret=str(request.app.state.settings.jwt_secret),
         subject_id=user.id,
         tenant_id=user.tenant_id,
         role=user.role,
         path=path,
+        now=issued_at,
     )
-    return f"{path}?{urlencode({'playback_grant': grant})}"
+    claims = verify_playback_grant(
+        secret=str(request.app.state.settings.jwt_secret),
+        grant=grant,
+        expected_path=path,
+        now=issued_at,
+    )
+    return _PlaybackLocation(
+        url=f"{path}?{urlencode({'playback_grant': grant})}",
+        expires_at=datetime.fromtimestamp(claims.expires_at, UTC),
+    )
 
 
 def _reception_response(
     reception: Reception,
     request: Request,
     user: AuthUser,
+    *,
+    playback_issued_at: int | None = None,
 ) -> ReceptionMetadataResponse:
     audio_path = f"/api/v1/receptions/{reception.id}/audio"
+    playback = (
+        _playback_url(
+            request,
+            user,
+            audio_path,
+            issued_at=playback_issued_at,
+        )
+        if reception.merged_audio_path is not None
+        else None
+    )
     return ReceptionMetadataResponse(
         id=reception.id,
         tenant_id=str(reception.tenant_id),
@@ -157,10 +282,9 @@ def _reception_response(
         merge_confidence=reception.merge_confidence,
         started_at=reception.started_at,
         ended_at=reception.ended_at,
-        audio_url=(
-            _playback_url(request, user, audio_path)
-            if reception.merged_audio_path is not None
-            else None
+        audio_url=playback.url if playback is not None else None,
+        playback_expires_at=(
+            playback.expires_at if playback is not None else None
         ),
         version=reception.version,
         created_at=reception.created_at,
@@ -173,18 +297,36 @@ def _recording_response(
     recording: Recording,
     request: Request,
     user: AuthUser,
+    *,
+    playback_issued_at: int | None = None,
 ) -> ReceptionRecordingResponse:
     audio_path = (
         f"/api/v1/receptions/{mapping.reception_id}/recordings/{mapping.recording_id}/audio"
     )
+    geometry = reception_mapping_playback_geometry(mapping)
+    playback = _playback_url(
+        request,
+        user,
+        audio_path,
+        issued_at=playback_issued_at,
+    )
     return ReceptionRecordingResponse(
         id=mapping.id,
+        mapping_id=mapping.id,
         recording_id=mapping.recording_id,
         sequence_no=mapping.sequence_no,
         timeline_start_sec=mapping.timeline_start_sec,
         timeline_end_sec=mapping.timeline_end_sec,
         source_start_sec=mapping.source_start_sec,
         source_end_sec=mapping.source_end_sec,
+        source_start_ms=geometry.source_start_ms,
+        source_end_ms=geometry.source_end_ms,
+        timeline_start_ms=geometry.timeline_start_ms,
+        timeline_end_ms=geometry.timeline_end_ms,
+        gap_before_ms=geometry.gap_before_ms,
+        time_origin_ms=geometry.time_origin_ms,
+        legal_source_start_ms=geometry.legal_source_start_ms,
+        legal_source_end_ms=geometry.legal_source_end_ms,
         gap_before_sec=mapping.gap_before_sec,
         decision_source=cast(DecisionSource, mapping.decision_source),
         merge_confidence=mapping.merge_confidence,
@@ -193,7 +335,8 @@ def _recording_response(
             _public_json(mapping.merge_reasons),
         ),
         source_recorded_at=recording.recorded_at,
-        audio_url=_playback_url(request, user, audio_path),
+        audio_url=playback.url,
+        playback_expires_at=playback.expires_at,
     )
 
 
@@ -219,6 +362,8 @@ def _tag_response(tag: DialogueTagAssignment) -> DialogueTagAssignmentResponse:
 def _unit_response(
     unit: DialogueUnit,
     tags: list[DialogueTagAssignment],
+    *,
+    redact_semantics: bool = False,
 ) -> DialogueUnitResponse:
     return DialogueUnitResponse(
         id=unit.id,
@@ -227,10 +372,11 @@ def _unit_response(
         version=unit.version,
         start_sec=unit.start_sec,
         end_sec=unit.end_sec,
-        topic=unit.topic,
-        business_stage=unit.business_stage,
-        summary=unit.summary,
+        topic=None if redact_semantics else unit.topic,
+        business_stage=None if redact_semantics else unit.business_stage,
+        summary=None if redact_semantics else unit.summary,
         boundary_confidence=unit.boundary_confidence,
+        stage_confidence=getattr(unit, "stage_confidence", None),
         boundary_reasons=cast(
             list[Any],
             _public_json(unit.boundary_reasons),
@@ -302,14 +448,30 @@ def _workspace_response(
     workspace: ReceptionWorkspace,
     request: Request,
     user: AuthUser,
+    *,
+    redact_tag_history: bool = False,
 ) -> ReceptionWorkspaceResponse:
     if workspace.window is None:
         raise RuntimeError("public workspace responses require a bounded time window")
     window = workspace.window
+    can_write = user.role in {"admin", "inspector"}
+    streaming_enabled = bool(
+        getattr(request.app.state.settings, "enable_streaming", False)
+    )
+    playback_issued_at = int(datetime.now(UTC).timestamp())
 
     def collection_window(
         item: Any,
+        *,
+        redacted: bool = False,
     ) -> WorkspaceCollectionWindow:
+        if redacted:
+            return WorkspaceCollectionWindow(
+                total=0,
+                returned=0,
+                limit=item.limit,
+                truncated=False,
+            )
         return WorkspaceCollectionWindow(
             total=item.total,
             returned=item.returned,
@@ -318,22 +480,38 @@ def _workspace_response(
         )
 
     return ReceptionWorkspaceResponse(
-        reception=_reception_response(workspace.reception, request, user),
+        reception=_reception_response(
+            workspace.reception,
+            request,
+            user,
+            playback_issued_at=playback_issued_at,
+        ),
         recordings=[
-            _recording_response(mapping, recording, request, user)
+            _recording_response(
+                mapping,
+                recording,
+                request,
+                user,
+                playback_issued_at=playback_issued_at,
+            )
             for mapping, recording in workspace.recordings
         ],
         dialogue_units=[
             _unit_response(
                 unit,
-                workspace.tag_assignments_by_unit.get(unit.id, []),
+                ([] if redact_tag_history else workspace.tag_assignments_by_unit.get(unit.id, [])),
+                redact_semantics=redact_tag_history,
             )
             for unit in workspace.dialogue_units
         ],
-        state_transitions=[
-            _transition_response(transition) for transition in workspace.state_transitions
-        ],
-        tag_assignments=[_tag_response(tag) for tag in workspace.tag_assignments],
+        state_transitions=(
+            []
+            if redact_tag_history
+            else [_transition_response(transition) for transition in workspace.state_transitions]
+        ),
+        tag_assignments=(
+            [] if redact_tag_history else [_tag_response(tag) for tag in workspace.tag_assignments]
+        ),
         transcript_items=[
             TranscriptItemResponse(
                 segment_id=item.segment_id,
@@ -349,7 +527,11 @@ def _workspace_response(
             )
             for item in workspace.transcript_items
         ],
-        provenance_events=[_provenance_response(event) for event in workspace.provenance_events],
+        provenance_events=(
+            []
+            if redact_tag_history
+            else [_provenance_response(event) for event in workspace.provenance_events]
+        ),
         window=ReceptionWorkspaceWindow(
             start_sec=window.start_sec,
             end_sec=window.end_sec,
@@ -363,10 +545,52 @@ def _workspace_response(
             total_dialogue_units=window.total_dialogue_units,
             protected_dialogue_units=window.protected_dialogue_units,
             dialogue_units=collection_window(window.dialogue_units),
-            tag_assignments=collection_window(window.tag_assignments),
-            state_transitions=collection_window(window.state_transitions),
+            tag_assignments=collection_window(
+                window.tag_assignments,
+                redacted=redact_tag_history,
+            ),
+            state_transitions=collection_window(
+                window.state_transitions,
+                redacted=redact_tag_history,
+            ),
             transcript_items=collection_window(window.transcript_items),
-            provenance_events=collection_window(window.provenance_events),
+            provenance_events=collection_window(
+                window.provenance_events,
+                redacted=redact_tag_history,
+            ),
+        ),
+        capabilities=ReceptionWorkspaceCapabilities(
+            can_manage_audio=can_write,
+            can_run_segmentation=can_write,
+            can_edit_dialogue=can_write,
+            can_edit_tags=can_write,
+            supports_audio_plans=can_write,
+            supports_audio_operations=can_write,
+            can_cancel_audio_operation=can_write,
+            can_stream_audio=streaming_enabled
+            and user.role in {"admin", "inspector", "agent"},
+        ),
+        neighbors=ReceptionWorkspaceNeighbors(
+            previous_dialogue_unit=(
+                _unit_response(workspace.previous_dialogue_unit, [])
+                if workspace.previous_dialogue_unit is not None
+                else None
+            ),
+            next_dialogue_unit=(
+                _unit_response(workspace.next_dialogue_unit, [])
+                if workspace.next_dialogue_unit is not None
+                else None
+            ),
+        )
+        if (
+            workspace.previous_dialogue_unit is not None
+            or workspace.next_dialogue_unit is not None
+        )
+        else None,
+        active_audio_operation=(
+            _audio_operation_response(workspace.active_audio_operation)
+            if workspace.active_audio_operation is not None
+            else None
         ),
     )
 
@@ -376,11 +600,23 @@ def _mutation_reception_response(
     request: Request,
     user: AuthUser,
 ) -> ReceptionResponse:
-    metadata = _reception_response(workspace.reception, request, user)
+    playback_issued_at = int(datetime.now(UTC).timestamp())
+    metadata = _reception_response(
+        workspace.reception,
+        request,
+        user,
+        playback_issued_at=playback_issued_at,
+    )
     return ReceptionResponse(
         **metadata.model_dump(),
         recordings=[
-            _recording_response(mapping, recording, request, user)
+            _recording_response(
+                mapping,
+                recording,
+                request,
+                user,
+                playback_issued_at=playback_issued_at,
+            )
             for mapping, recording in workspace.recordings
         ],
     )
@@ -476,10 +712,55 @@ def _open_audio_descriptor(asset: ReceptionAudioAsset) -> tuple[int, int]:
     return file_descriptor, file_stat.st_size
 
 
+def _request_playback_grant_claims(
+    request: Request,
+) -> PlaybackGrantClaims | None:
+    claims = getattr(request.state, "playback_grant_claims", None)
+    if isinstance(claims, PlaybackGrantClaims) and claims.path == request.url.path:
+        return claims
+    grant = request.query_params.get("playback_grant")
+    if not grant:
+        return None
+    try:
+        return verify_playback_grant(
+            secret=str(request.app.state.settings.jwt_secret),
+            grant=grant,
+            expected_path=request.url.path,
+        )
+    except ValueError:
+        # Bearer-authenticated direct playback remains valid even if a stale
+        # optional grant is present, but no grant-expiry claim is advertised.
+        return None
+
+
+def _audio_contract_headers(
+    request: Request,
+    asset: ReceptionAudioAsset,
+) -> dict[str, str]:
+    headers = {
+        "X-Time-Origin-Ms": str(asset.time_origin_ms),
+        "X-Audio-Time-Origin-Ms": str(asset.time_origin_ms),
+        "X-Legal-Source-Start-Ms": str(asset.legal_source_start_ms),
+    }
+    if asset.legal_source_end_ms is not None:
+        headers["X-Legal-Source-End-Ms"] = str(asset.legal_source_end_ms)
+        headers["X-Audio-Valid-Source-Range-Ms"] = (
+            f"{asset.legal_source_start_ms}-{asset.legal_source_end_ms}"
+        )
+    claims = _request_playback_grant_claims(request)
+    if claims is not None:
+        headers["X-Audio-Grant-Expires-At"] = datetime.fromtimestamp(
+            claims.expires_at,
+            UTC,
+        ).isoformat().replace("+00:00", "Z")
+    return headers
+
+
 def _audio_response(
     request: Request,
     asset: ReceptionAudioAsset,
 ) -> Response:
+    contract_headers = _audio_contract_headers(request, asset)
     file_descriptor, size = _open_audio_descriptor(asset)
     try:
         start, end, is_partial = _parse_byte_range(
@@ -496,6 +777,7 @@ def _audio_response(
                 "Cache-Control": "private, no-store",
                 "Referrer-Policy": "no-referrer",
                 "X-Content-Type-Options": "nosniff",
+                **contract_headers,
             },
         )
 
@@ -506,6 +788,7 @@ def _audio_response(
         "Cache-Control": "private, no-store",
         "Referrer-Policy": "no-referrer",
         "X-Content-Type-Options": "nosniff",
+        **contract_headers,
     }
     if is_partial:
         headers["Content-Range"] = f"bytes {start}-{end}/{size}"
@@ -583,6 +866,11 @@ async def merge_reception_recordings(
     request: Request,
     user: AuthUser = Depends(get_current_user),
 ) -> ReceptionResponse:
+    await _forbid_blind_semantic_access(
+        request,
+        user,
+        reception_id=reception_id,
+    )
     workspace = await _service(request).merge_recordings(
         reception_id,
         get_tenant_id(request),
@@ -590,6 +878,113 @@ async def merge_reception_recordings(
         actor=f"user:{user.id}",
     )
     return _mutation_reception_response(workspace, request, user)
+
+
+@router.post(
+    "/receptions/{reception_id}/audio-plans",
+    response_model=ReceptionAudioPlanResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Validate and sign an immutable reception audio timeline plan",
+    dependencies=[Depends(require_write_access())],
+)
+async def create_reception_audio_plan(
+    reception_id: int,
+    body: ReceptionAudioPlanRequest,
+    request: Request,
+) -> ReceptionAudioPlanResponse:
+    result = await _audio_operation_service(request).create_plan(
+        tenant_id=get_tenant_id(request),
+        reception_id=reception_id,
+        body=body,
+    )
+    revision = result.revision
+    return ReceptionAudioPlanResponse(
+        plan_token=result.token,
+        timeline_revision=revision.revision,
+        total_duration_ms=revision.total_duration_ms,
+        physical_eligible=revision.physical_eligible,
+        warnings=list(revision.warnings or []),
+        sources=[
+            ReceptionAudioPlanSourceResponse(
+                mapping_id=int(item["mapping_id"]),
+                recording_id=int(item["recording_id"]),
+                sequence_no=int(item["sequence_no"]),
+                source_start_ms=int(item["source_start_ms"]),
+                source_end_ms=int(item["source_end_ms"]),
+                gap_before_ms=int(item["gap_before_ms"]),
+                timeline_start_ms=int(item["timeline_start_ms"]),
+                timeline_end_ms=int(item["timeline_end_ms"]),
+            )
+            for item in revision.source_manifest or []
+        ],
+    )
+
+
+@router.post(
+    "/receptions/{reception_id}/audio-operations",
+    response_model=ReceptionAudioOperationResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Create an idempotent asynchronous reception audio operation",
+    dependencies=[Depends(require_write_access())],
+)
+async def create_reception_audio_operation(
+    reception_id: int,
+    body: ReceptionAudioOperationCreateRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    idempotency_key: str = Header(alias="Idempotency-Key", min_length=1, max_length=128),
+) -> ReceptionAudioOperationResponse:
+    service = _audio_operation_service(request)
+    operation = await service.create_operation(
+        tenant_id=get_tenant_id(request),
+        reception_id=reception_id,
+        plan_token=body.plan_token,
+        mode=body.mode,
+        expected_version=body.expected_version,
+        idempotency_key=idempotency_key,
+    )
+    if operation.status == "queued":
+        # The queued row is committed before dispatch. If this process exits,
+        # the lease reconciler can safely claim the same operation later.
+        background_tasks.add_task(service.run_operation, int(operation.id))
+    return _audio_operation_response(operation)
+
+
+@router.get(
+    "/receptions/{reception_id}/audio-operations/{operation_id}",
+    response_model=ReceptionAudioOperationResponse,
+    summary="Read durable reception audio operation progress",
+)
+async def get_reception_audio_operation(
+    reception_id: int,
+    operation_id: int,
+    request: Request,
+) -> ReceptionAudioOperationResponse:
+    operation = await _audio_operation_service(request).get_operation(
+        tenant_id=get_tenant_id(request),
+        reception_id=reception_id,
+        operation_id=operation_id,
+    )
+    return _audio_operation_response(operation)
+
+
+@router.post(
+    "/receptions/{reception_id}/audio-operations/{operation_id}/cancel",
+    response_model=ReceptionAudioOperationResponse,
+    summary="Request cancellation before an audio operation commits",
+    dependencies=[Depends(require_write_access())],
+)
+async def cancel_reception_audio_operation(
+    reception_id: int,
+    operation_id: int,
+    request: Request,
+) -> ReceptionAudioOperationResponse:
+    operation = await _audio_operation_service(request).cancel_operation(
+        tenant_id=get_tenant_id(request),
+        reception_id=reception_id,
+        operation_id=operation_id,
+    )
+    return _audio_operation_response(operation)
 
 
 @router.get(
@@ -608,14 +1003,28 @@ async def get_reception_workspace(
     ),
     user: AuthUser = Depends(get_current_user),
 ) -> ReceptionWorkspaceResponse:
+    tenant_id = get_tenant_id(request)
+    redact_tag_history = not await TagGovernanceService(
+        get_session_factory(request)
+    ).record_blind_sensitive_access(
+        tenant_id=tenant_id,
+        actor_user_id=user.id,
+        access_kind="reception_workspace",
+        reception_id=reception_id,
+    )
     workspace = await _service(request).get_workspace_window(
         reception_id,
-        get_tenant_id(request),
+        tenant_id,
         window_start_sec=window_start_sec,
         window_size_sec=window_size_sec,
         agent_user_id=_agent_user_id(user),
     )
-    return _workspace_response(workspace, request, user)
+    return _workspace_response(
+        workspace,
+        request,
+        user,
+        redact_tag_history=redact_tag_history,
+    )
 
 
 @router.post(
@@ -630,6 +1039,12 @@ async def segment_reception(
     request: Request,
     user: AuthUser = Depends(get_current_user),
 ) -> DialogueEditResponse:
+    await _forbid_blind_semantic_access(
+        request,
+        user,
+        reception_id=reception_id,
+        access_kind="state_transitions",
+    )
     workspace = await _service(request).segment_reception(
         reception_id,
         get_tenant_id(request),
@@ -690,6 +1105,11 @@ async def split_dialogue_unit(
     request: Request,
     user: AuthUser = Depends(get_current_user),
 ) -> DialogueEditResponse:
+    await _forbid_blind_semantic_access(
+        request,
+        user,
+        reception_id=reception_id,
+    )
     workspace = await _service(request).split_dialogue_unit(
         reception_id,
         unit_id,
@@ -713,6 +1133,11 @@ async def merge_dialogue_units(
     request: Request,
     user: AuthUser = Depends(get_current_user),
 ) -> DialogueEditResponse:
+    await _forbid_blind_semantic_access(
+        request,
+        user,
+        reception_id=reception_id,
+    )
     workspace = await _service(request).merge_dialogue_units(
         reception_id,
         unit_id,
@@ -739,6 +1164,11 @@ async def get_state_transitions(
     ),
     user: AuthUser = Depends(get_current_user),
 ) -> StateTransitionListResponse:
+    await _forbid_blind_semantic_access(
+        request,
+        user,
+        reception_id=reception_id,
+    )
     items, total = await _service(request).get_state_transitions(
         reception_id,
         get_tenant_id(request),
@@ -773,6 +1203,11 @@ async def get_provenance(
     ),
     user: AuthUser = Depends(get_current_user),
 ) -> ProvenanceListResponse:
+    await _forbid_blind_semantic_access(
+        request,
+        user,
+        access_kind="provenance",
+    )
     events, total = await _service(request).get_provenance(
         object_type,
         object_ref,
@@ -898,6 +1333,7 @@ async def accept_reception_proposal(
     request: Request,
     user: AuthUser = Depends(get_current_user),
 ) -> ReceptionResponse | ReceptionSplitAcceptanceResponse:
+    await _forbid_blind_semantic_access(request, user)
     result = await _automation_service(request).accept(
         get_tenant_id(request),
         body,

@@ -93,6 +93,36 @@ class DeriveDialogueTagsResponse(_StrictModel):
     missing: list[MissingDialogueTag]
 
 
+class CorrectDialogueTagRequest(_StrictModel):
+    """Optimistically locked manual correction of one current assignment."""
+
+    expected_reception_version: int = Field(gt=0)
+    expected_group_version: str = Field(
+        min_length=1,
+        max_length=64,
+        pattern=(r"^(?:[\w.-]+|schema:[1-9]\d*\|tagger:(?:manual|[1-9]\d*))$"),
+    )
+    label_value: str = Field(min_length=1, max_length=255)
+    reason: str = Field(min_length=1, max_length=500)
+    evidence_ref_ids: list[str] = Field(
+        min_length=1,
+        max_length=256,
+    )
+
+    @model_validator(mode="after")
+    def validate_unique_evidence_refs(self) -> Self:
+        if len(self.evidence_ref_ids) != len(set(self.evidence_ref_ids)):
+            raise ValueError("evidence_ref_ids must be unique")
+        return self
+
+
+class CorrectDialogueTagResponse(_StrictModel):
+    reception_id: int
+    reception_version: int = Field(gt=0)
+    superseded_assignment_id: int
+    assignment: DialogueTagAssignmentResponse
+
+
 class ReceptionTagEvidenceSummary(_StrictModel):
     """Bounded, path-free evidence rows for drill-down visualizations."""
 
@@ -165,6 +195,8 @@ __all__ = [
     "ALL_DIALOGUE_TARGET_LABELS",
     "MAX_EVIDENCE_SUMMARY_ITEMS",
     "MAX_RECEPTION_OUTPUT_EVIDENCE_REFS",
+    "CorrectDialogueTagRequest",
+    "CorrectDialogueTagResponse",
     "DeriveDialogueTagsRequest",
     "DeriveDialogueTagsResponse",
     "DialogueTargetLabel",

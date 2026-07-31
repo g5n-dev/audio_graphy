@@ -57,7 +57,10 @@ class SessionStatus(StrEnum):
     CREATED = "created"
     ACTIVE = "active"
     DRAINING = "draining"
+    COMMITTING = "committing"
     CLOSED = "closed"
+    INCOMPLETE = "incomplete"
+    FAILED = "failed"
 
 
 # PIPL memory caps (PRD §5.3).
@@ -101,6 +104,14 @@ class StreamSession:
     pcm_buffer_max_sec: float = DEFAULT_PCM_BUFFER_MAX_SEC
     realtime_window: int = DEFAULT_REALTIME_WINDOW
     confirmed_flush_threshold: int = DEFAULT_CONFIRMED_FLUSH_THRESHOLD
+    close_asr_on_finalize: bool = True
+    epoch: int = 1
+    generation: int = 0
+    pipeline_run_id: int | None = None
+    lease_token: str | None = None
+    lease_ttl_seconds: float = 120.0
+    durable_segment_high_watermark: int = 0
+    persistence_id: int | None = None
 
     # Runtime state — mutated during ACTIVE.
     status: SessionStatus = SessionStatus.CREATED
@@ -117,6 +128,9 @@ class StreamSession:
     pending_speech_pcm: bytearray = field(default_factory=bytearray)
     pending_realtime: list[ASRDeltaResult] = field(default_factory=list)
     confirmed_segments: list[Any] = field(default_factory=list)  # SegmentRecord list
+    pending_confirmed: list[ASRDeltaResult] = field(default_factory=list)
+    confirmed_segment_cursor: int = 0
+    accepted_sequences: set[int] = field(default_factory=set)
 
     # ------------------------------------------------------------------
     # Public API
@@ -153,6 +167,29 @@ class StreamSession:
             )
             return
 
+        # Network frames are at-least-once.  Never feed a duplicate or a
+        # regressing frame into VAD/ASR: both adapters are stateful and doing
+        # so would duplicate durable speech or corrupt their internal clocks.
+        if seq in self.accepted_sequences:
+            yield {
+                "type": "frame_ack",
+                "session_id": self.session_id.value,
+                "seq": seq,
+                "duplicate": True,
+            }
+            return
+        if self.last_seq >= 0 and seq < self.last_seq:
+            yield {
+                "type": "error",
+                "session_id": self.session_id.value,
+                "code": "OUT_OF_ORDER_SEQ",
+                "message": "sequence number is below the accepted watermark",
+                "recoverable": True,
+                "seq": seq,
+                "accepted_seq_high_watermark": self.last_seq,
+            }
+            return
+
         self.mark_active()
         self.bytes_in += len(pcm)
         self.last_chunk_at = datetime.now(UTC)
@@ -182,6 +219,14 @@ class StreamSession:
             self.pending_speech_pcm = bytearray()
 
         self.last_seq = seq
+        self.accepted_sequences.add(seq)
+        if len(self.accepted_sequences) > 4_096:
+            oldest_retained = self.last_seq - 4_095
+            self.accepted_sequences = {
+                accepted
+                for accepted in self.accepted_sequences
+                if accepted >= oldest_retained
+            }
 
         # --- Step 2: VAD ---
         vad_event = await self.vad_adapter.push_chunk(pcm, seq=seq)
@@ -190,6 +235,8 @@ class StreamSession:
             # DeltaGraphUpdater uses transcript, not audio, for entity extraction).
             self.confirmed_segments.append(vad_event.segment)
             self._enforce_confirmed_cap()
+            for event in self._drain_confirmed_pairs():
+                yield event
 
         # Accumulate PCM for in-progress speech (only if not just reset).
         if not reset_triggered and vad_event.state in ("SPEECH", "PENDING_SILENCE"):
@@ -215,6 +262,12 @@ class StreamSession:
                 "recoverable": True,
                 "seq": seq,
             }
+            yield {
+                "type": "frame_ack",
+                "session_id": self.session_id.value,
+                "seq": seq,
+                "duplicate": False,
+            }
             return
 
         # --- Step 4: yield server events based on delta ---
@@ -231,19 +284,18 @@ class StreamSession:
                 "timestamp_ms": int(time.time() * 1000),
             }
         elif delta.mode == "confirmed" and delta.is_final:
-            self.seg_confirmed_count += 1
-            # Attach text to the most-recent in-progress confirmed segment
-            # (or create a synthetic one if VAD hadn't closed yet).
-            self._attach_confirmed_text(delta.text)
-            yield {
-                "type": "segment_confirmed",
-                "session_id": self.session_id.value,
-                "text": delta.text,
-                "is_final": True,
-                "sentence_id": delta.sentence_id,
-                "confirmed_count": self.seg_confirmed_count,
-                "timestamp_ms": int(time.time() * 1000),
-            }
+            # ASR and VAD close independently.  Keep the confirmed transcript
+            # until a real VAD segment exists; emitting before that point used
+            # to acknowledge text that was never attached to durable geometry.
+            self.pending_confirmed.append(delta)
+            for event in self._drain_confirmed_pairs():
+                yield event
+        yield {
+            "type": "frame_ack",
+            "session_id": self.session_id.value,
+            "seq": seq,
+            "duplicate": False,
+        }
 
     async def on_control_reset(self) -> AsyncIterator[dict[str, Any]]:
         """Handle client-initiated VAD reset.
@@ -276,6 +328,7 @@ class StreamSession:
             trailing_segments = await self.vad_adapter.finalize()
             for seg in trailing_segments:
                 self.confirmed_segments.append(seg)
+                self._enforce_confirmed_cap()
         except Exception as exc:
             self.error_count += 1
             logger.warning(
@@ -289,17 +342,7 @@ class StreamSession:
             trailing_deltas = await self.asr_adapter.finalize()
             for delta in trailing_deltas:
                 if delta.mode == "confirmed" and delta.is_final:
-                    self.seg_confirmed_count += 1
-                    self._attach_confirmed_text(delta.text)
-                    yield {
-                        "type": "segment_confirmed",
-                        "session_id": self.session_id.value,
-                        "text": delta.text,
-                        "is_final": True,
-                        "sentence_id": delta.sentence_id,
-                        "confirmed_count": self.seg_confirmed_count,
-                        "timestamp_ms": int(time.time() * 1000),
-                    }
+                    self.pending_confirmed.append(delta)
         except Exception as exc:
             self.error_count += 1
             logger.warning(
@@ -308,9 +351,25 @@ class StreamSession:
                 exc,
             )
 
-        # Close adapters.
-        await self.vad_adapter.aclose()
-        await self.asr_adapter.aclose()
+        for event in self._drain_confirmed_pairs():
+            yield event
+
+        # Adapter cleanup is deliberately independent: one faulty adapter must
+        # never prevent the other from releasing its process/socket resources.
+        adapters_to_close: list[tuple[str, Any]] = [("VAD", self.vad_adapter)]
+        if self.close_asr_on_finalize:
+            adapters_to_close.append(("ASR", self.asr_adapter))
+        for name, adapter in adapters_to_close:
+            try:
+                await adapter.aclose()
+            except Exception as exc:
+                self.error_count += 1
+                logger.warning(
+                    "StreamSession %s close failed session=%s: %s",
+                    name,
+                    self.session_id.value,
+                    exc,
+                )
 
         self.status = SessionStatus.CLOSED
         self.end_reason = self.end_reason or "normal"
@@ -325,6 +384,18 @@ class StreamSession:
         self.status = SessionStatus.CLOSED
         self.end_reason = reason
 
+    def begin_drain(self, *, reason: str) -> None:
+        """Record an exit reason while still allowing deterministic finalize.
+
+        WebSocket disconnects and timeouts must pass through ``on_finalize``;
+        directly marking them closed would skip trailing VAD/ASR data and
+        adapter cleanup.
+        """
+        if self.status == SessionStatus.CLOSED:
+            return
+        self.status = SessionStatus.DRAINING
+        self.end_reason = self.end_reason or reason
+
     def stats(self) -> dict[str, Any]:
         """Return a stats dict for ``session_closed`` events + DB row."""
         return {
@@ -334,6 +405,11 @@ class StreamSession:
             "user_id": self.user_id,
             "started_at": self.started_at.isoformat(),
             "last_chunk_at": self.last_chunk_at.isoformat() if self.last_chunk_at else None,
+            "epoch": self.epoch,
+            "generation": self.generation,
+            "pipeline_run_id": self.pipeline_run_id,
+            "ack_seq_high_watermark": self.last_seq,
+            "durable_segment_high_watermark": self.durable_segment_high_watermark,
             "seg_confirmed_count": self.seg_confirmed_count,
             "seg_realtime_count": self.seg_realtime_count,
             "bytes_in": self.bytes_in,
@@ -388,6 +464,66 @@ class StreamSession:
             )
             self.confirmed_segments[-1] = new
 
+    def _drain_confirmed_pairs(self) -> list[dict[str, Any]]:
+        """Pair queued ASR confirmations with closed VAD segments in order.
+
+        A ``segment_confirmed`` event is an acknowledgement of a durable
+        geometry/text pair, never of ASR text alone.  Keeping an explicit
+        cursor also makes replay deterministic when ASR leads VAD.
+        """
+        from audio_graphy.core.chunker import SegmentRecord
+
+        events: list[dict[str, Any]] = []
+        while (
+            self.pending_confirmed
+            and self.confirmed_segment_cursor < len(self.confirmed_segments)
+        ):
+            segment = self.confirmed_segments[self.confirmed_segment_cursor]
+            if not isinstance(segment, SegmentRecord):
+                self.confirmed_segment_cursor += 1
+                continue
+
+            delta = self.pending_confirmed.pop(0)
+            transcript = (
+                f"{segment.transcript} {delta.text}".strip()
+                if segment.transcript
+                else delta.text
+            )
+            paired = SegmentRecord(
+                idx=segment.idx,
+                start_sec=segment.start_sec,
+                end_sec=segment.end_sec,
+                transcript=transcript,
+                speaker=segment.speaker,
+                vad_conf=segment.vad_conf,
+            )
+            self.confirmed_segments[self.confirmed_segment_cursor] = paired
+            self.confirmed_segment_cursor += 1
+            self.seg_confirmed_count += 1
+            source_seq = delta.seq if delta.seq >= 0 else self.last_seq
+            events.append(
+                {
+                    "type": "segment_confirmed",
+                    "session_id": self.session_id.value,
+                    "seq": source_seq,
+                    "text": delta.text,
+                    "is_final": True,
+                    "sentence_id": delta.sentence_id,
+                    "confirmed_count": self.seg_confirmed_count,
+                    "segment": {
+                        "idx": paired.idx,
+                        "start_sec": paired.start_sec,
+                        "end_sec": paired.end_sec,
+                        "speaker": paired.speaker,
+                        "vad_conf": paired.vad_conf,
+                        "transcript": paired.transcript,
+                    },
+                    "durable": False,
+                    "timestamp_ms": int(time.time() * 1000),
+                }
+            )
+        return events
+
     def _enforce_pcm_cap(self) -> None:
         """Drop oldest PCM samples if pending_speech_pcm exceeds cap."""
         max_bytes = int(self.pcm_buffer_max_sec * PCM_BYTES_PER_SEC_16K_MONO_INT16)
@@ -410,7 +546,12 @@ class StreamSession:
         if len(self.confirmed_segments) > self.confirmed_flush_threshold * 2:
             # Drop oldest beyond 2× threshold (defensive).
             keep = self.confirmed_flush_threshold * 2
+            dropped = len(self.confirmed_segments) - keep
             self.confirmed_segments = self.confirmed_segments[-keep:]
+            self.confirmed_segment_cursor = max(
+                0,
+                self.confirmed_segment_cursor - dropped,
+            )
 
 
 def hash_consent_token(consent_token: str) -> str:

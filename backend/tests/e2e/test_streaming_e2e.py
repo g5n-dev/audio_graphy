@@ -108,6 +108,11 @@ def _make_app(
         jwt_secret="test-secret-32-chars-minimum-length!!",
         enable_streaming=enable_streaming,
         enable_streaming_retrieval=enable_retrieval,
+        # This legacy M8 suite has no database ticket store. Keep its JWT
+        # transport behind the explicit emergency compatibility switch; the
+        # production-default one-time ticket path is covered by API/durability
+        # integration tests.
+        streaming_allow_legacy_jwt_query=True,
         adapter_streaming_vad_mode="mock",
         adapter_streaming_asr_mode="mock",
         # Generous idle timeout: queued frames are only consumed when the
@@ -239,7 +244,10 @@ class TestFullChainEventFlow:
         assert "session_closed" in types
         assert "error" not in types
 
-    def test_realtime_and_confirmed_events_emitted(self, tmp_path: Path) -> None:
+    def test_realtime_is_emitted_but_unpaired_asr_is_not_confirmed(
+        self,
+        tmp_path: Path,
+    ) -> None:
         app, client, _svc = _make_app(tmp_path)
         with client, _open_session(client, app, "e2e-2") as ws:
             for seq in range(12):  # mock ASR confirms every 12th push
@@ -248,31 +256,22 @@ class TestFullChainEventFlow:
             events = _drain_until(ws, {"session_closed"})
         types = {e.get("type") for e in events}
         assert "realtime_text" in types
-        assert "segment_confirmed" in types
+        # Twelve ASR frames do not yet close a mock VAD segment. Confirmed
+        # text therefore remains staging-only and cannot be exposed as a
+        # durable segment without source geometry.
+        assert "segment_confirmed" not in types
 
-    def test_tags_updated_event_after_interval(self, tmp_path: Path) -> None:
-        """T9 wiring: tag interval=2 → a tags_updated event must appear.
-
-        Mock ASR confirms every 12th push, so 24 frames yield 2 mid-stream
-        confirmed segments — exactly the scheduler interval. Note: confirmed
-        segments drained during ``finalize`` do NOT feed the scheduler (they
-        are emitted by ``session.on_finalize()`` outside ``_handle_binary``).
-        """
+    def test_unpaired_asr_does_not_trigger_tag_recompute(self, tmp_path: Path) -> None:
+        """Only durable VAD-paired segments may enter the tag scheduler."""
         app, client, svc = _make_app(tmp_path)
         with client, _open_session(client, app, "e2e-3") as ws:
-            for seq in range(24):  # 2 mid-stream confirmed → scheduler triggers
+            for seq in range(24):
                 ws.send_bytes(_pcm_frame(seq, bytes([seq % 256]) * 1024))
             ws.send_text(json.dumps({"type": "finalize"}))
             events = _drain_until(ws, {"session_closed"})
         tag_events = [e for e in events if e.get("type") == "tags_updated"]
-        assert tag_events, f"no tags_updated in {[e.get('type') for e in events]}"
-        assert tag_events[0]["recording_id"] == 1
-        assert tag_events[0]["segment_count"] == 2
-        # Mid-stream trigger must arrive BEFORE session_closed.
-        types = [e.get("type") for e in events]
-        assert types.index("tags_updated") < types.index("session_closed")
-        assert svc.calls, "recompute service never invoked"
-        assert svc.calls[0]["segment_ids"] == [11, 23]
+        assert tag_events == []
+        assert svc.calls == []
 
     def test_query_returns_retrieval_result(self, tmp_path: Path) -> None:
         """T10 wiring: query control frame → retrieval_result event."""
@@ -443,7 +442,7 @@ class TestMetricsIntegration:
             time.sleep(0.05)
         assert _sample("audiography_streaming_sessions_active", {}) == before
 
-    def test_confirmed_segments_counted(self, tmp_path: Path) -> None:
+    def test_unpaired_asr_is_not_counted_as_confirmed(self, tmp_path: Path) -> None:
         app, client, _svc = _make_app(tmp_path)
         before = _sample("audiography_streaming_segments_total", {"mode": "confirmed"})
         with client, _open_session(client, app, "e2e-m3") as ws:
@@ -452,7 +451,7 @@ class TestMetricsIntegration:
             ws.send_text(json.dumps({"type": "finalize"}))
             _drain_until(ws, {"session_closed"})
         after = _sample("audiography_streaming_segments_total", {"mode": "confirmed"})
-        assert after > before
+        assert after == before
 
     def test_vad_reset_counted(self, tmp_path: Path) -> None:
         app, client, _svc = _make_app(tmp_path)
@@ -464,7 +463,7 @@ class TestMetricsIntegration:
         after = _sample("audiography_streaming_vad_resets_total", {"reason": "seq_gap"})
         assert after == before + 1
 
-    def test_tag_recompute_counted(self, tmp_path: Path) -> None:
+    def test_unpaired_asr_does_not_increment_tag_recompute(self, tmp_path: Path) -> None:
         app, client, _svc = _make_app(tmp_path)
         before = _sample("audiography_streaming_tag_recomputes_total", {"status": "ok"})
         with client, _open_session(client, app, "e2e-m5") as ws:
@@ -473,9 +472,9 @@ class TestMetricsIntegration:
             ws.send_text(json.dumps({"type": "finalize"}))
             _drain_until(ws, {"session_closed"})
         after = _sample("audiography_streaming_tag_recomputes_total", {"status": "ok"})
-        assert after > before
+        assert after == before
 
-    def test_asr_latency_histogram_observed(self, tmp_path: Path) -> None:
+    def test_unconfirmed_asr_does_not_record_confirmed_latency(self, tmp_path: Path) -> None:
         app, client, _svc = _make_app(tmp_path)
         before = _sample("audiography_streaming_asr_latency_seconds_count", {})
         with client, _open_session(client, app, "e2e-m6") as ws:
@@ -484,7 +483,7 @@ class TestMetricsIntegration:
             ws.send_text(json.dumps({"type": "finalize"}))
             _drain_until(ws, {"session_closed"})
         after = _sample("audiography_streaming_asr_latency_seconds_count", {})
-        assert after > before
+        assert after == before
 
 
 # ============================================================
@@ -509,7 +508,7 @@ class TestConcurrentSessionIsolation:
         app, client, _svc = _make_app(tmp_path)
         with client:
             with _open_session(client, app, "iso-1", tenant="t1") as ws1:
-                assert set(app.state.stream_sessions) == {"iso-1"}
+                assert set(app.state.stream_sessions) == {("t1", "iso-1", 1)}
                 # Send PCM + finalize up-front: the TestClient portal only
                 # flushes the client send queue when the client blocks on a
                 # receive, so batching avoids ping-storm stalls.
@@ -525,7 +524,7 @@ class TestConcurrentSessionIsolation:
 
             with _open_session(client, app, "iso-2", tenant="t1") as ws2:
                 # Fresh registry: only iso-2 present, no iso-1 residue.
-                assert set(app.state.stream_sessions) == {"iso-2"}
+                assert set(app.state.stream_sessions) == {("t1", "iso-2", 1)}
                 for seq in range(3):
                     ws2.send_bytes(_pcm_frame(seq))
                 ws2.send_text(json.dumps({"type": "finalize"}))
@@ -683,15 +682,17 @@ class TestPipelineChain:
     async def test_session_confirmed_flows_into_chunker(self) -> None:
         """StreamSession confirmed ASR text → SegmentRecord → StreamingChunker.
 
-        The mock VAD only closes a speech segment at chunk #200, so within a
-        short stream ``confirmed_segments`` stays empty; confirmed text from
-        the ASR side is what actually feeds the WS-3 chunker (the
-        DeltaGraphUpdater consumes transcript, not audio). We therefore
-        materialise one SegmentRecord per confirmed event — exactly what the
-        production wiring does — and push it through the chunker.
+        A confirmed transcript is buffered until the mock VAD closes real
+        source geometry at chunk #200. The paired SegmentRecord, rather than
+        an ASR network sequence, is what enters the chunker.
         """
-        vad = MockStreamingVADAdapter()
-        asr = MockStreamingASRAdapter(confirmed_interval=2, realtime_interval=1)
+        vad = MockStreamingVADAdapter(latency_ms=0)
+        asr = MockStreamingASRAdapter(
+            confirmed_interval=2,
+            realtime_interval=1,
+            connect_latency_ms=0,
+            push_latency_ms=0,
+        )
         await asr.connect(session_id="s", tenant_id="t1")
         session = StreamSession(
             session_id=StreamSessionId(value="pipe-1"),
@@ -704,24 +705,14 @@ class TestPipelineChain:
         )
         session.mark_active()
         events: list[dict[str, Any]] = []
-        for seq in range(4):
+        for seq in range(200):
             async for event in session.on_pcm_chunk(b"\x00" * 1024, seq=seq):
                 events.append(event)
         confirmed = [e for e in events if e["type"] == "segment_confirmed"]
         assert confirmed, f"no confirmed events: {[e['type'] for e in events]}"
 
-        # Materialise SegmentRecords from the confirmed ASR text and feed the chunker.
-        segments = [
-            SegmentRecord(
-                idx=i,
-                start_sec=float(i),
-                end_sec=float(i + 1),
-                transcript=e["text"],
-                speaker=None,
-                vad_conf=1.0,
-            )
-            for i, e in enumerate(confirmed)
-        ]
+        segments = list(session.confirmed_segments)
+        assert segments and all(segment.transcript for segment in segments)
         chunker = StreamingChunker(token_budget=10)
         chunks = [c for seg in segments if (c := chunker.push_segment(seg)) is not None]
         tail = chunker.flush()
