@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from audio_graphy.adapters.bundle import AdapterBundle
 from audio_graphy.config import Settings
 from audio_graphy.core.llm_cache_crypto import LLMCacheCrypto
+from audio_graphy.observability.metrics import LLM_CACHE_EVICTIONS
 from audio_graphy.services.llm_cache_coordinator import (
     HotOnlyLLMCache,
     LLMCacheCoordinator,
@@ -162,8 +163,7 @@ async def build_llm_runtime(
         lease_seconds=settings.llm_cache_lease_seconds,
     )
     persistent_cache_enabled = (
-        settings.enable_llm_exact_cache
-        and settings.enable_llm_persistent_cache
+        settings.enable_llm_exact_cache and settings.enable_llm_persistent_cache
     )
     hot_only_cache_enabled = (
         settings.enable_llm_exact_cache
@@ -253,11 +253,14 @@ def _price_snapshot(
         settings,
         f"{prefix}_cached_prefill_microunits_per_million_tokens",
     )
-    if not all(isinstance(rate, int) and not isinstance(rate, bool) for rate in (
-        input_rate,
-        output_rate,
-        cached_rate,
-    )):
+    if not all(
+        isinstance(rate, int) and not isinstance(rate, bool)
+        for rate in (
+            input_rate,
+            output_rate,
+            cached_rate,
+        )
+    ):
         raise RuntimeError("validated LLM price snapshot is incomplete")
     return LLMPriceSnapshot(
         version=settings.llm_price_version,
@@ -273,8 +276,6 @@ async def _cleanup_loop(runtime: LLMRuntime, settings: Settings) -> None:
         try:
             stats = await runtime.cleanup_once(settings)
             if stats.expired_deleted or stats.budget_deleted or stats.metadata_deleted:
-                from audio_graphy.api.metrics import LLM_CACHE_EVICTIONS
-
                 LLM_CACHE_EVICTIONS.labels("mysql").inc(
                     stats.expired_deleted + stats.budget_deleted
                 )

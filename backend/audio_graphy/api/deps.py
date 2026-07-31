@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from audio_graphy.auth.identity import resolve_current_user
 from audio_graphy.auth.middleware import AuthUser
 from audio_graphy.errors import InvalidTokenError
 
@@ -146,48 +147,5 @@ def get_stores(request: Request) -> StoreBundle:
 
 
 async def get_current_user(request: Request) -> AuthUser:
-    """Get the authenticated user from request state.
-
-    The middleware injects a minimal AuthUser (id/role/tenant_id only).
-    This dependency enriches it with name/email by querying the DB.
-
-    For performance, if name/email are already set (e.g., test fixtures),
-    the DB lookup is skipped.
-    """
-    user: AuthUser | None = getattr(request.state, "user", None)
-    if user is None:
-        raise InvalidTokenError("No authenticated user")
-
-    # If name is empty, enrich from DB
-    if not user.name:
-        factory = get_session_factory(request)
-        from sqlalchemy import select
-
-        from audio_graphy.models.user import User
-
-        async with factory() as session:
-            result = await session.execute(
-                select(User).where(
-                    User.id == user.id,
-                    User.tenant_id == user.tenant_id,
-                )
-            )
-            db_user = result.scalar_one_or_none()
-            if db_user is None:
-                # JWTs and native-audio playback grants must stop working as
-                # soon as the backing account is removed. Never fall back to
-                # stale claims when the authoritative row no longer exists.
-                raise InvalidTokenError("User no longer exists")
-            user = AuthUser(
-                id=db_user.id,
-                name=str(db_user.name),
-                email=str(db_user.email),
-                role=str(db_user.role),
-                tenant_id=str(db_user.tenant_id),
-            )
-            request.state.user = user
-            # Set agent_filter for agent role
-            if user.role == "agent":
-                request.state.agent_filter = user.name
-
-    return user
+    """FastAPI dependency wrapping :func:`resolve_current_user`."""
+    return await resolve_current_user(request)

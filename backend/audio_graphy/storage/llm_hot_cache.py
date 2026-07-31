@@ -17,6 +17,7 @@ from audio_graphy.core.llm_cache_crypto import (
     EncryptedCachePayload,
     LLMCacheCrypto,
 )
+from audio_graphy.observability.metrics import LLM_CACHE_EVICTIONS, LLM_REDIS_FALLBACKS
 
 logger = logging.getLogger(__name__)
 
@@ -236,9 +237,6 @@ class LocalHotCache:
             self._cached_bytes -= entry.size_bytes
             evicted += 1
         if evicted:
-            # Lazy import keeps storage independent from API module import order.
-            from audio_graphy.api.metrics import LLM_CACHE_EVICTIONS
-
             LLM_CACHE_EVICTIONS.labels("local").inc(evicted)
 
 
@@ -628,8 +626,6 @@ class FailoverHotCache:
             self._consecutive_recoveries = 0
             if not self._fallback_episode_recorded:
                 # Keep labels finite; never derive them from exception text.
-                from audio_graphy.api.metrics import LLM_REDIS_FALLBACKS
-
                 LLM_REDIS_FALLBACKS.labels(reason).inc()
                 self._fallback_episode_recorded = True
 

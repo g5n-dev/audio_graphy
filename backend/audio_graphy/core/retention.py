@@ -63,6 +63,7 @@ from audio_graphy.services.reception_erasure import (
     erase_reception_artifacts,
     invalidate_receptions_for_recording,
 )
+from audio_graphy.storage.graph_bitemporal import GraphCompressionSink, all_graph_nodes
 
 if TYPE_CHECKING:
     from audio_graphy.storage.file_index import FileIndex
@@ -568,10 +569,6 @@ async def run_weekly_compression_sweep(
         settings: app settings (god_node_degree_threshold + stale_days
             come from here).
     """
-    from audio_graphy.api.compression_admin import (
-        _all_graph_nodes,
-        _GraphCompressionSink,
-    )
     from audio_graphy.core.bi_temporal import BiTemporalEdgeService
     from audio_graphy.core.compression import CompressionService
 
@@ -587,7 +584,7 @@ async def run_weekly_compression_sweep(
         if store is None:
             continue
         try:
-            sink = _GraphCompressionSink(store, tenant_id)
+            sink = GraphCompressionSink(store, tenant_id)
             bt = BiTemporalEdgeService(tenant_id=tenant_id)
             service = CompressionService(
                 sink=sink,
@@ -596,7 +593,7 @@ async def run_weekly_compression_sweep(
                 stale_days=int(getattr(settings, "compression_stale_days", 180)),
                 tenant_id=tenant_id,
             )
-            nodes = _all_graph_nodes(store)
+            nodes = all_graph_nodes(store)
             report = service.run(
                 nodes,
                 max_candidates=int(getattr(settings, "compression_max_candidates_per_run", 100)),

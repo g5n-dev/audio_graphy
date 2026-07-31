@@ -107,6 +107,7 @@ class TenantScopedBase(Base):
 
     __abstract__ = True
 
-    @declared_attr.directive
-    def tenant_id(cls) -> Mapped[str]:  # noqa: N805
-        return mapped_column(String(64), nullable=False, index=True)
+    # Plain column rather than ``declared_attr``: SQLAlchemy's
+    # ``with_loader_criteria(TenantScopedBase, ...)`` reads this attribute off the
+    # unmapped abstract class, which warns (SAWarning) for declarative attributes.
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)

@@ -10,7 +10,8 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from audio_graphy.api.metrics import (
+from audio_graphy.models.llm_call_log import LLMCallLog
+from audio_graphy.observability.metrics import (
     LLM_CACHE_EVENTS,
     LLM_CACHED_PREFILL_TOKENS,
     LLM_CALL_DURATION,
@@ -21,7 +22,6 @@ from audio_graphy.api.metrics import (
     LLM_SINGLEFLIGHT_FOLLOWERS,
     LLM_TOKENS,
 )
-from audio_graphy.models.llm_call_log import LLMCallLog
 from audio_graphy.services.llm_gateway import LLMObservation
 
 _KNOWN_PURPOSES = frozenset(
@@ -114,8 +114,7 @@ class LLMCallObserver:
         raw_tokens_out = _usage_value(usage, "completion_tokens", "output_tokens")
         provider_success = event_kind == "provider_attempt" and outcome == "success"
         provider_usage_known = provider_success or (
-            event_kind == "provider_attempt"
-            and getattr(event, "billed_usage_known", None) is True
+            event_kind == "provider_attempt" and getattr(event, "billed_usage_known", None) is True
         )
         cache_hit = (
             event_kind == "logical_request"
@@ -233,11 +232,15 @@ class LLMCallObserver:
             ).inc()
             LLM_CALLS.labels(event.model[:64], event.outcome).inc()
             LLM_CALL_DURATION.labels(event.model[:64]).observe(event.elapsed_seconds)
-            if event.outcome == "success" or getattr(
-                event,
-                "billed_usage_known",
-                None,
-            ) is True:
+            if (
+                event.outcome == "success"
+                or getattr(
+                    event,
+                    "billed_usage_known",
+                    None,
+                )
+                is True
+            ):
                 tokens_in = _usage_value(event.usage, "prompt_tokens", "input_tokens")
                 tokens_out = _usage_value(
                     event.usage,
@@ -382,9 +385,7 @@ def _is_unknown_billed(
 ) -> bool:
     if event_kind != "provider_attempt" or outcome == "success":
         return False
-    return outcome == "cancelled" or bool(
-        error_type and "timeout" in error_type.lower()
-    )
+    return outcome == "cancelled" or bool(error_type and "timeout" in error_type.lower())
 
 
 __all__ = ["LLMCallObserver"]

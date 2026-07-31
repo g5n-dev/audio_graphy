@@ -26,8 +26,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
-from audio_graphy.api.metrics import GLOBAL_SEARCH_DURATION
 from audio_graphy.core.community_summary import CommunitySummaryRecord
+from audio_graphy.observability.metrics import GLOBAL_SEARCH_DURATION
 
 logger = logging.getLogger(__name__)
 

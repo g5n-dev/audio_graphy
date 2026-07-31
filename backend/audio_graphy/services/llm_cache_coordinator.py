@@ -24,7 +24,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 
 from audio_graphy.adapters.protocols import EmbedAdapter, EmbeddingResult
-from audio_graphy.api.metrics import LLM_LEASE_EVENTS
+from audio_graphy.observability.metrics import LLM_LEASE_EVENTS
 from audio_graphy.services.llm_gateway import (
     CachedLLMValue,
     CachePolicy,
@@ -205,9 +205,7 @@ class LLMCacheCoordinator:
         storage_identity = _storage_identity(identity)
         hot_value = await self._hot.get(storage_identity)
         if hot_value is not None:
-            requested_references = _references(
-                request.provenance if request is not None else ()
-            )
+            requested_references = _references(request.provenance if request is not None else ())
             # A v2 generation identity may be shared by multiple source
             # objects. Every hot reuse must attach the current request's
             # provenance to the durable reverse index before returning;

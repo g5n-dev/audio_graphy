@@ -49,19 +49,19 @@ from typing import Any, Protocol
 
 from rapidfuzz import fuzz
 
-from audio_graphy.api.metrics import (
-    COMPRESSION_EDGES_DEPRECATED,
-    COMPRESSION_EDGES_SOFT_DELETED,
-    COMPRESSION_NODES_SOFT_DELETED,
-    COMPRESSION_ORPHANS_INVALIDATED,
-    COMPRESSION_RUNS_TOTAL,
-)
 from audio_graphy.core.bi_temporal import BiTemporalEdgeService
 from audio_graphy.core.types import (
     CompressionPolicyViolationError,
     CompressionRollbackError,
     GraphEdge,
     GraphNode,
+)
+from audio_graphy.observability.metrics import (
+    COMPRESSION_EDGES_DEPRECATED,
+    COMPRESSION_EDGES_SOFT_DELETED,
+    COMPRESSION_NODES_SOFT_DELETED,
+    COMPRESSION_ORPHANS_INVALIDATED,
+    COMPRESSION_RUNS_TOTAL,
 )
 
 logger = logging.getLogger(__name__)

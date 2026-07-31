@@ -13,6 +13,7 @@ from typing import Any
 
 from fastapi import Request
 
+from audio_graphy.auth.identity import resolve_current_user
 from audio_graphy.errors import ForbiddenError
 
 # Role hierarchy levels (higher = more privileged)
@@ -48,9 +49,7 @@ def require_role(*roles: str) -> Callable[..., Coroutine[Any, Any, None]]:
         # Refresh identity and role from the authoritative user row before
         # authorization. This makes account deletion and role downgrade take
         # effect immediately instead of trusting a long-lived JWT claim.
-        from audio_graphy.api.deps import get_current_user
-
-        user = await get_current_user(request)
+        user = await resolve_current_user(request)
         if user.role not in allowed:
             raise ForbiddenError(
                 message=f"Role '{user.role}' is not allowed. Required: {', '.join(sorted(allowed))}",

@@ -43,10 +43,14 @@ from audio_graphy.core.types import GraphEdge
 from audio_graphy.errors import EntityNotFoundError, RecordingNotFoundError
 from audio_graphy.models.edge_event import EdgeEvent
 from audio_graphy.models.recording import Recording
+from audio_graphy.storage.graph_bitemporal import edge_from_graph_attrs
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/recordings", tags=["M9 — Bi-temporal edges"])
+
+# Kept for importers that still reference the pre-move private name.
+_edge_from_graph_attrs = edge_from_graph_attrs
 
 
 # ============================================================
@@ -95,50 +99,6 @@ async def _fetch_recording_or_404(
     return rec
 
 
-def _edge_from_graph_attrs(
-    source: str,
-    target: str,
-    relation: str,
-    attrs: dict[str, Any],
-) -> GraphEdge:
-    """Build a GraphEdge from a NetworkX edge attribute dict.
-
-    The graph store persists bi-temporal timestamps as ISO strings inside
-    the attribute dict (per architecture §6.6); we deserialise them here.
-    """
-    from audio_graphy.core.types import _str_to_list
-
-    def _dt(key: str) -> datetime | None:
-        v = attrs.get(key)
-        if not v or not isinstance(v, str):
-            return None
-        try:
-            return datetime.fromisoformat(v.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-
-    confidence = attrs.get("confidence", "AMBIGUOUS")
-    if confidence not in ("EXTRACTED", "INFERRED", "AMBIGUOUS"):
-        confidence = "AMBIGUOUS"
-
-    return GraphEdge(
-        source=source,
-        target=target,
-        relation=relation,
-        weight=float(attrs.get("weight", 1.0)),
-        confidence=confidence,
-        confidence_score=(
-            float(attrs["confidence_score"]) if attrs.get("confidence_score") is not None else None
-        ),
-        source_ids=_str_to_list(attrs.get("source_ids", "[]")),
-        valid_at=_dt("valid_at"),
-        invalid_at=_dt("invalid_at"),
-        created_at=_dt("created_at"),
-        expired_at=_dt("expired_at"),
-        superseded_by=attrs.get("superseded_by"),
-    )
-
-
 def _edges_for_recording(graph: Any, recording_id: int) -> list[GraphEdge]:
     """Extract edges that mention ``recording_id`` in source_ids.
 
@@ -156,7 +116,7 @@ def _edges_for_recording(graph: Any, recording_id: int) -> list[GraphEdge]:
         src_ids = _str_to_list(attrs.get("source_ids", "[]"))
         if not any(isinstance(s, str) and s.startswith(prefix) for s in src_ids):
             continue
-        out.append(_edge_from_graph_attrs(source, target, rel, attrs))
+        out.append(edge_from_graph_attrs(source, target, rel, attrs))
     return out
 
 

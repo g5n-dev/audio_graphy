@@ -22,6 +22,7 @@ Started via::
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import sys
@@ -46,6 +47,11 @@ _EXPECTED_DIM = 192  # L2 locked
 _SV_MODEL: Any = None  # speaker-verification CAM++ model
 _DIARIZE_MODEL: Any = None  # diarization (ERO2SV) model; optional
 _DEVICE: str = "cpu"
+
+# Inference runs off the event loop so /health and queued requests stay
+# responsive, but it must stay strictly serial: concurrent forward passes
+# would exhaust GPU memory.
+_INFERENCE_SEMAPHORE = asyncio.Semaphore(1)
 
 
 @asynccontextmanager
@@ -154,16 +160,36 @@ async def diarize(
 
     suffix = Path(audio.filename or "audio.wav").suffix or ".wav"
     tmp_path = _save_tmp(raw_bytes, suffix)
-    try:
-        if _DIARIZE_MODEL is not None:
-            segments, duration = _diarize_with_diarize_model(
-                tmp_path, min_segment_sec, max_speakers
-            )
-        else:
+    # Bound once, on the loop: shutdown may clear the global while the worker
+    # thread is running, and the branch below must not disagree with what the
+    # thread ends up using.
+    diarize_model = _DIARIZE_MODEL
+
+    # asyncio.to_thread cannot interrupt a running thread: on cancellation the
+    # await returns while the worker keeps reading the file. So the worker owns
+    # cleanup once it starts, and the caller only cleans up when it never did.
+    worker_started = False
+
+    def _run() -> tuple[list[dict[str, Any]], float]:
+        nonlocal worker_started
+        worker_started = True
+        try:
+            if diarize_model is not None:
+                return _diarize_with_diarize_model(
+                    diarize_model, tmp_path, min_segment_sec, max_speakers
+                )
             # Fallback: SV-only — single-speaker timeline (whole file).
-            segments, duration = _diarize_with_sv_only(tmp_path, min_segment_sec)
-    finally:
-        _unlink_tmp(tmp_path)
+            return _diarize_with_sv_only(tmp_path, min_segment_sec)
+        finally:
+            _unlink_tmp(tmp_path)
+
+    try:
+        async with _INFERENCE_SEMAPHORE:
+            segments, duration = await asyncio.to_thread(_run)
+    except BaseException:
+        if not worker_started:
+            _unlink_tmp(tmp_path)
+        raise
 
     num_speakers = len({s["speaker_id"] for s in segments})
     return JSONResponse(
@@ -209,11 +235,13 @@ async def extract_voiceprint(
             )
 
         try:
-            result = _SV_MODEL.generate(
-                input=tmp_path,
-                cache={},
-                language="zh-cn",
-            )
+            async with _INFERENCE_SEMAPHORE:
+                result = await asyncio.to_thread(
+                    _SV_MODEL.generate,
+                    input=tmp_path,
+                    cache={},
+                    language="zh-cn",
+                )
         except Exception as exc:
             logger.exception("CAM++ SV inference failed")
             raise HTTPException(
@@ -260,6 +288,7 @@ async def extract_voiceprint(
 # Helpers
 # ------------------------------------------------------------------
 def _diarize_with_diarize_model(
+    model: Any,
     path: str,
     min_segment_sec: float,
     max_speakers: int,
@@ -268,8 +297,12 @@ def _diarize_with_diarize_model(
 
     funasr Eres2SV-style models return ``sentence_info`` entries with
     ``spk_label`` (0-based). We convert to the API schema.
+
+    The model is passed in rather than read from the module global: this runs on
+    a worker thread, and lifespan shutdown clears that global, so re-reading it
+    here could observe ``None`` mid-inference.
     """
-    res = _DIARIZE_MODEL.generate(
+    res = model.generate(
         input=path,
         cache={},
         max_spk_num=max_speakers,

@@ -25,6 +25,7 @@ Resampling:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import sys
@@ -48,6 +49,11 @@ _CACHE_SIZE = 256
 _CLAP_MODEL: Any = None
 _CACHE: dict[str, list[float]] = {}
 _CACHE_ORDER: list[str] = []
+
+# Inference runs off the event loop so /health and queued requests stay
+# responsive, but it must stay strictly serial: concurrent forward passes
+# would exhaust GPU memory.
+_INFERENCE_SEMAPHORE = asyncio.Semaphore(1)
 
 
 def _l2_normalize(vec: np.ndarray) -> np.ndarray:
@@ -198,9 +204,12 @@ async def embed_audio(
         # laion_clap expects shape (n_samples,) float32; get_audio_embedding_from_filedata
         # accepts a list of paths OR a numpy array when use_signal=True.
         try:
-            vec = _CLAP_MODEL.get_audio_embedding_from_filedata(
-                x=y.reshape(1, -1), use_tensor=False
-            )
+            async with _INFERENCE_SEMAPHORE:
+                vec = await asyncio.to_thread(
+                    _CLAP_MODEL.get_audio_embedding_from_filedata,
+                    x=y.reshape(1, -1),
+                    use_tensor=False,
+                )
         except Exception as exc:
             logger.exception("CLAP inference failed")
             raise HTTPException(
