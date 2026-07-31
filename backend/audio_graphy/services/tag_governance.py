@@ -452,9 +452,7 @@ def _evaluate_efficiency_policy(
             }
             # A >25% regression rolls back after one complete window. The
             # softer >10% signal still requires two consecutive windows.
-            result["hard_breach"] = (
-                latest_maximum > _EFFICIENCY_HARD_REGRESSION_THRESHOLD
-            )
+            result["hard_breach"] = latest_maximum > _EFFICIENCY_HARD_REGRESSION_THRESHOLD
 
     evaluated_windows: list[dict[str, Any]] = []
     for index in reversed(range(_EFFICIENCY_POLICY_REQUIRED_WINDOWS)):
@@ -482,17 +480,13 @@ def _evaluate_efficiency_policy(
                 "window_start": bucket_start.isoformat(),
                 "window_end": bucket_end.isoformat(),
                 **aggregate,
-                "breached": maximum_regression
-                > _EFFICIENCY_SOFT_REGRESSION_THRESHOLD,
-                "hard_breached": maximum_regression
-                > _EFFICIENCY_HARD_REGRESSION_THRESHOLD,
+                "breached": maximum_regression > _EFFICIENCY_SOFT_REGRESSION_THRESHOLD,
+                "hard_breached": maximum_regression > _EFFICIENCY_HARD_REGRESSION_THRESHOLD,
             }
         )
     result["complete"] = True
     result["windows"] = evaluated_windows
-    result["consecutive_breach"] = all(
-        bool(item["breached"]) for item in evaluated_windows
-    )
+    result["consecutive_breach"] = all(bool(item["breached"]) for item in evaluated_windows)
     result["hard_breach"] = bool(result["hard_breach"]) or any(
         bool(item["hard_breached"]) for item in evaluated_windows
     )
@@ -1062,9 +1056,7 @@ async def resolve_serving_tagger_route(
             select(TagDeployment.baseline_tagger_version_id)
             .where(
                 TagDeployment.tenant_id == tenant_id,
-                TagDeployment.status.in_(
-                    ["shadow", "canary_5", "canary_25", "awaiting_admin"]
-                ),
+                TagDeployment.status.in_(["shadow", "canary_5", "canary_25", "awaiting_admin"]),
             )
             .order_by(TagDeployment.created_at.desc(), TagDeployment.id.desc())
             .limit(1)
@@ -1884,12 +1876,8 @@ class PersistedPredictionTrialExecutor:
             if cost is not None
         ]
         real_cost_complete = len(real_costs) == len(measured_executions)
-        provider_cost_microunits = (
-            sum(real_costs) if real_cost_complete else None
-        )
-        provider_cost_units = sum(
-            float(value[2] or 0.0) for value in measured_executions.values()
-        )
+        provider_cost_microunits = sum(real_costs) if real_cost_complete else None
+        provider_cost_units = sum(float(value[2] or 0.0) for value in measured_executions.values())
         return {
             "measurement_source": "persisted_harness_execution",
             "measurement_complete": usage_complete and bool(measured_executions or not validation),
@@ -2137,15 +2125,11 @@ async def execute_harness_trials(
         optimization_run_id is None
         or len(optimization_trial_ids) < len(configs)
         or any(
-            isinstance(trial_id, bool)
-            or not isinstance(trial_id, int)
-            or trial_id <= 0
+            isinstance(trial_id, bool) or not isinstance(trial_id, int) or trial_id <= 0
             for trial_id in optimization_trial_ids[: len(configs)]
         )
     ):
-        raise GovernanceError(
-            "optimizer trial correlation IDs do not match the candidate envelope"
-        )
+        raise GovernanceError("optimizer trial correlation IDs do not match the candidate envelope")
 
     def estimate_value(
         estimate: Mapping[str, Any],
@@ -2155,16 +2139,11 @@ async def execute_harness_trials(
         if value is None:
             return None
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-            raise GovernanceError(
-                f"trial budget estimator returned invalid {name}"
-            )
+            raise GovernanceError(f"trial budget estimator returned invalid {name}")
         return value
 
     for index, (mutation, config) in enumerate(configs):
-        if (
-            max_wall_seconds is not None
-            and perf_counter() - search_started_at >= max_wall_seconds
-        ):
+        if max_wall_seconds is not None and perf_counter() - search_started_at >= max_wall_seconds:
             raise GovernanceError("optimizer budget_exhausted: max_wall_seconds")
         estimate_method = getattr(trial_executor, "estimate_trial_budget", None)
         estimate: Mapping[str, Any] = {}
@@ -2276,14 +2255,8 @@ async def execute_harness_trials(
                 "wall_seconds": round(perf_counter() - search_started_at, 6),
             }
             if (
-                (
-                    max_provider_tokens is not None
-                    and consumed_provider_tokens > max_provider_tokens
-                )
-                or (
-                    max_provider_calls is not None
-                    and consumed_provider_calls > max_provider_calls
-                )
+                (max_provider_tokens is not None and consumed_provider_tokens > max_provider_tokens)
+                or (max_provider_calls is not None and consumed_provider_calls > max_provider_calls)
                 or (
                     max_cost_microunits is not None
                     and consumed_cost_microunits > max_cost_microunits
@@ -2589,9 +2562,7 @@ class TagGovernanceService:
     ) -> int:
         value = budget.get(name, 0)
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-            raise GovernanceConflictError(
-                f"optimization run contains an invalid {name} counter"
-            )
+            raise GovernanceConflictError(f"optimization run contains an invalid {name} counter")
         return value
 
     @staticmethod
@@ -2616,12 +2587,9 @@ class TagGovernanceService:
             or run.phase != "search"
             or run.gold_set_version_id != gold_set_version_id
             or run.baseline_tagger_version_id != production_tagger_version_id
-            or run.summary.get("search_manifest_checksum")
-            != search_manifest_checksum
+            or run.summary.get("search_manifest_checksum") != search_manifest_checksum
         ):
-            raise GovernanceConflictError(
-                "optimization run changed while trials were executing"
-            )
+            raise GovernanceConflictError("optimization run changed while trials were executing")
         if (
             job is None
             or job.id != optimization_job_id
@@ -2730,9 +2698,7 @@ class TagGovernanceService:
                 for name, _limit_name in dimensions:
                     consumed[name] += reserved[name]
                     reserved[name] = 0
-                budget["last_abandoned_reservation"] = deepcopy(
-                    dict(previous_reservation)
-                )
+                budget["last_abandoned_reservation"] = deepcopy(dict(previous_reservation))
                 budget["abandoned_reservation_count"] = (
                     self._optimization_budget_counter(
                         budget,
@@ -2748,9 +2714,7 @@ class TagGovernanceService:
                 budget["started_at"] = now.isoformat()
             elif isinstance(started_at_value, str):
                 try:
-                    started_at = datetime.fromisoformat(
-                        started_at_value.replace("Z", "+00:00")
-                    )
+                    started_at = datetime.fromisoformat(started_at_value.replace("Z", "+00:00"))
                 except ValueError as exc:
                     raise GovernanceConflictError(
                         "optimization run contains an invalid started_at budget value"
@@ -2785,14 +2749,10 @@ class TagGovernanceService:
                 if value is not None and (
                     isinstance(value, bool) or not isinstance(value, int) or value < 0
                 ):
-                    raise GovernanceError(
-                        f"trial budget estimator returned invalid {name}"
-                    )
+                    raise GovernanceError(f"trial budget estimator returned invalid {name}")
                 limit = budget.get(limit_name)
                 if limit is not None and (
-                    isinstance(limit, bool)
-                    or not isinstance(limit, int)
-                    or limit <= 0
+                    isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0
                 ):
                     raise GovernanceConflictError(
                         f"optimization run contains an invalid {limit_name} budget"
@@ -2800,10 +2760,7 @@ class TagGovernanceService:
                 if limit is not None and value is None:
                     exhausted_reason = exhausted_reason or limit_name
                 normalized_estimate[name] = int(value or 0)
-                if (
-                    limit is not None
-                    and consumed[name] + normalized_estimate[name] > limit
-                ):
+                if limit is not None and consumed[name] + normalized_estimate[name] > limit:
                     exhausted_reason = exhausted_reason or limit_name
 
             for name, _limit_name in dimensions:
@@ -2814,14 +2771,15 @@ class TagGovernanceService:
                 budget["budget_exhausted_reason"] = exhausted_reason
                 run.search_budget = budget
                 await session.commit()
-                raise GovernanceError(
-                    f"optimizer budget_exhausted: {exhausted_reason}"
-                )
+                raise GovernanceError(f"optimizer budget_exhausted: {exhausted_reason}")
 
-            sequence = self._optimization_budget_counter(
-                budget,
-                "reservation_sequence",
-            ) + 1
+            sequence = (
+                self._optimization_budget_counter(
+                    budget,
+                    "reservation_sequence",
+                )
+                + 1
+            )
             reservation_id = canonical_checksum(
                 {
                     "optimization_run_id": optimization_run_id,
@@ -2929,9 +2887,7 @@ class TagGovernanceService:
             for name, limit_name in dimensions:
                 value = actual.get(name)
                 if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-                    raise GovernanceError(
-                        f"trial executor returned invalid {name} usage"
-                    )
+                    raise GovernanceError(f"trial executor returned invalid {name} usage")
                 consumed[name] = (
                     self._optimization_budget_counter(
                         budget,
@@ -2951,9 +2907,7 @@ class TagGovernanceService:
                     "optimization run contains an invalid started_at budget value"
                 )
             try:
-                started_at = datetime.fromisoformat(
-                    started_at_value.replace("Z", "+00:00")
-                )
+                started_at = datetime.fromisoformat(started_at_value.replace("Z", "+00:00"))
             except ValueError as exc:
                 raise GovernanceConflictError(
                     "optimization run contains an invalid started_at budget value"
@@ -2971,9 +2925,7 @@ class TagGovernanceService:
                 exhausted_reason = exhausted_reason or "max_wall_seconds"
 
             budget["reservation"] = None
-            budget["last_settled_reservation"] = deepcopy(
-                dict(persisted_reservation)
-            )
+            budget["last_settled_reservation"] = deepcopy(dict(persisted_reservation))
             budget["last_settled_at"] = now.isoformat()
             if exhausted_reason is not None:
                 budget["budget_exhausted_at"] = now.isoformat()
@@ -2985,8 +2937,7 @@ class TagGovernanceService:
             await session.commit()
             if exhausted_reason is not None:
                 raise GovernanceError(
-                    "optimizer budget_exhausted during trial settlement: "
-                    f"{exhausted_reason}"
+                    f"optimizer budget_exhausted during trial settlement: {exhausted_reason}"
                 )
             return {
                 "provider_tokens": consumed["provider_tokens"],
@@ -5073,8 +5024,7 @@ class TagGovernanceService:
                         current.revision = fact.revision
                 raw_target_keys = run.input_snapshot.get("target_tag_keys", [])
                 if not isinstance(raw_target_keys, list) or any(
-                    not isinstance(value, str) or not value
-                    for value in raw_target_keys
+                    not isinstance(value, str) or not value for value in raw_target_keys
                 ):
                     raise GovernanceConflictError(
                         "budgeted extraction run has malformed target tag scope"
@@ -5383,15 +5333,9 @@ class TagGovernanceService:
             .scalars()
             .all()
         )
-        provider_tokens = [
-            int(sample.budget_consumed_provider_tokens) for sample in samples
-        ]
-        provider_calls = [
-            int(sample.budget_consumed_provider_calls) for sample in samples
-        ]
-        costs = [
-            int(sample.budget_consumed_cost_microunits) for sample in samples
-        ]
+        provider_tokens = [int(sample.budget_consumed_provider_tokens) for sample in samples]
+        provider_calls = [int(sample.budget_consumed_provider_calls) for sample in samples]
+        costs = [int(sample.budget_consumed_cost_microunits) for sample in samples]
         wall_seconds: list[int] = []
         for sample in samples:
             assert sample.finished_at is not None
@@ -5402,9 +5346,7 @@ class TagGovernanceService:
                 finished_at = finished_at.replace(tzinfo=UTC)
             if started_at.tzinfo is None:
                 started_at = started_at.replace(tzinfo=UTC)
-            wall_seconds.append(
-                max(0, math.ceil((finished_at - started_at).total_seconds()))
-            )
+            wall_seconds.append(max(0, math.ceil((finished_at - started_at).total_seconds())))
 
         def hard_limit(values: Sequence[int]) -> int:
             p99 = _nearest_rank_percentile(values, 0.99)
@@ -5447,8 +5389,7 @@ class TagGovernanceService:
             unknown_budget_keys = sorted(set(raw_budget) - supported_budget_keys)
             if unknown_budget_keys:
                 raise GovernanceError(
-                    "scope.budget contains unsupported limits: "
-                    + ", ".join(unknown_budget_keys)
+                    "scope.budget contains unsupported limits: " + ", ".join(unknown_budget_keys)
                 )
             for key in sorted(supported_budget_keys.intersection(raw_budget)):
                 value = raw_budget[key]
@@ -5573,10 +5514,7 @@ class TagGovernanceService:
                         raise GovernanceConflictError(
                             "tagger version does not belong to scope.schema_version_id"
                         )
-            if (
-                not budget_limits
-                and job_type in {"extract", "recompute", "remediate"}
-            ):
+            if not budget_limits and job_type in {"extract", "recompute", "remediate"}:
                 (
                     derived_limits,
                     budget_baseline_sample_count,
@@ -5675,13 +5613,9 @@ class TagGovernanceService:
                     payload={
                         "job_type": job_type,
                         "budget_purpose": budget_purpose,
-                        "budget_baseline_sample_count": (
-                            budget_baseline_sample_count
-                        ),
+                        "budget_baseline_sample_count": (budget_baseline_sample_count),
                         "minimum_samples": _JOB_BUDGET_BASELINE_MIN_SAMPLES,
-                        "minimum_age_seconds": int(
-                            _JOB_BUDGET_BASELINE_AGE.total_seconds()
-                        ),
+                        "minimum_age_seconds": int(_JOB_BUDGET_BASELINE_AGE.total_seconds()),
                     },
                 )
             return job
@@ -5838,15 +5772,9 @@ class TagGovernanceService:
                 or job.budget_reserved_provider_calls
                 or job.budget_reserved_cost_microunits
             ):
-                job.budget_consumed_provider_tokens += (
-                    job.budget_reserved_provider_tokens
-                )
-                job.budget_consumed_provider_calls += (
-                    job.budget_reserved_provider_calls
-                )
-                job.budget_consumed_cost_microunits += (
-                    job.budget_reserved_cost_microunits
-                )
+                job.budget_consumed_provider_tokens += job.budget_reserved_provider_tokens
+                job.budget_consumed_provider_calls += job.budget_reserved_provider_calls
+                job.budget_consumed_cost_microunits += job.budget_reserved_cost_microunits
                 job.budget_reserved_provider_tokens = 0
                 job.budget_reserved_provider_calls = 0
                 job.budget_reserved_cost_microunits = 0
@@ -5865,18 +5793,15 @@ class TagGovernanceService:
                     job_type=job.job_type,
                     scope=job.scope,
                 )
-            if (
-                job.budget_started_at is None
-                and (
-                    job.job_type in {"extract", "recompute", "remediate"}
-                    or any(
-                        limit is not None
-                        for limit in (
-                            job.budget_max_provider_tokens,
-                            job.budget_max_provider_calls,
-                            job.budget_max_cost_microunits,
-                            job.budget_max_wall_seconds,
-                        )
+            if job.budget_started_at is None and (
+                job.job_type in {"extract", "recompute", "remediate"}
+                or any(
+                    limit is not None
+                    for limit in (
+                        job.budget_max_provider_tokens,
+                        job.budget_max_provider_calls,
+                        job.budget_max_cost_microunits,
+                        job.budget_max_wall_seconds,
                     )
                 )
             ):
@@ -5956,8 +5881,7 @@ class TagGovernanceService:
                 "cost_microunits": job.budget_max_cost_microunits,
             }
             if not any(
-                value is not None
-                for value in (*limits.values(), job.budget_max_wall_seconds)
+                value is not None for value in (*limits.values(), job.budget_max_wall_seconds)
             ):
                 return None
             if (
@@ -5982,20 +5906,17 @@ class TagGovernanceService:
                     remaining_wall_seconds = max(1, math.ceil(wall_remainder))
             remaining = {
                 "provider_tokens": (
-                    job.budget_max_provider_tokens
-                    - job.budget_consumed_provider_tokens
+                    job.budget_max_provider_tokens - job.budget_consumed_provider_tokens
                     if job.budget_max_provider_tokens is not None
                     else None
                 ),
                 "provider_calls": (
-                    job.budget_max_provider_calls
-                    - job.budget_consumed_provider_calls
+                    job.budget_max_provider_calls - job.budget_consumed_provider_calls
                     if job.budget_max_provider_calls is not None
                     else None
                 ),
                 "cost_microunits": (
-                    job.budget_max_cost_microunits
-                    - job.budget_consumed_cost_microunits
+                    job.budget_max_cost_microunits - job.budget_consumed_cost_microunits
                     if job.budget_max_cost_microunits is not None
                     else None
                 ),
@@ -6003,9 +5924,7 @@ class TagGovernanceService:
             if exhausted_message is None:
                 for dimension, value in remaining.items():
                     if value is not None and value <= 0:
-                        exhausted_message = (
-                            f"tag job budget exhausted: max_{dimension}"
-                        )
+                        exhausted_message = f"tag job budget exhausted: max_{dimension}"
                         break
             if job.budget_exhausted_at is not None and exhausted_message is None:
                 exhausted_message = "tag job budget was already exhausted"
@@ -6016,15 +5935,9 @@ class TagGovernanceService:
                 job.revision += 1
                 exhausted_revision = int(job.revision)
             else:
-                job.budget_reserved_provider_tokens = int(
-                    remaining["provider_tokens"] or 0
-                )
-                job.budget_reserved_provider_calls = int(
-                    remaining["provider_calls"] or 0
-                )
-                job.budget_reserved_cost_microunits = int(
-                    remaining["cost_microunits"] or 0
-                )
+                job.budget_reserved_provider_tokens = int(remaining["provider_tokens"] or 0)
+                job.budget_reserved_provider_calls = int(remaining["provider_calls"] or 0)
+                job.budget_reserved_cost_microunits = int(remaining["cost_microunits"] or 0)
                 job.revision += 1
                 reservation = TagJobBudgetReservation(
                     revision=int(job.revision),
@@ -6091,10 +6004,7 @@ class TagGovernanceService:
                 "provider_calls": job.budget_max_provider_calls,
                 "cost_microunits": job.budget_max_cost_microunits,
             }
-            settled = {
-                key: reserved[key] if consume_reserved else actual[key]
-                for key in actual
-            }
+            settled = {key: reserved[key] if consume_reserved else actual[key] for key in actual}
             if not consume_reserved:
                 for dimension, limit in limits.items():
                     if (
@@ -6118,24 +6028,13 @@ class TagGovernanceService:
                 "cost_microunits": job.budget_consumed_cost_microunits,
             }
             for dimension, limit in limits.items():
-                if (
-                    limit is not None
-                    and consumed[dimension] > limit
-                    and exhausted_message is None
-                ):
-                    exhausted_message = (
-                        f"tag job budget exhausted during {dimension} settlement"
-                    )
-            if (
-                job.budget_max_wall_seconds is not None
-                and job.budget_started_at is not None
-            ):
+                if limit is not None and consumed[dimension] > limit and exhausted_message is None:
+                    exhausted_message = f"tag job budget exhausted during {dimension} settlement"
+            if job.budget_max_wall_seconds is not None and job.budget_started_at is not None:
                 started_at = job.budget_started_at
                 if started_at.tzinfo is None:
                     started_at = started_at.replace(tzinfo=UTC)
-                if (
-                    now - started_at
-                ).total_seconds() > job.budget_max_wall_seconds:
+                if (now - started_at).total_seconds() > job.budget_max_wall_seconds:
                     exhausted_message = (
                         exhausted_message
                         or "tag job budget exhausted during max_wall_seconds settlement"
@@ -9317,11 +9216,7 @@ class TagGovernanceService:
                 if not isinstance(usage, Mapping):
                     return None
                 value = usage.get(key)
-                if (
-                    isinstance(value, bool)
-                    or not isinstance(value, int)
-                    or value < 0
-                ):
+                if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                     return None
                 return value
 
@@ -9332,11 +9227,7 @@ class TagGovernanceService:
                 if execution is None or not isinstance(execution.output_snapshot, Mapping):
                     return None
                 value = execution.output_snapshot.get(key)
-                if (
-                    isinstance(value, bool)
-                    or not isinstance(value, int)
-                    or value < 0
-                ):
+                if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                     return None
                 return value
 
@@ -9378,9 +9269,7 @@ class TagGovernanceService:
                             "tag_key": str(proposed_fact.tag_key),
                             "tag_value": deepcopy(proposed_fact.tag_value),
                             "confidence": float(proposed_fact.confidence or 0),
-                            "evidence_refs": deepcopy(
-                                proposed_fact.evidence_refs or []
-                            ),
+                            "evidence_refs": deepcopy(proposed_fact.evidence_refs or []),
                         }
                         if proposed_fact is not None
                         else None
@@ -9568,38 +9457,27 @@ class TagGovernanceService:
                     "input_snapshot": deepcopy(
                         cast(TagGoldLabel, sample["label"]).input_snapshot or {}
                     ),
-                    "gold_value": deepcopy(
-                        cast(TagGoldLabel, sample["label"]).tag_value
-                    ),
+                    "gold_value": deepcopy(cast(TagGoldLabel, sample["label"]).tag_value),
                     "truth_state": cast(TagGoldLabel, sample["label"]).truth_state,
                     "gold_evidence_refs": deepcopy(
                         cast(TagGoldLabel, sample["label"]).evidence_refs or []
                     ),
                     "schema_definitions": deepcopy(schema_version.definitions),
-                    "baseline_predicted_value": deepcopy(
-                        sample.get("predicted_value")
-                    ),
-                    "baseline_assignment": deepcopy(
-                        sample.get("baseline_assignment")
-                    ),
+                    "baseline_predicted_value": deepcopy(sample.get("predicted_value")),
+                    "baseline_assignment": deepcopy(sample.get("baseline_assignment")),
                     "baseline_is_correct": bool(sample.get("is_correct")),
                     "score": float(sample.get("score", 0)),
                     "is_correct": bool(sample.get("is_correct")),
                     "is_critical": (cast(TagGoldLabel, sample["label"]).tag_key in critical_keys),
                     "evidence_required": (
-                        cast(TagGoldLabel, sample["label"]).tag_key
-                        in evidence_required_keys
+                        cast(TagGoldLabel, sample["label"]).tag_key in evidence_required_keys
                     ),
                     "primary_failure_stage": str(sample["primary_failure_stage"]),
                     "harness_execution_id": sample.get("harness_execution_id"),
                     "provider_tokens": sample.get("provider_tokens"),
                     "provider_cost_units": sample.get("provider_cost_units"),
-                    "provider_cost_microunits": sample.get(
-                        "provider_cost_microunits"
-                    ),
-                    "provider_cold_cost_microunits": sample.get(
-                        "provider_cold_cost_microunits"
-                    ),
+                    "provider_cost_microunits": sample.get("provider_cost_microunits"),
+                    "provider_cold_cost_microunits": sample.get("provider_cold_cost_microunits"),
                     "provider_calls": sample.get("provider_calls"),
                     "provider_input_tokens": sample.get("provider_input_tokens"),
                     "provider_output_tokens": sample.get("provider_output_tokens"),
@@ -9664,8 +9542,7 @@ class TagGovernanceService:
                             select(TagOptimizationTrial)
                             .where(
                                 TagOptimizationTrial.tenant_id == tenant_id,
-                                TagOptimizationTrial.optimization_run_id
-                                == optimization_run.id,
+                                TagOptimizationTrial.optimization_run_id == optimization_run.id,
                             )
                             .order_by(TagOptimizationTrial.ordinal)
                             .with_for_update()
@@ -9721,15 +9598,9 @@ class TagGovernanceService:
                         gold_inputs=[
                             {
                                 "gold_label_id": int(sample["gold_label_id"]),
-                                "input_hash": str(
-                                    cast(TagGoldLabel, sample["label"]).input_hash
-                                ),
-                                "harness_execution_id": sample.get(
-                                    "harness_execution_id"
-                                ),
-                                "baseline_reviewed": sample.get(
-                                    "baseline_reviewed"
-                                ),
+                                "input_hash": str(cast(TagGoldLabel, sample["label"]).input_hash),
+                                "harness_execution_id": sample.get("harness_execution_id"),
+                                "baseline_reviewed": sample.get("baseline_reviewed"),
                             }
                             for sample in eligible_feedback_samples
                         ],
@@ -9742,12 +9613,9 @@ class TagGovernanceService:
                 }
                 if phase_a_trials:
                     optimization_trial_ids = tuple(
-                        int(trial.id)
-                        for trial in phase_a_trials[: len(candidate_envelope)]
+                        int(trial.id) for trial in phase_a_trials[: len(candidate_envelope)]
                     )
-                    for index, (mutation, candidate_config) in enumerate(
-                        candidate_envelope
-                    ):
+                    for index, (mutation, candidate_config) in enumerate(candidate_envelope):
                         phase_a_trial = phase_a_trials[index]
                         dimension = mutation.split("=", 1)[0].split(".", 1)[0]
                         phase_a_trial.mutation = {
@@ -9859,8 +9727,7 @@ class TagGovernanceService:
                     or optimization_run.status != "running"
                     or optimization_run.phase != "search"
                     or optimization_run.gold_set_version_id != gold_set_version_id
-                    or optimization_run.baseline_tagger_version_id
-                    != production_tagger_version_id
+                    or optimization_run.baseline_tagger_version_id != production_tagger_version_id
                     or optimization_run.summary.get("search_manifest_checksum")
                     != search_manifest_checksum
                 ):
@@ -9881,8 +9748,7 @@ class TagGovernanceService:
                     optimization_job is None
                     or optimization_job.status != "running"
                     or optimization_job.job_type != "optimize"
-                    or optimization_job.scope.get("optimization_run_id")
-                    != optimization_run.id
+                    or optimization_job.scope.get("optimization_run_id") != optimization_run.id
                     or optimization_job.lease_owner != optimization_lease_owner
                     or optimization_job.lease_token != optimization_lease_token
                     or (worker_id is not None and optimization_job.lease_owner != worker_id)
@@ -10910,12 +10776,10 @@ class TagGovernanceService:
                 ).all()
 
             holdout_support = {
-                (str(row[0]), str(row[1])): int(row[2])
-                for row in holdout_support_rows
+                (str(row[0]), str(row[1])): int(row[2]) for row in holdout_support_rows
             }
             holdout_state_support = {
-                (str(row[0]), str(row[1]), str(row[2])): int(row[3])
-                for row in holdout_state_rows
+                (str(row[0]), str(row[1]), str(row[2])): int(row[3]) for row in holdout_state_rows
             }
             positive_value_support = {
                 (str(row[0]), str(row[1]), str(row[2])): int(row[3])
@@ -10968,8 +10832,7 @@ class TagGovernanceService:
                 for required_scenario in required_scenario_pairs
             )
             release_ready = release_ready and all(
-                scenario_positive_value_support.get(required_value, 0)
-                >= critical_support_floor
+                scenario_positive_value_support.get(required_value, 0) >= critical_support_floor
                 for required_value in required_scenario_critical_values
             )
             if not release_ready:
@@ -11017,12 +10880,10 @@ class TagGovernanceService:
                 )
             ).all()
             optimization_lane_counts = {
-                str(split): int(count)
-                for split, count in optimization_lane_rows
+                str(split): int(count) for split, count in optimization_lane_rows
             }
             if any(
-                optimization_lane_counts.get(split, 0) <= 0
-                for split in ("train", "validation")
+                optimization_lane_counts.get(split, 0) <= 0 for split in ("train", "validation")
             ):
                 raise GovernanceConflictError("gold_not_optimization_ready")
             feedback_coverage = await self._optimization_feedback_coverage(
@@ -11046,9 +10907,7 @@ class TagGovernanceService:
                     (mutation, config)
                     for mutation, config in _bounded_candidate_configs(
                         resolved_baseline_spec,
-                        materialized_dimensions=(
-                            self._optimization_materialized_dimensions()
-                        ),
+                        materialized_dimensions=(self._optimization_materialized_dimensions()),
                     )[:max_trials]
                 ]
                 if feedback_coverage.passed
@@ -11070,9 +10929,7 @@ class TagGovernanceService:
                 baseline_tagger_version_id=baseline_row.id,
                 gold_set_version_id=snapshot.id,
                 dataset_snapshot_hash=str(dataset_snapshot_hash),
-                sealed_release_key=(
-                    sealed_release_key if feedback_coverage.passed else None
-                ),
+                sealed_release_key=(sealed_release_key if feedback_coverage.passed else None),
                 trigger=effective_trigger,
                 status=("queued" if feedback_coverage.passed else "completed"),
                 phase=("prepare" if feedback_coverage.passed else "completed"),
@@ -13379,7 +13236,7 @@ class TagGovernanceService:
             baseline_deployment.revision += 1
             await self._audit(
                 session,
-                tenant_id=cast(str, deployment.tenant_id),
+                tenant_id=deployment.tenant_id,
                 resource_type="tag_deployment",
                 resource_id=baseline_deployment.id,
                 action="reactivate_after_rollback",
@@ -13389,7 +13246,7 @@ class TagGovernanceService:
         elif reactivate_baseline and baseline_deployment is None:
             await self._audit(
                 session,
-                tenant_id=cast(str, deployment.tenant_id),
+                tenant_id=deployment.tenant_id,
                 resource_type="tag_deployment",
                 resource_id=deployment.id,
                 action="baseline_route_fallback",
@@ -13451,7 +13308,7 @@ class TagGovernanceService:
                 child.revision += 1
                 await self._audit(
                     session,
-                    tenant_id=cast(str, deployment.tenant_id),
+                    tenant_id=deployment.tenant_id,
                     resource_type="tag_deployment",
                     resource_id=child.id,
                     action="rollback_stale_baseline",
@@ -13828,12 +13685,8 @@ class TagGovernanceService:
                     "soft_threshold": _EFFICIENCY_SOFT_REGRESSION_THRESHOLD,
                     "hard_threshold": _EFFICIENCY_HARD_REGRESSION_THRESHOLD,
                     "comparison": ">",
-                    "window_minutes": int(
-                        _EFFICIENCY_POLICY_WINDOW.total_seconds() // 60
-                    ),
-                    "required_consecutive_windows": (
-                        _EFFICIENCY_POLICY_REQUIRED_WINDOWS
-                    ),
+                    "window_minutes": int(_EFFICIENCY_POLICY_WINDOW.total_seconds() // 60),
+                    "required_consecutive_windows": (_EFFICIENCY_POLICY_REQUIRED_WINDOWS),
                     "windows": [],
                 }
                 drift_policy = {
@@ -13859,24 +13712,18 @@ class TagGovernanceService:
             budget_review_job: TagExtractionJob | None = None
             should_rollback = trusted_control and bool(hard_breaches.intersection(breach_codes))
             error_breach = trusted_control and bool(error_policy["consecutive_breach"])
-            efficiency_hard_breach = trusted_control and bool(
-                efficiency_policy["hard_breach"]
-            )
+            efficiency_hard_breach = trusted_control and bool(efficiency_policy["hard_breach"])
             efficiency_soft_breach = (
                 trusted_control
                 and bool(efficiency_policy["consecutive_breach"])
                 and not efficiency_hard_breach
             )
-            should_rollback = (
-                should_rollback or error_breach or efficiency_hard_breach
-            )
+            should_rollback = should_rollback or error_breach or efficiency_hard_breach
             drift_only = (
                 trusted_control and bool(drift_policy["consecutive_breach"]) and not should_rollback
             )
             budget_near_exhaustion = (
-                trusted_control
-                and "budget_near_exhaustion" in breach_codes
-                and not should_rollback
+                trusted_control and "budget_near_exhaustion" in breach_codes and not should_rollback
             )
             if should_rollback:
                 action = "rollback"
@@ -14040,8 +13887,7 @@ class TagGovernanceService:
                                         TagExtractionRun.origin == "serving",
                                         TagExtractionRun.deployment_id == deployment.id,
                                         TagExtractionRun.deployment_stage == observed_stage,
-                                        TagExtractionRun.deployment_revision
-                                        == observed_revision,
+                                        TagExtractionRun.deployment_revision == observed_revision,
                                         TagExtractionRun.subject_type.in_(
                                             {"dialogue_unit", "reception"}
                                         ),
@@ -14091,9 +13937,7 @@ class TagGovernanceService:
                                         "subject_id": int(run.subject_id),
                                         "tag_key": str(definition["key"]),
                                         "schema_version_id": int(schema_version_id),
-                                        "tagger_version_id": int(
-                                            deployment.tagger_version_id
-                                        ),
+                                        "tagger_version_id": int(deployment.tagger_version_id),
                                         "source_deployment_id": int(deployment.id),
                                         "source_extraction_run_id": int(run.id),
                                         "confidence": None,
@@ -14160,8 +14004,7 @@ class TagGovernanceService:
                     breach_codes.append("efficiency_regression")
                 deployment.promotion_paused = True
                 deployment.pause_reason = (
-                    "provider token/cost regression exceeded 10% in two "
-                    "complete 15-minute windows"
+                    "provider token/cost regression exceeded 10% in two complete 15-minute windows"
                 )
                 deployment.revision += 1
             elif drift_only:
@@ -14409,8 +14252,7 @@ class TagGovernanceService:
                 persisted_metrics["shadow_sampling"] = {
                     "complete": sampling_complete,
                     "observed": {
-                        metric: readiness.observed[metric]
-                        for metric in sorted(sampling_metrics)
+                        metric: readiness.observed[metric] for metric in sorted(sampling_metrics)
                     },
                     "requirements": {
                         metric: readiness.requirements[metric]

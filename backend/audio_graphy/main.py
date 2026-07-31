@@ -240,8 +240,7 @@ async def _run_reception_audio_reconciler(
                 )
             if recovered or artifacts or operation_ids:
                 logger.info(
-                    "Reception audio reconciliation: recovered=%d artifacts=%d "
-                    "dispatched=%d",
+                    "Reception audio reconciliation: recovered=%d artifacts=%d dispatched=%d",
                     recovered,
                     artifacts,
                     len(operation_ids),
@@ -457,6 +456,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             concurrency=settings.pipeline_concurrency,
             pii_scrubber=pii_scrubber,
             enable_adaptive_gleaning=settings.enable_adaptive_gleaning,
+            settings=settings,
+            audio_crypto=audio_crypto,
         )
         # Run the worker as an async background task
         worker_task = asyncio.create_task(worker.start_loop())
@@ -484,9 +485,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 session_factory,
                 reception_service,
             )
-            app.state.reception_audio_operation_service = (
-                reception_audio_operation_service
-            )
+            app.state.reception_audio_operation_service = reception_audio_operation_service
             reception_audio_reconciler_task = asyncio.create_task(
                 _run_reception_audio_reconciler(
                     reception_audio_operation_service,
@@ -761,11 +760,13 @@ def create_app() -> FastAPI:
                     run_weekly_compression_sweep,
                 )
 
-                def _gs_factory(tenant_id: str) -> Any:
-                    gs: dict[str, Any] | None = getattr(app.state, "graph_stores", None)
-                    if gs is None:
-                        return None
-                    return gs.get(tenant_id)
+                # The cold-loading factory, not a lookup in the resident cache:
+                # a tenant whose graph has not been touched since start-up is
+                # exactly the one most likely to need compressing.
+                gs_factory = getattr(app.state, "graph_store_factory", None)
+                if gs_factory is None:
+                    logger.error("Compression cron: no graph store factory on app.state")
+                    return
 
                 try:
                     loop = _asyncio.new_event_loop()
@@ -773,7 +774,7 @@ def create_app() -> FastAPI:
                         loop.run_until_complete(
                             run_weekly_compression_sweep(
                                 session_factory=app.state.session_factory,
-                                graph_store_factory=_gs_factory,
+                                graph_store_factory=gs_factory,
                                 settings=settings,
                             )
                         )

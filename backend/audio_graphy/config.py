@@ -80,12 +80,8 @@ class Settings(BaseSettings):
     llm_weak_model_epoch: str = ""
     # Declared independently because strong/weak endpoints may run different
     # engines or versions. Unknown values fail Settings validation at startup.
-    llm_strong_structured_output_capability: StructuredOutputCapability = (
-        "strict_json_schema"
-    )
-    llm_weak_structured_output_capability: StructuredOutputCapability = (
-        "strict_json_schema"
-    )
+    llm_strong_structured_output_capability: StructuredOutputCapability = "strict_json_schema"
+    llm_weak_structured_output_capability: StructuredOutputCapability = "strict_json_schema"
     # Immutable provider price-card version and per-tier rates. Rates use
     # micro-currency-units per one million tokens. The snapshot is either
     # completely absent (all defaults) or complete; partial pricing is rejected.
@@ -233,6 +229,29 @@ class Settings(BaseSettings):
     # merge with ambiguity_tag="AMBIGUOUS". Range [0.0, 1.0].
     voiceprint_ambiguous_threshold: float = 0.7
 
+    # --- Voiceprint sampling (ADR-0001) ---
+    # How a per-recording candidate voiceprint is built from the diarization
+    # timeline. "weighted_mean" (default) extracts one embedding per qualifying
+    # segment and averages them by duration; "longest_segment" extracts a
+    # single embedding from the speaker's longest segment (cheaper, but one
+    # mis-attributed segment corrupts the whole candidate).
+    # Merged reception audio is never a valid input — see ADR-0001.
+    voiceprint_sampling_strategy: Literal["weighted_mean", "longest_segment"] = "weighted_mean"
+    # Segments shorter than this never contribute to a candidate: sub-second
+    # embeddings are dominated by noise and drag same-speaker cosine below
+    # voiceprint_cosine_threshold.
+    voiceprint_sample_min_segment_sec: float = 1.0
+    # A speaker whose qualifying speech totals less than this gets no
+    # cross-recording voiceprint at all (too unreliable to merge on).
+    voiceprint_sample_min_total_sec: float = 3.0
+    # Cost cap: at most this many extract calls per speaker per recording,
+    # longest segments first.
+    voiceprint_sample_max_segments: int = 8
+    # weighted_mean only — segments whose cosine against the first-pass
+    # centroid falls below this are dropped as mis-attributed and the
+    # centroid is recomputed. 0.0 disables outlier rejection.
+    voiceprint_sample_outlier_cosine: float = 0.5
+
     # --- M7 Phase 2 — GPU strategy flags ---
     clap_force_gpu: bool = True  # L8 enforced at clap-service startup
     campplus_prefer_gpu: bool = False
@@ -336,6 +355,11 @@ class Settings(BaseSettings):
     compression_stale_days: int = 180
     # Per-run cap on candidates (prevents runaway compression batches).
     compression_max_candidates_per_run: int = 100
+    # Report what the weekly sweep would change without writing. Useful for the
+    # first run against tenants it never reached before: the sweep resolved its
+    # tenant list from an attribute Settings never defined, so until that was
+    # fixed it only ever swept "default".
+    compression_dry_run: bool = False
     # L6 locked — low-degree node merge: nodes with degree ≤ this AND
     # rapidfuzz token_ratio ≥ compression_fuzzy_token_ratio (same community)
     # become merge candidates. Default 1 (architecture §9.2 / §9.3).
@@ -508,17 +532,13 @@ class Settings(BaseSettings):
             )
         if configured_price_rates:
             strong_input = self.llm_strong_input_microunits_per_million_tokens
-            strong_cached = (
-                self.llm_strong_cached_prefill_microunits_per_million_tokens
-            )
+            strong_cached = self.llm_strong_cached_prefill_microunits_per_million_tokens
             weak_input = self.llm_weak_input_microunits_per_million_tokens
             weak_cached = self.llm_weak_cached_prefill_microunits_per_million_tokens
             assert strong_input is not None and strong_cached is not None
             assert weak_input is not None and weak_cached is not None
             if strong_cached > strong_input or weak_cached > weak_input:
-                raise ValueError(
-                    "LLM cached-prefill rate cannot exceed the regular input rate"
-                )
+                raise ValueError("LLM cached-prefill rate cannot exceed the regular input rate")
             self.llm_price_version = price_version
 
         if self.redis_url is not None:
@@ -554,6 +574,16 @@ class Settings(BaseSettings):
                 "VOICEPRINT_COSINE_THRESHOLD must be ≤ "
                 f"VOICEPRINT_AMBIGUOUS_THRESHOLD (got {self.voiceprint_cosine_threshold} "
                 f"> {self.voiceprint_ambiguous_threshold})"
+            )
+
+        # ADR-0001 — voiceprint sampling gates must be internally consistent.
+        if self.voiceprint_sample_min_segment_sec > self.voiceprint_sample_min_total_sec:
+            raise ValueError(
+                "VOICEPRINT_SAMPLE_MIN_SEGMENT_SEC must be ≤ "
+                f"VOICEPRINT_SAMPLE_MIN_TOTAL_SEC (got "
+                f"{self.voiceprint_sample_min_segment_sec} > "
+                f"{self.voiceprint_sample_min_total_sec}) — otherwise no speaker "
+                "can ever reach the total-speech gate"
             )
 
         # M9 R1 T15 — advanced-graph sanity checks.
@@ -595,6 +625,30 @@ class Settings(BaseSettings):
     def _validate_vp_cosine_threshold(cls, v: float) -> float:
         if not 0.0 <= v <= 1.0:
             raise ValueError(f"VOICEPRINT_COSINE_THRESHOLD must be in [0, 1], got {v}")
+        return v
+
+    @field_validator(
+        "voiceprint_sample_min_segment_sec",
+        "voiceprint_sample_min_total_sec",
+    )
+    @classmethod
+    def _validate_vp_sample_durations(cls, v: float) -> float:
+        if not math.isfinite(v) or v <= 0.0:
+            raise ValueError(f"voiceprint sampling duration must be > 0, got {v}")
+        return v
+
+    @field_validator("voiceprint_sample_max_segments")
+    @classmethod
+    def _validate_vp_sample_max_segments(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError(f"VOICEPRINT_SAMPLE_MAX_SEGMENTS must be ≥ 1, got {v}")
+        return v
+
+    @field_validator("voiceprint_sample_outlier_cosine")
+    @classmethod
+    def _validate_vp_sample_outlier_cosine(cls, v: float) -> float:
+        if not 0.0 <= v <= 1.0:
+            raise ValueError(f"VOICEPRINT_SAMPLE_OUTLIER_COSINE must be in [0, 1], got {v}")
         return v
 
     @field_validator(

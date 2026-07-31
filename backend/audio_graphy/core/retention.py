@@ -545,10 +545,53 @@ class RetentionEnforcer:
 # ============================================================
 
 
+class _DryRunSink:
+    """Read-through sink that discards writes.
+
+    The sweep had never run for any tenant but "default", so the first real run
+    across a populated database is also the first time compression touches
+    those graphs. This lets an operator see the candidate counts first.
+    """
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+
+    def fetch_node(self, entity_id: str) -> Any:
+        return self._inner.fetch_node(entity_id)
+
+    def fetch_edges_on_node(self, entity_id: str) -> Any:
+        return self._inner.fetch_edges_on_node(entity_id)
+
+    def write_node(self, node: Any) -> None:
+        return None
+
+    def write_edge(self, edge: Any) -> None:
+        return None
+
+    def commit(self) -> None:
+        # Nothing was written, but rolling the inner sink back keeps any state
+        # it accumulated from leaking into the next tenant.
+        self._inner.rollback()
+
+    def rollback(self) -> None:
+        self._inner.rollback()
+
+
+async def _registered_tenant_codes(session_factory: Any) -> list[str]:
+    """Every tenant code in the database, ordered for a reproducible sweep."""
+    from sqlalchemy import select
+
+    from audio_graphy.models.tenant import Tenant
+
+    async with session_factory() as session:
+        result = await session.execute(select(Tenant.code).order_by(Tenant.code))
+        return [str(code) for code in result.scalars().all()]
+
+
 async def run_weekly_compression_sweep(
     *,
     session_factory: Any,
-    graph_store_factory: Callable[[str], NetworkXGraphStore | None],
+    graph_store_factory: Callable[[str], Awaitable[NetworkXGraphStore | None]],
     settings: Any,
 ) -> dict[str, Any]:
     """Invoke ``CompressionService.run`` for every tenant that has a graph.
@@ -561,30 +604,46 @@ async def run_weekly_compression_sweep(
     surfaced in the per-tenant report (best-effort — the sweep does not
     abort on the first tenant error).
 
+    Tenants come from the database. This used to read
+    ``settings._compression_tenant_index``, an attribute Settings has never
+    defined, so the list was always empty and the sweep silently degraded to
+    the single hardcoded "default" tenant — every other tenant's graph went
+    uncompressed indefinitely, with nothing logged to say so.
+
     Args:
-        session_factory: async_sessionmaker (unused for NetworkX sink,
-            reserved for the future transactional MySQL sink).
-        graph_store_factory: callable returning the per-tenant graph
-            store or None.
+        session_factory: async_sessionmaker, used to enumerate tenants.
+        graph_store_factory: awaitable returning the per-tenant graph store or
+            None. Must be able to cold-load: a tenant whose graph is not
+            already resident in the process cache still needs sweeping.
         settings: app settings (god_node_degree_threshold + stale_days
-            come from here).
+            come from here). ``compression_dry_run`` reports what would change
+            without writing.
     """
     from audio_graphy.core.bi_temporal import BiTemporalEdgeService
     from audio_graphy.core.compression import CompressionService
 
-    # Snapshot the keys so a concurrent store mutation doesn't break us.
-    tenants = list(getattr(settings, "_compression_tenant_index", []) or [])
+    try:
+        tenants = await _registered_tenant_codes(session_factory)
+    except Exception as exc:
+        logger.error("Compression sweep could not enumerate tenants: %s", exc)
+        return {}
+
     if not tenants:
-        # Fall back to a single default tenant if no explicit index exists.
-        tenants = ["default"]
+        logger.info("Compression sweep found no tenants; nothing to do.")
+        return {}
+
+    dry_run = bool(getattr(settings, "compression_dry_run", False))
+    if dry_run:
+        logger.info("Compression sweep running in dry-run mode over %d tenants", len(tenants))
 
     summary: dict[str, Any] = {}
     for tenant_id in tenants:
-        store = graph_store_factory(tenant_id)
+        store = await graph_store_factory(tenant_id)
         if store is None:
             continue
         try:
-            sink = GraphCompressionSink(store, tenant_id)
+            graph_sink = GraphCompressionSink(store, tenant_id)
+            sink: Any = _DryRunSink(graph_sink) if dry_run else graph_sink
             bt = BiTemporalEdgeService(tenant_id=tenant_id)
             service = CompressionService(
                 sink=sink,
