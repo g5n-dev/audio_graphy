@@ -54,6 +54,7 @@ frontend/.vite/
 frontend/.wrangler/
 frontend/playwright-report/
 frontend/test-results/
+frontend/coverage/
 *.tsbuildinfo
 *.log
 npm-debug.log*
