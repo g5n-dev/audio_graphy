@@ -91,8 +91,11 @@ class FunASRAdapter:
     ) -> ASRResult:
         """POST audio to funASR /v1/audio/transcriptions, return ASRResult.
 
-        ``segments`` is ignored — funASR runs its own VAD internally.
-        Protocol keeps the param for signature parity with ASRAdapter.
+        ``segments`` is ignored — funASR runs its own VAD internally and
+        returns its own sentence boundaries, which are better than ours. It is
+        a hint, not a contract: Chunker passes the full VAD list and splits the
+        returned timestamps across it, so ignoring it costs nothing. Cropping
+        per segment here would be N uploads for the same audio.
 
         Raises:
             ASRRequestError: file missing / HTTP 400 / 422.

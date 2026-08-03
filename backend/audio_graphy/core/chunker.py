@@ -29,7 +29,7 @@ from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from audio_graphy.adapters.bundle import AdapterBundle
-from audio_graphy.adapters.protocols import DiarizationSegment, VADSegment
+from audio_graphy.adapters.protocols import ASRResult, DiarizationSegment, VADSegment
 from audio_graphy.models.chunk import Chunk, ChunkSegment
 from audio_graphy.models.segment import Segment
 
@@ -248,7 +248,7 @@ class Chunker:
         vad_segments: Sequence[VADSegment],
         audio_path: str,
     ) -> tuple[list[SegmentRecord], list[DiarizationSegment]]:
-        """Transcribe each VAD segment via ASR, optionally tag speaker via diarization.
+        """Transcribe the file once, split it across the VAD segments, tag speakers.
 
         M7: When ``enable_voiceprint=True`` and ``bundle.voiceprint`` is set,
         Chunker calls CAM++ ``diarize`` once on the full audio, then matches
@@ -256,9 +256,12 @@ class Chunker:
         (default), ``speaker`` is ``None`` for every segment — exactly the
         M3-M6 behaviour.
 
-        ASR failures on a single segment set transcript="" but don't block
-        the rest (PRD §4.1 error handling). Diarization failures fall back
-        to ``speaker=None`` for the whole file (warning logged).
+        ASR runs once for the whole file and its timestamps decide which segment
+        each piece of text belongs to (see ``_assign_transcripts``). A failed ASR
+        call leaves every transcript empty rather than raising (PRD §4.1 error
+        handling); it is one call, so there is no partial outcome to preserve.
+        Diarization failures fall back to ``speaker=None`` for the whole file
+        (warning logged).
 
         Args:
             vad_segments: VAD output segments.
@@ -284,23 +287,31 @@ class Chunker:
                 )
                 diar_timeline = []
 
+        # One pass over the whole file, then split by the timestamps it returns.
+        # This used to call transcribe() once per VAD segment, but no adapter
+        # honours the ``segments`` argument — funASR runs its own VAD and the
+        # mock keys off the file — so every segment was handed the identical
+        # whole-file transcript, and a 20-segment recording ran 20 whole-file
+        # inferences to produce it. Splitting one result by time is both correct
+        # and one inference.
+        transcripts = ["" for _ in vad_segments]
+        try:
+            asr_result = await self._bundle.asr.transcribe(
+                audio_path,
+                segments=list(vad_segments),
+            )
+        except Exception as exc:
+            logger.warning(
+                "ASR failed for %s: %s — all segments get an empty transcript",
+                audio_path,
+                exc,
+            )
+        else:
+            transcripts = self._assign_transcripts(vad_segments, asr_result)
+
         records: list[SegmentRecord] = []
         for idx, seg in enumerate(vad_segments):
-            transcript = ""
-            try:
-                # Pass the single VAD segment to ASR (W12: segment-level transcription)
-                single_segment = [seg] if seg else None
-                asr_result = await self._bundle.asr.transcribe(
-                    audio_path,
-                    segments=single_segment,
-                )
-                transcript = asr_result.text
-            except Exception as exc:
-                logger.warning(
-                    "ASR failed for segment %d (recording): %s — setting empty transcript",
-                    idx,
-                    exc,
-                )
+            transcript = transcripts[idx]
 
             # M7: speaker assignment via diarization timeline overlap.
             # When diarization is disabled or empty, speaker remains None
@@ -319,6 +330,75 @@ class Chunker:
                 )
             )
         return records, diar_timeline
+
+    @staticmethod
+    def _assign_transcripts(
+        vad_segments: Sequence[VADSegment],
+        asr_result: ASRResult,
+    ) -> list[str]:
+        """Split one whole-file transcription across the VAD segments.
+
+        ``ASRResult.words`` is named for words but carries whatever granularity
+        the adapter produced — sentences from funASR, characters from the mock —
+        each as ``(text, start_sec, end_sec)``. Either works here.
+
+        Every entry is *assigned* to exactly one segment rather than each segment
+        filtering the entries it overlaps. That is what keeps a sentence
+        straddling a VAD boundary from being counted in both, so concatenating
+        the segments reproduces the transcript rather than inflating it.
+
+        Strategy per entry, mirroring ``_match_speaker``:
+            1. The segment containing the entry's midpoint.
+            2. Otherwise the segment it overlaps most.
+            3. Otherwise the nearest segment — an entry landing in a VAD gap is
+               real speech our VAD missed, so it is placed, not dropped.
+        """
+        if not vad_segments:
+            return []
+        buckets: list[list[str]] = [[] for _ in vad_segments]
+
+        if not asr_result.words:
+            # No timings, so nothing can be attributed. Empty text is the normal
+            # silent-recording case; text without timings means the service
+            # returned a transcript with no segments, which is worth a warning
+            # because the split below is the only thing keeping speaker
+            # attribution honest.
+            if asr_result.text:
+                logger.warning(
+                    "ASR returned %d chars with no timings; attributing all of it "
+                    "to the first segment",
+                    len(asr_result.text),
+                )
+                buckets[0].append(asr_result.text)
+            return ["".join(b) for b in buckets]
+
+        for text, start, end in asr_result.words:
+            if not text:
+                continue
+            midpoint = (start + end) / 2.0
+            target: int | None = None
+            for i, seg in enumerate(vad_segments):
+                if seg.start_sec <= midpoint <= seg.end_sec:
+                    target = i
+                    break
+            if target is None:
+                best_overlap = 0.0
+                for i, seg in enumerate(vad_segments):
+                    overlap = min(end, seg.end_sec) - max(start, seg.start_sec)
+                    if overlap > best_overlap:
+                        best_overlap = overlap
+                        target = i
+            if target is None:
+                target = min(
+                    range(len(vad_segments)),
+                    key=lambda i: min(
+                        abs(midpoint - vad_segments[i].start_sec),
+                        abs(midpoint - vad_segments[i].end_sec),
+                    ),
+                )
+            buckets[target].append(text)
+
+        return ["".join(b) for b in buckets]
 
     @staticmethod
     def _match_speaker(

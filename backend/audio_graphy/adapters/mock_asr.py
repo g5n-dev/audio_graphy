@@ -47,6 +47,56 @@ class MockASRAdapter:
         """Number of transcribe calls made — useful for test assertions."""
         return self._call_count
 
+    @staticmethod
+    def _lay_out_chars(
+        text: str,
+        segments: list[VADSegment] | None,
+    ) -> list[tuple[str, float, float]]:
+        """Place each character on the timeline at roughly 0.25 s apiece.
+
+        Without segments they start at t=0, which is all a caller that only
+        reads ``text`` ever needed. With segments they are spread across the
+        speech regions in proportion to each one's duration, because Chunker
+        splits a single transcription across the VAD segments by timestamp:
+        characters anchored at zero would pile the whole script into whichever
+        segments happen to sit near the start of the file and leave the rest
+        blank. The last segment absorbs the remainder so no character is lost.
+        """
+        if not text:
+            return []
+
+        def _from_zero() -> list[tuple[str, float, float]]:
+            out: list[tuple[str, float, float]] = []
+            t = 0.0
+            for ch in text:
+                dur = 0.25 if ch not in "，。？！、" else 0.15
+                out.append((ch, t, t + dur))
+                t += dur
+            return out
+
+        if not segments:
+            return _from_zero()
+        total = sum(max(s.end_sec - s.start_sec, 0.0) for s in segments)
+        if total <= 0.0:
+            return _from_zero()
+
+        words: list[tuple[str, float, float]] = []
+        cursor = 0
+        last = len(segments) - 1
+        for i, seg in enumerate(segments):
+            span = max(seg.end_sec - seg.start_sec, 0.0)
+            take = len(text) - cursor if i == last else round(len(text) * span / total)
+            take = max(0, min(take, len(text) - cursor))
+            piece = text[cursor : cursor + take]
+            cursor += take
+            if not piece:
+                continue
+            step = span / len(piece)
+            for j, ch in enumerate(piece):
+                start = seg.start_sec + j * step
+                words.append((ch, start, start + step))
+        return words
+
     async def transcribe(
         self,
         audio_path: str,
@@ -71,14 +121,8 @@ class MockASRAdapter:
         rng = random.Random(seed)
         text = rng.choice(_STORE_SCRIPTS)
 
-        # Approximate word-level timestamps (1 char per ~0.25s)
         char_count = len(text)
-        words: list[tuple[str, float, float]] = []
-        t = 0.0
-        for ch in text:
-            dur = 0.25 if ch not in "，。？！、" else 0.15
-            words.append((ch, t, t + dur))
-            t += dur
+        words = self._lay_out_chars(text, segments)
 
         logger.debug(
             "Mock ASR transcribed %s → %d chars (call #%d)",
