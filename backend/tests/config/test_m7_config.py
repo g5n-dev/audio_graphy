@@ -26,11 +26,47 @@ def _base_kwargs() -> dict:
 
 
 class TestDefaults:
-    def test_voiceprint_default_on_clap_off(self, tmp_path) -> None:
-        """Speaker linking ships enabled; CLAP still requires a GPU opt-in."""
+    def test_voiceprint_and_clap_both_default_off(self, tmp_path) -> None:
+        """Neither identity feature ships enabled.
+
+        Speaker linking briefly defaulted on while ADAPTER_VOICEPRINT_MODE still
+        defaulted to mock. The mock adapter derives vectors from the diarization
+        label, so the same label in unrelated recordings matches above the
+        unambiguous-merge threshold: the shipped default silently merged
+        distinct speakers into one identity and stored it as encrypted biometric
+        data. Turning it on is now an explicit choice made alongside a real
+        adapter.
+        """
         s = Settings(working_dir=str(tmp_path), master_key_path=str(tmp_path / "k"))
-        assert s.enable_voiceprint is True
+        assert s.enable_voiceprint is False
         assert s.enable_clap is False
+
+    def test_voiceprint_on_mock_adapter_warns(self, tmp_path, caplog) -> None:
+        """The dangerous combination is allowed but never silent.
+
+        Mock-chain tests rely on it, so it cannot be an error — but a deployment
+        that lands here is producing confident nonsense rather than degraded
+        output, and must be told so.
+        """
+        with caplog.at_level("WARNING", logger="audio_graphy.config"):
+            Settings(
+                working_dir=str(tmp_path),
+                master_key_path=str(tmp_path / "k"),
+                enable_voiceprint=True,
+                adapter_voiceprint_mode="mock",
+            )
+        assert any("mock voiceprints" in r.message for r in caplog.records)
+
+    def test_voiceprint_on_real_adapter_is_quiet(self, tmp_path, caplog) -> None:
+        """The supported combination must not train operators to ignore the warning."""
+        with caplog.at_level("WARNING", logger="audio_graphy.config"):
+            Settings(
+                working_dir=str(tmp_path),
+                master_key_path=str(tmp_path / "k"),
+                enable_voiceprint=True,
+                adapter_voiceprint_mode="real",
+            )
+        assert not any("mock voiceprints" in r.message for r in caplog.records)
 
     def test_voiceprint_can_be_turned_off(self, tmp_path) -> None:
         """The M3-M6 escape hatch must still work."""

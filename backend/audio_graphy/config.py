@@ -273,12 +273,16 @@ class Settings(BaseSettings):
 
     # --- Feature flags ---
     enable_clap: bool = False
-    # Speaker linking is on by default now that the chain is wired end to end
-    # (ADR-0001). It still requires a voiceprint adapter and the at-rest key,
-    # so a deployment missing either stays off rather than writing
-    # unencrypted or unlinkable voiceprints. Set False to restore M3-M6
-    # behaviour exactly: no diarization, Segment.speaker stays None.
-    enable_voiceprint: bool = True
+    # Off by default, and it must stay that way while the adapter mode defaults
+    # to mock. Enabling this only checks that *a* voiceprint adapter exists, and
+    # MockVoiceprintAdapter satisfies that check — it derives vectors from
+    # sha512(speaker_id), so the same diarization label in two unrelated
+    # recordings lands at cosine ~0.83, above voiceprint_ambiguous_threshold.
+    # Speaker linking then merges strangers into one identity without raising
+    # AMBIGUOUS or queueing a review, and persists the result as encrypted
+    # biometric data. Turn this on together with ADAPTER_VOICEPRINT_MODE=real;
+    # the validator below warns about the other combination.
+    enable_voiceprint: bool = False
 
     # --- Startup strictness ---
     # Serve even when the database engine could not be created. Off by default:
@@ -630,6 +634,22 @@ class Settings(BaseSettings):
                     "(L9 zero-regression).",
                     ", ".join(sub_flags_on),
                 )
+
+        # Speaker linking on top of fabricated voiceprints. Not an error: the
+        # combination is what the mock-chain tests exercise deliberately. But it
+        # produces confident nonsense rather than degraded output — mock vectors
+        # are derived from the diarization label, so the same label in unrelated
+        # recordings matches above the unambiguous-merge threshold and strangers
+        # are silently linked into one speaker identity.
+        if self.enable_voiceprint and self.adapter_voiceprint_mode != "real":
+            logger.warning(
+                "ENABLE_VOICEPRINT=true with ADAPTER_VOICEPRINT_MODE=%s: speaker "
+                "linking will run on mock voiceprints, which match across "
+                "unrelated recordings and merge distinct speakers without review. "
+                "Set ADAPTER_VOICEPRINT_MODE=real before trusting any speaker "
+                "identity this produces.",
+                self.adapter_voiceprint_mode,
+            )
 
         return self
 
