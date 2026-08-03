@@ -298,8 +298,7 @@ class TestManualConstraints:
         )
 
         assert not any(
-            {"a", "c"} <= set(proposal.recording_ids)
-            and proposal.decision == "merge"
+            {"a", "c"} <= set(proposal.recording_ids) and proposal.decision == "merge"
             for proposal in proposals
         )
 

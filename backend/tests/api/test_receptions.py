@@ -603,9 +603,7 @@ async def _seed_recording_duration(
                 idx=0,
                 start_sec=0.0,
                 end_sec=(
-                    segment_duration_sec
-                    if segment_duration_sec is not None
-                    else duration_sec
+                    segment_duration_sec if segment_duration_sec is not None else duration_sec
                 ),
                 transcript="测试录音",
                 speaker="agent_ca",
@@ -717,9 +715,7 @@ async def _set_recording_source_facts(
     from audio_graphy.models import Recording
 
     async with factory() as session:
-        result = await session.execute(
-            select(Recording).where(Recording.id.in_(recording_ids))
-        )
+        result = await session.execute(select(Recording).where(Recording.id.in_(recording_ids)))
         for index, recording in enumerate(result.scalars()):
             recording.audio_duration_ms = duration_ms
             recording.audio_sha256 = f"{index + 1:064x}"
@@ -822,9 +818,9 @@ class TestReceptionCreateAndRead:
         assert "merged_audio_path" not in created
         assert "source_path" not in created["recordings"][0]
         assert created["recordings"][0]["playback_expires_at"] is not None
-        assert {
-            item["playback_expires_at"] for item in created["recordings"]
-        } == {created["recordings"][0]["playback_expires_at"]}
+        assert {item["playback_expires_at"] for item in created["recordings"]} == {
+            created["recordings"][0]["playback_expires_at"]
+        }
         assert (
             created["recordings"][0]["audio_url"]
             .split("?", 1)[0]
@@ -1086,10 +1082,7 @@ class TestReceptionCreateAndRead:
         )
         assert audio.status_code == 200
         assert audio.content == b"RIFF-test-wave"
-        assert (
-            audio.headers["x-audio-grant-expires-at"]
-            == response.json()["playback_expires_at"]
-        )
+        assert audio.headers["x-audio-grant-expires-at"] == response.json()["playback_expires_at"]
         assert audio.headers["x-time-origin-ms"] == "0"
         assert audio.headers["x-legal-source-start-ms"] == "0"
         assert audio.headers["x-legal-source-end-ms"] == "10000"
@@ -1290,11 +1283,7 @@ class TestReceptionCreateAndRead:
         assert workspace["reception"]["version"] == 1
         assert workspace["recordings"][0]["source_start_sec"] == 0.0
         generation_dir = (
-            root
-            / "assembled_audio"
-            / "chang_an"
-            / "receptions"
-            / f"reception-{reception_id}"
+            root / "assembled_audio" / "chang_an" / "receptions" / f"reception-{reception_id}"
         )
         assert not generation_dir.exists() or not any(generation_dir.glob("v2-*.wav*"))
 
@@ -1449,9 +1438,7 @@ class TestReceptionCreateAndRead:
             json=body,
             headers=auth_headers["admin_t1"],
         ).json()
-        assembler = _WritingAudioAssembler(
-            Path(test_client.app.state.settings.working_dir)
-        )
+        assembler = _WritingAudioAssembler(Path(test_client.app.state.settings.working_dir))
         test_client.app.state.audio_assembler = assembler
 
         response = test_client.post(
@@ -1699,9 +1686,7 @@ class TestDialogueUnitManualEdits:
         assert {
             transition["dialogue_unit_id"] for transition in workspace["state_transitions"]
         } == {unit["id"] for unit in edited["dialogue_units"]}
-        assert {
-            transition["confidence"] for transition in workspace["state_transitions"]
-        } == {1.0}
+        assert {transition["confidence"] for transition in workspace["state_transitions"]} == {1.0}
 
         stale = test_client.post(
             f"/api/v1/receptions/{reception_id}/dialogue-units/{unit_id}/split",
@@ -2868,10 +2853,7 @@ class TestReceptionAudioStreaming:
         assert full.headers["accept-ranges"] == "bytes"
         assert full.headers["content-type"].startswith("audio/wav")
         assert full.headers["content-length"] == "10"
-        assert (
-            full.headers["x-audio-grant-expires-at"]
-            == source_contract["playback_expires_at"]
-        )
+        assert full.headers["x-audio-grant-expires-at"] == source_contract["playback_expires_at"]
         assert full.headers["x-time-origin-ms"] == "0"
         assert full.headers["x-legal-source-start-ms"] == "0"
         assert full.headers["x-legal-source-end-ms"] == "10000"
@@ -2884,10 +2866,7 @@ class TestReceptionAudioStreaming:
         assert partial.content == b"2345"
         assert partial.headers["content-range"] == "bytes 2-5/10"
         assert partial.headers["content-length"] == "4"
-        assert (
-            partial.headers["x-audio-grant-expires-at"]
-            == source_contract["playback_expires_at"]
-        )
+        assert partial.headers["x-audio-grant-expires-at"] == source_contract["playback_expires_at"]
 
         suffix = test_client.get(
             audio_url,
@@ -3052,9 +3031,7 @@ class TestReceptionAudioPlanOperations:
         auth_headers: dict[str, dict[str, str]],
         db_session_factory: Any,
     ) -> None:
-        recording_id = _run_async(
-            seed_recording(db_session_factory, recording_id=200)
-        )
+        recording_id = _run_async(seed_recording(db_session_factory, recording_id=200))
         body = _create_body([recording_id])
         body["merge_mode"] = "logical"
         created_response = test_client.post(
@@ -3090,12 +3067,8 @@ class TestReceptionAudioPlanOperations:
     ) -> None:
         import time
 
-        first_id = _run_async(
-            seed_recording(db_session_factory, recording_id=201)
-        )
-        second_id = _run_async(
-            seed_recording(db_session_factory, recording_id=202)
-        )
+        first_id = _run_async(seed_recording(db_session_factory, recording_id=201))
+        second_id = _run_async(seed_recording(db_session_factory, recording_id=202))
         _run_async(
             _set_recording_source_facts(
                 db_session_factory,
@@ -3113,8 +3086,7 @@ class TestReceptionAudioPlanOperations:
         created = created_response.json()
         reception_id = created["id"]
         mapping_by_recording = {
-            int(item["recording_id"]): int(item["mapping_id"])
-            for item in created["recordings"]
+            int(item["recording_id"]): int(item["mapping_id"]) for item in created["recordings"]
         }
 
         plan_response = test_client.post(
@@ -3202,10 +3174,7 @@ class TestReceptionAudioPlanOperations:
             headers=operation_headers,
         )
         assert mismatched_replay.status_code == 409
-        assert (
-            mismatched_replay.json()["error"]["code"]
-            == "IDEMPOTENCY_KEY_REUSED"
-        )
+        assert mismatched_replay.json()["error"]["code"] == "IDEMPOTENCY_KEY_REUSED"
 
         workspace_response = test_client.get(
             f"/api/v1/receptions/{reception_id}/workspace",
@@ -3233,9 +3202,7 @@ class TestReceptionAudioPlanOperations:
         auth_headers: dict[str, dict[str, str]],
         db_session_factory: Any,
     ) -> None:
-        recording_id = _run_async(
-            seed_recording(db_session_factory, recording_id=203)
-        )
+        recording_id = _run_async(seed_recording(db_session_factory, recording_id=203))
         _run_async(
             _set_recording_source_facts(
                 db_session_factory,

@@ -144,9 +144,7 @@ async def test_erasure_outbox_reconciler_runs_periodically_and_is_cancellable() 
             called.set()
             return {"selected": 0, "succeeded": 0, "failed": 0, "skipped": 0}
 
-    task = asyncio.create_task(
-        _run_erasure_outbox_reconciler(_Processor(), interval_seconds=3600)
-    )
+    task = asyncio.create_task(_run_erasure_outbox_reconciler(_Processor(), interval_seconds=3600))
     await asyncio.wait_for(called.wait(), timeout=1)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):

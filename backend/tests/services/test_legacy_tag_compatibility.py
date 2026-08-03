@@ -291,9 +291,7 @@ async def test_legacy_recording_mapping_refuses_multi_unit_copy_and_unmapped_pat
 async def test_prompt_scope_is_stratifiable_and_activation_binds_matching_production_candidate(
     compatibility_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    _recording_id, reception_id, first_unit_id = await _seed_compatibility(
-        compatibility_factory
-    )
+    _recording_id, reception_id, first_unit_id = await _seed_compatibility(compatibility_factory)
     now = datetime.now(UTC)
     async with compatibility_factory() as session, session.begin():
         first_unit = await session.get(DialogueUnit, first_unit_id)

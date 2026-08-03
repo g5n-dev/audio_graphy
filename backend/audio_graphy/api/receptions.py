@@ -144,11 +144,7 @@ def _audio_operation_service(request: Request) -> ReceptionAudioOperationService
 def _audio_operation_response(operation: Any) -> ReceptionAudioOperationResponse:
     error = operation.error_message
     if operation.error_code:
-        error = (
-            f"{operation.error_code}: {error}"
-            if error
-            else str(operation.error_code)
-        )
+        error = f"{operation.error_code}: {error}" if error else str(operation.error_code)
     return ReceptionAudioOperationResponse(
         id=operation.id,
         reception_id=operation.reception_id,
@@ -225,11 +221,7 @@ def _playback_url(
     *,
     issued_at: int | None = None,
 ) -> _PlaybackLocation:
-    issued_at = (
-        int(datetime.now(UTC).timestamp())
-        if issued_at is None
-        else issued_at
-    )
+    issued_at = int(datetime.now(UTC).timestamp()) if issued_at is None else issued_at
     grant = create_playback_grant(
         secret=str(request.app.state.settings.jwt_secret),
         subject_id=user.id,
@@ -283,9 +275,7 @@ def _reception_response(
         started_at=reception.started_at,
         ended_at=reception.ended_at,
         audio_url=playback.url if playback is not None else None,
-        playback_expires_at=(
-            playback.expires_at if playback is not None else None
-        ),
+        playback_expires_at=(playback.expires_at if playback is not None else None),
         version=reception.version,
         created_at=reception.created_at,
         updated_at=reception.updated_at,
@@ -455,9 +445,7 @@ def _workspace_response(
         raise RuntimeError("public workspace responses require a bounded time window")
     window = workspace.window
     can_write = user.role in {"admin", "inspector"}
-    streaming_enabled = bool(
-        getattr(request.app.state.settings, "enable_streaming", False)
-    )
+    streaming_enabled = bool(getattr(request.app.state.settings, "enable_streaming", False))
     playback_issued_at = int(datetime.now(UTC).timestamp())
 
     def collection_window(
@@ -567,8 +555,7 @@ def _workspace_response(
             supports_audio_plans=can_write,
             supports_audio_operations=can_write,
             can_cancel_audio_operation=can_write,
-            can_stream_audio=streaming_enabled
-            and user.role in {"admin", "inspector", "agent"},
+            can_stream_audio=streaming_enabled and user.role in {"admin", "inspector", "agent"},
         ),
         neighbors=ReceptionWorkspaceNeighbors(
             previous_dialogue_unit=(
@@ -583,8 +570,7 @@ def _workspace_response(
             ),
         )
         if (
-            workspace.previous_dialogue_unit is not None
-            or workspace.next_dialogue_unit is not None
+            workspace.previous_dialogue_unit is not None or workspace.next_dialogue_unit is not None
         )
         else None,
         active_audio_operation=(
@@ -749,10 +735,14 @@ def _audio_contract_headers(
         )
     claims = _request_playback_grant_claims(request)
     if claims is not None:
-        headers["X-Audio-Grant-Expires-At"] = datetime.fromtimestamp(
-            claims.expires_at,
-            UTC,
-        ).isoformat().replace("+00:00", "Z")
+        headers["X-Audio-Grant-Expires-At"] = (
+            datetime.fromtimestamp(
+                claims.expires_at,
+                UTC,
+            )
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
     return headers
 
 

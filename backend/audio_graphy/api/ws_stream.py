@@ -274,10 +274,7 @@ async def ws_stream(
         await ws.close(code=WS_CLOSE_CONSENT_MISSING, reason="consent_token required")
         return
     consent_hash = hash_consent_token(consent_token)
-    if (
-        ticket_binding is not None
-        and consent_hash != ticket_binding.consent_token_hash
-    ):
+    if ticket_binding is not None and consent_hash != ticket_binding.consent_token_hash:
         await ws.close(code=WS_AUTH_FAILED_CODE, reason="ticket consent mismatch")
         return
     resume_requested = "resume_from_seq" in init_payload
@@ -291,15 +288,11 @@ async def ws_stream(
         return
     resume_token_raw = init_payload.get("resume_token")
     if resume_token_raw is not None and (
-        not isinstance(resume_token_raw, str)
-        or not resume_token_raw
-        or len(resume_token_raw) > 128
+        not isinstance(resume_token_raw, str) or not resume_token_raw or len(resume_token_raw) > 128
     ):
         await ws.close(code=WS_AUTH_FAILED_CODE, reason="invalid resume_token")
         return
-    resume_token = (
-        resume_token_raw if isinstance(resume_token_raw, str) else None
-    )
+    resume_token = resume_token_raw if isinstance(resume_token_raw, str) else None
 
     try:
         (
@@ -1153,9 +1146,7 @@ async def _reserve_session_row(
             source_fingerprint = hashlib.sha256(
                 f"stream:{tenant_id}:{recording_id}:{session_id}".encode()
             ).hexdigest()
-            config_fingerprint = hashlib.sha256(
-                b"streaming-v1:pcm-s16le:16000:mono"
-            ).hexdigest()
+            config_fingerprint = hashlib.sha256(b"streaming-v1:pcm-s16le:16000:mono").hexdigest()
             run = RecordingPipelineRun(
                 tenant_id=tenant_id,
                 recording_id=recording_id,
@@ -1188,11 +1179,7 @@ async def _reserve_session_row(
                 )
             )
         ).scalar_one_or_none()
-        acknowledged_seq = (
-            int(max_acknowledged_seq)
-            if max_acknowledged_seq is not None
-            else -1
-        )
+        acknowledged_seq = int(max_acknowledged_seq) if max_acknowledged_seq is not None else -1
 
         session_lease_token = secrets.token_hex(16)
         row = StreamingSessionORM(
@@ -1204,8 +1191,7 @@ async def _reserve_session_row(
             pipeline_run_id=int(run.id),
             ack_seq_high_watermark=acknowledged_seq,
             durable_segment_high_watermark=0,
-            lease_expires_at=started_at
-            + timedelta(seconds=max(1.0, float(timeout_sec))),
+            lease_expires_at=started_at + timedelta(seconds=max(1.0, float(timeout_sec))),
             lease_token=session_lease_token,
             recording_id=recording_id,
             user_id=user_id,
@@ -1280,9 +1266,7 @@ async def _mark_session_row_status(
             "COMMITTING": {"DRAINING", "COMMITTING"},
         }
         if status not in legal_predecessors or row.status not in legal_predecessors[status]:
-            raise RuntimeError(
-                f"illegal streaming session transition {row.status} -> {status}"
-            )
+            raise RuntimeError(f"illegal streaming session transition {row.status} -> {status}")
         row.status = status
         row.lease_expires_at = _streaming_lease_deadline(session)
 
@@ -1328,9 +1312,7 @@ async def _persist_session_row(app: Any, session: StreamSession) -> bool:
                 "generation": session.generation,
                 "pipeline_run_id": session.pipeline_run_id,
                 "ack_seq_high_watermark": session.last_seq,
-                "durable_segment_high_watermark": (
-                    session.durable_segment_high_watermark
-                ),
+                "durable_segment_high_watermark": (session.durable_segment_high_watermark),
                 "lease_token": None,
                 "lease_expires_at": None,
                 "ended_at": datetime.now(UTC),
@@ -1390,15 +1372,11 @@ async def _persist_session_row(app: Any, session: StreamSession) -> bool:
                         else:
                             run.state = "partial"
                             run.error_code = "NO_DURABLE_SPEECH"
-                            run.error_message = (
-                                "stream closed without a durable confirmed segment"
-                            )
+                            run.error_message = "stream closed without a durable confirmed segment"
                     else:
                         run.state = "failed_retryable"
                         run.error_code = "STREAM_INCOMPLETE"
-                        run.error_message = (
-                            f"stream ended before commit: {session.end_reason}"
-                        )
+                        run.error_message = f"stream ended before commit: {session.end_reason}"
             await db.commit()
         return True
     except Exception as exc:
@@ -1407,6 +1385,4 @@ async def _persist_session_row(app: Any, session: StreamSession) -> bool:
 
 
 def _streaming_lease_deadline(session: StreamSession) -> datetime:
-    return datetime.now(UTC) + timedelta(
-        seconds=max(1.0, float(session.lease_ttl_seconds))
-    )
+    return datetime.now(UTC) + timedelta(seconds=max(1.0, float(session.lease_ttl_seconds)))

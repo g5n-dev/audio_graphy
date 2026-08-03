@@ -654,9 +654,7 @@ def test_erase_invalidates_reception_generation_and_canonical_tags(
                 TagAssignmentCurrent,
             ):
                 count = await session.scalar(
-                    select(func.count())
-                    .select_from(model)
-                    .where(model.tenant_id == "chang_an")
+                    select(func.count()).select_from(model).where(model.tenant_id == "chang_an")
                 )
                 assert count == 0, model.__name__
 

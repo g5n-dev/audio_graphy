@@ -636,9 +636,7 @@ async def test_input_drift_reference_below_thirty_is_ineligible(
     )
 
     assert health is not None
-    feature = health.metrics["input_drift_by_feature"][
-        "dialogue_unit:@input:scenario"
-    ]
+    feature = health.metrics["input_drift_by_feature"]["dialogue_unit:@input:scenario"]
     assert feature["candidate_sample_count"] == 29
     assert feature["reference_sample_count"] == 29
     assert feature["psi"] > health.metrics["drift_psi_threshold"]

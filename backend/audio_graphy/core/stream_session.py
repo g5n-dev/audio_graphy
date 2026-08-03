@@ -223,9 +223,7 @@ class StreamSession:
         if len(self.accepted_sequences) > 4_096:
             oldest_retained = self.last_seq - 4_095
             self.accepted_sequences = {
-                accepted
-                for accepted in self.accepted_sequences
-                if accepted >= oldest_retained
+                accepted for accepted in self.accepted_sequences if accepted >= oldest_retained
             }
 
         # --- Step 2: VAD ---
@@ -474,9 +472,8 @@ class StreamSession:
         from audio_graphy.core.chunker import SegmentRecord
 
         events: list[dict[str, Any]] = []
-        while (
-            self.pending_confirmed
-            and self.confirmed_segment_cursor < len(self.confirmed_segments)
+        while self.pending_confirmed and self.confirmed_segment_cursor < len(
+            self.confirmed_segments
         ):
             segment = self.confirmed_segments[self.confirmed_segment_cursor]
             if not isinstance(segment, SegmentRecord):
@@ -485,9 +482,7 @@ class StreamSession:
 
             delta = self.pending_confirmed.pop(0)
             transcript = (
-                f"{segment.transcript} {delta.text}".strip()
-                if segment.transcript
-                else delta.text
+                f"{segment.transcript} {delta.text}".strip() if segment.transcript else delta.text
             )
             paired = SegmentRecord(
                 idx=segment.idx,

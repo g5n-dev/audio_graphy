@@ -441,10 +441,7 @@ class ReceptionMerger:
 
         by_id = {item.recording_id: item for item in ordered}
         parent = {item.recording_id: item.recording_id for item in ordered}
-        component_members = {
-            item.recording_id: {item.recording_id}
-            for item in ordered
-        }
+        component_members = {item.recording_id: {item.recording_id} for item in ordered}
         known_customers = {
             item.recording_id: (
                 {item.customer_voiceprint_id} if item.customer_voiceprint_id else set()
@@ -485,8 +482,7 @@ class ReceptionMerger:
                 return True
             active_constraints = constraints or ManualReceptionConstraints()
             if any(
-                frozenset((left_member, right_member))
-                in active_constraints.force_split
+                frozenset((left_member, right_member)) in active_constraints.force_split
                 for left_member in component_members[left_root]
                 for right_member in component_members[right_root]
             ):

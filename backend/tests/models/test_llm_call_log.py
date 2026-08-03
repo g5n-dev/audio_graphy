@@ -171,9 +171,7 @@ class TestLLMCallLogConstraints:
             db_session.commit()
         db_session.rollback()
 
-    def test_provider_attempt_id_is_unique_per_tenant(
-        self, db_session: pytest.fixture
-    ) -> None:
+    def test_provider_attempt_id_is_unique_per_tenant(self, db_session: pytest.fixture) -> None:
         first = LLMCallLog(
             tenant_id="default",
             model="qwen3.6-27b",
@@ -201,9 +199,7 @@ class TestLLMCallLogConstraints:
             db_session.commit()
         db_session.rollback()
 
-    def test_distinct_retry_attempt_ids_are_allowed(
-        self, db_session: pytest.fixture
-    ) -> None:
+    def test_distinct_retry_attempt_ids_are_allowed(self, db_session: pytest.fixture) -> None:
         db_session.add_all(
             [
                 LLMCallLog(
@@ -230,9 +226,7 @@ class TestLLMCallLogConstraints:
         )
         db_session.commit()
 
-        rows = db_session.scalars(
-            select(LLMCallLog).where(LLMCallLog.prompt_hash == "retry")
-        ).all()
+        rows = db_session.scalars(select(LLMCallLog).where(LLMCallLog.prompt_hash == "retry")).all()
         assert len(rows) == 2
 
 

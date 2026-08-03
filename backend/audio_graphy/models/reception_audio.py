@@ -56,8 +56,7 @@ class ReceptionTimelineRevision(TenantScopedBase):
             name="ck_reception_timeline_revisions_state",
         ),
         CheckConstraint(
-            "revision >= 1 AND expected_reception_version >= 1 "
-            "AND total_duration_ms > 0",
+            "revision >= 1 AND expected_reception_version >= 1 AND total_duration_ms > 0",
             name="ck_reception_timeline_revisions_values",
         ),
         Index(

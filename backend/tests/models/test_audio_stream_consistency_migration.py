@@ -37,8 +37,7 @@ def migration_database(mysql_container: Any) -> Iterator[tuple[Engine, dict[str,
     parsed = urlparse(mysql_container.get_connection_url())
     database = f"alembic_0030_audio_{os.getpid()}"
     server_url = (
-        f"mysql+pymysql://{parsed.username}:{parsed.password}"
-        f"@{parsed.hostname}:{parsed.port}/"
+        f"mysql+pymysql://{parsed.username}:{parsed.password}@{parsed.hostname}:{parsed.port}/"
     )
     admin_engine = create_engine(server_url)
     with admin_engine.begin() as conn:
@@ -238,33 +237,45 @@ def test_0030_upgrades_0029_data_and_matches_runtime_contract(
             }
             for table in expected_columns
         }
-        mapping = conn.execute(
-            text(
-                """
+        mapping = (
+            conn.execute(
+                text(
+                    """
                 SELECT source_start_ms, source_end_ms, timeline_start_ms,
                        timeline_end_ms, gap_before_ms
                 FROM reception_recordings
                 """
+                )
             )
-        ).mappings().one()
-        stream = conn.execute(
-            text(
-                """
+            .mappings()
+            .one()
+        )
+        stream = (
+            conn.execute(
+                text(
+                    """
                 SELECT epoch, status, generation, ack_seq_high_watermark,
                        durable_segment_high_watermark
                 FROM streaming_sessions
                 WHERE session_id = 'legacy-session'
                 """
+                )
             )
-        ).mappings().one()
-        speaker = conn.execute(
-            text(
-                """
+            .mappings()
+            .one()
+        )
+        speaker = (
+            conn.execute(
+                text(
+                    """
                 SELECT observation_state, state_version, generation
                 FROM speaker_merge_pending
                 """
+                )
             )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
         stream_index = list(
             conn.execute(
                 text(
@@ -308,13 +319,10 @@ def test_0030_upgrades_0029_data_and_matches_runtime_contract(
         "generation": 0,
     }
     assert [
-        str(row["Column_name"])
-        for row in sorted(stream_index, key=lambda row: row["Seq_in_index"])
+        str(row["Column_name"]) for row in sorted(stream_index, key=lambda row: row["Seq_in_index"])
     ] == ["tenant_id", "session_id", "epoch"]
     assert {int(row["Non_unique"]) for row in stream_index} == {0}
-    assert {
-        name for name, _value in erasure_indexes.items()
-    } >= {
+    assert {name for name, _value in erasure_indexes.items()} >= {
         "ux_erasure_outbox_subject",
         "ix_erasure_outbox_claim",
         "ix_erasure_outbox_tenant_id",
@@ -411,9 +419,7 @@ def test_0030_downgrade_blocks_duplicate_legacy_session_ids_before_mutation(
                 )
             ).mappings()
         )
-        downgraded_tables = {
-            str(row[0]) for row in conn.execute(text("SHOW TABLES"))
-        }
+        downgraded_tables = {str(row[0]) for row in conn.execute(text("SHOW TABLES"))}
     assert [str(row["Column_name"]) for row in indexes] == ["session_id"]
     assert {int(row["Non_unique"]) for row in indexes} == {0}
     assert "erasure_outbox" not in downgraded_tables
@@ -461,9 +467,7 @@ def test_0030_rejects_invalid_legacy_geometry_before_mysql_ddl(
         tables = {str(row[0]) for row in conn.execute(text("SHOW TABLES"))}
         recording_columns = {
             str(row["Field"])
-            for row in conn.execute(
-                text("SHOW COLUMNS FROM reception_recordings")
-            ).mappings()
+            for row in conn.execute(text("SHOW COLUMNS FROM reception_recordings")).mappings()
         }
     assert version == "0029_audio_consistency_runs"
     assert "reception_timeline_revisions" not in tables
@@ -532,19 +536,21 @@ def test_0031_roundtrips_ready_no_speech_without_false_indexed_state(
     result = _run_alembic("upgrade", "head", env=env)
     assert result.returncode == 0, result.stderr
     with engine.connect() as conn:
-        migrated = conn.execute(
-            text(
-                """
+        migrated = (
+            conn.execute(
+                text(
+                    """
                 SELECT status, pipeline_state, indexed_at
                 FROM recordings
                 WHERE id = :recording_id
                 """
-            ),
-            {"recording_id": recording_id},
-        ).mappings().one()
-        create_sql = str(
-            conn.execute(text("SHOW CREATE TABLE recordings")).one()[1]
+                ),
+                {"recording_id": recording_id},
+            )
+            .mappings()
+            .one()
         )
+        create_sql = str(conn.execute(text("SHOW CREATE TABLE recordings")).one()[1])
     assert dict(migrated) == {
         "status": "ready_no_speech",
         "pipeline_state": "done",
@@ -555,19 +561,21 @@ def test_0031_roundtrips_ready_no_speech_without_false_indexed_state(
     result = _run_alembic("downgrade", "0030_audio_stream_consistency", env=env)
     assert result.returncode == 0, result.stderr
     with engine.connect() as conn:
-        recording = conn.execute(
-            text(
-                """
+        recording = (
+            conn.execute(
+                text(
+                    """
                 SELECT status, pipeline_state, indexed_at
                 FROM recordings
                 WHERE id = :recording_id
                 """
-            ),
-            {"recording_id": recording_id},
-        ).mappings().one()
-        create_sql = str(
-            conn.execute(text("SHOW CREATE TABLE recordings")).one()[1]
+                ),
+                {"recording_id": recording_id},
+            )
+            .mappings()
+            .one()
         )
+        create_sql = str(conn.execute(text("SHOW CREATE TABLE recordings")).one()[1])
 
     assert dict(recording) == {
         "status": "queued",

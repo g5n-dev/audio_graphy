@@ -188,9 +188,7 @@ class LLMOpenAIAdapter:
         if response_schema is None:
             return dict(response_format) if response_format is not None else None
         if self.structured_output_capability == "unsupported":
-            raise ValueError(
-                f"provider model={self.model} does not support structured output"
-            )
+            raise ValueError(f"provider model={self.model} does not support structured output")
         if self.structured_output_capability == "json_object":
             logger.warning(
                 "Provider strict JSON Schema unavailable; using explicit json_object "

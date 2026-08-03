@@ -316,10 +316,7 @@ class AudioAssembler:
 
             self._revalidate_sources(validated_sources)
             current_hashes = await asyncio.gather(
-                *(
-                    asyncio.to_thread(_sha256_file, source.path)
-                    for source in validated_sources
-                )
+                *(asyncio.to_thread(_sha256_file, source.path) for source in validated_sources)
             )
             if any(
                 current_hash != expected_hash
@@ -329,9 +326,7 @@ class AudioAssembler:
                     strict=True,
                 )
             ):
-                raise AudioAssemblyValidationError(
-                    "source content changed during assembly"
-                )
+                raise AudioAssemblyValidationError("source content changed during assembly")
             target = self._validate_target(target_relative_path, source_paths)
             if target.parent != temporary_root.parent:
                 raise AudioAssemblyValidationError("target parent changed during assembly")
@@ -388,9 +383,7 @@ class AudioAssembler:
                 else AudioAssemblySource(path=source_input)
             )
             if index == 0 and float(request.gap_before_sec) != 0:
-                raise AudioAssemblyValidationError(
-                    "the first source cannot have a preceding gap"
-                )
+                raise AudioAssemblyValidationError("the first source cannot have a preceding gap")
             raw = os.fspath(request.path)
             self._reject_control_characters(raw, label="source path")
             candidate = Path(raw).expanduser()
@@ -430,9 +423,7 @@ class AudioAssembler:
                         seconds_to_milliseconds(request.source_start_sec)
                     ),
                     source_end_sec=(
-                        milliseconds_to_seconds(
-                            seconds_to_milliseconds(request.source_end_sec)
-                        )
+                        milliseconds_to_seconds(seconds_to_milliseconds(request.source_end_sec))
                         if request.source_end_sec is not None
                         else None
                     ),
@@ -449,9 +440,7 @@ class AudioAssembler:
         metadata: _AudioMetadata,
     ) -> None:
         source_end = (
-            metadata.duration_sec
-            if source.source_end_sec is None
-            else source.source_end_sec
+            metadata.duration_sec if source.source_end_sec is None else source.source_end_sec
         )
         # ffprobe duration precision varies by container.  One millisecond is
         # enough to absorb decimal representation without allowing an actual
@@ -460,9 +449,7 @@ class AudioAssembler:
             source.source_start_sec >= metadata.duration_sec
             or source_end > metadata.duration_sec + 0.001
         ):
-            raise AudioAssemblyValidationError(
-                "source interval exceeds verified media duration"
-            )
+            raise AudioAssemblyValidationError("source interval exceeds verified media duration")
 
     @staticmethod
     def _source_requires_transform(
@@ -776,9 +763,7 @@ class AudioAssembler:
         channel_layout = "mono" if self.transcode_channels == 1 else "stereo"
         normalized_labels: list[str] = []
         filter_parts: list[str] = []
-        for index, (source, manifest_item) in enumerate(
-            zip(sources, input_manifest, strict=True)
-        ):
+        for index, (source, manifest_item) in enumerate(zip(sources, input_manifest, strict=True)):
             label = f"a{index}"
             normalized_labels.append(f"[{label}]")
             transformations: list[str] = []
@@ -801,9 +786,7 @@ class AudioAssembler:
                 transformations.append(
                     f"adelay={round(manifest_item.gap_before_sec * 1_000)}:all=1"
                 )
-            filter_parts.append(
-                f"[{index}:a:0]" + ",".join(transformations) + f"[{label}]"
-            )
+            filter_parts.append(f"[{index}:a:0]" + ",".join(transformations) + f"[{label}]")
         filter_parts.append("".join(normalized_labels) + f"concat=n={len(sources)}:v=0:a=1[outa]")
         base_command.extend(
             (
@@ -850,17 +833,13 @@ class AudioAssembler:
 
         if target_extension == ".wav":
             if metadata.codec != "pcm_s16le":
-                raise AudioAssemblyProcessError(
-                    "ffmpeg output is not canonical pcm_s16le WAV"
-                )
+                raise AudioAssemblyProcessError("ffmpeg output is not canonical pcm_s16le WAV")
             if metadata.sample_rate != self.transcode_sample_rate:
                 raise AudioAssemblyProcessError(
                     "ffmpeg output sample rate does not match the canonical grid"
                 )
             if metadata.channels != self.transcode_channels:
-                raise AudioAssemblyProcessError(
-                    "ffmpeg output channel count is not canonical"
-                )
+                raise AudioAssemblyProcessError("ffmpeg output channel count is not canonical")
         else:
             if abs(metadata.duration_sec - expected_duration_sec) > 0.05:
                 raise AudioAssemblyProcessError(
@@ -883,20 +862,14 @@ class AudioAssembler:
             [
                 AudioTimelineSource(
                     source_id=index,
-                    source_start_ms=seconds_to_milliseconds(
-                        source.source_start_sec
-                    ),
+                    source_start_ms=seconds_to_milliseconds(source.source_start_sec),
                     source_end_ms=seconds_to_milliseconds(
                         metadata.duration_sec
                         if source.source_end_sec is None
                         else min(source.source_end_sec, metadata.duration_sec)
                     ),
-                    verified_duration_ms=seconds_to_milliseconds(
-                        metadata.duration_sec
-                    ),
-                    gap_before_ms=seconds_to_milliseconds(
-                        source.gap_before_sec
-                    ),
+                    verified_duration_ms=seconds_to_milliseconds(metadata.duration_sec),
+                    gap_before_ms=seconds_to_milliseconds(source.gap_before_sec),
                 )
                 for index, (source, metadata, _digest) in enumerate(probed)
             ]

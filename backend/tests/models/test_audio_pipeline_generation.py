@@ -88,15 +88,19 @@ def test_segments_and_chunks_are_generation_isolated() -> None:
     assert {"pipeline_run_id", "generation", "ordinal"} <= set(chunk_columns.keys())
 
     segment_indexes = {index.name: index for index in Segment.__table__.indexes}
-    assert list(
-        segment_indexes["ux_segments_recording_generation_idx"].columns.keys()
-    ) == ["recording_id", "generation", "idx"]
+    assert list(segment_indexes["ux_segments_recording_generation_idx"].columns.keys()) == [
+        "recording_id",
+        "generation",
+        "idx",
+    ]
     assert segment_indexes["ux_segments_recording_generation_idx"].unique
 
     chunk_indexes = {index.name: index for index in Chunk.__table__.indexes}
-    assert list(
-        chunk_indexes["ux_chunks_recording_generation_ordinal"].columns.keys()
-    ) == ["recording_id", "generation", "ordinal"]
+    assert list(chunk_indexes["ux_chunks_recording_generation_ordinal"].columns.keys()) == [
+        "recording_id",
+        "generation",
+        "ordinal",
+    ]
     assert chunk_indexes["ux_chunks_recording_generation_ordinal"].unique
     assert not chunk_indexes["ix_chunks_content_hash"].unique
 

@@ -496,8 +496,7 @@ class IngestionService:
         encrypted_path: str | None = None
         if self._crypto is not None:
             temporary = Path(
-                f"{validated_path}.recording-{recording.id}.source-1."
-                f"pending-{uuid.uuid4().hex}.enc"
+                f"{validated_path}.recording-{recording.id}.source-1.pending-{uuid.uuid4().hex}.enc"
             )
             published = Path(f"{validated_path}.recording-{recording.id}.source-1.enc")
             try:
@@ -772,15 +771,11 @@ class IngestionService:
                     Chunk.pipeline_run_id == recording.active_pipeline_run_id
                 )
             # Segments count
-            seg_count_result = await session.execute(
-                select(func.count()).where(segment_scope)
-            )
+            seg_count_result = await session.execute(select(func.count()).where(segment_scope))
             segments_count = seg_count_result.scalar_one()
 
             # Chunks count
-            chunk_count_result = await session.execute(
-                select(func.count()).where(chunk_scope)
-            )
+            chunk_count_result = await session.execute(select(func.count()).where(chunk_scope))
             chunks_count = chunk_count_result.scalar_one()
 
             # Current tags
@@ -853,8 +848,7 @@ class IngestionService:
 
             key_material = idempotency_key if idempotency_key is not None else uuid.uuid4().hex
             normalized_key = (
-                f"reindex:{recording_id}:"
-                f"{hashlib.sha256(key_material.encode()).hexdigest()}"
+                f"reindex:{recording_id}:{hashlib.sha256(key_material.encode()).hexdigest()}"
             )
             existing = (
                 await session.execute(
@@ -876,12 +870,14 @@ class IngestionService:
                 )
             ).scalar_one_or_none()
             generation = max(1, int(latest_generation or 0) + 1)
-            source_fingerprint = recording.audio_sha256 or hashlib.sha256(
-                (
-                    f"{recording.path}:{recording.audio_size_bytes}:"
-                    f"{recording.source_revision}"
-                ).encode()
-            ).hexdigest()
+            source_fingerprint = (
+                recording.audio_sha256
+                or hashlib.sha256(
+                    (
+                        f"{recording.path}:{recording.audio_size_bytes}:{recording.source_revision}"
+                    ).encode()
+                ).hexdigest()
+            )
             config_fingerprint = hashlib.sha256(
                 json.dumps(
                     {

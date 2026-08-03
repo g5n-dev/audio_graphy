@@ -363,9 +363,7 @@ class DialogueSegmenter:
                 normalized.append(segment)
                 continue
             if previous != segment:
-                raise ValueError(
-                    "conflicting duplicate segment_id within one recording"
-                )
+                raise ValueError("conflicting duplicate segment_id within one recording")
         for segment in normalized:
             output.extend(state.push(segment))
         output.extend(state.finalize())
@@ -648,14 +646,10 @@ class DialogueSegmentationState:
             inferences
         )
         stage_confidences = [
-            inference.confidence
-            for inference in inferences
-            if inference.stage == stage
+            inference.confidence for inference in inferences if inference.stage == stage
         ]
         stage_confidence = (
-            sum(stage_confidences) / len(stage_confidences)
-            if stage_confidences
-            else 0.0
+            sum(stage_confidences) / len(stage_confidences) if stage_confidences else 0.0
         )
         audio_confidence = sum(segment.vad_conf for segment in segments) / len(segments)
         confidence = round(

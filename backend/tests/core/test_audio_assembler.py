@@ -108,11 +108,7 @@ class FakeProcess:
             if "-ac" in self.args
             else first_probe.channels
         )
-        codec = (
-            self.args[self.args.index("-c:a") + 1]
-            if "-c:a" in self.args
-            else "pcm_s16le"
-        )
+        codec = self.args[self.args.index("-c:a") + 1] if "-c:a" in self.args else "pcm_s16le"
         self._owner.probes[output_path.resolve()] = ProbeResult(
             codec=first_probe.codec if codec == "copy" else codec,
             sample_rate=sample_rate,

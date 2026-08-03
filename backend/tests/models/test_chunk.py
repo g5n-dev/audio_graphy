@@ -143,9 +143,7 @@ class TestChunkConstraints:
 
         rows = list(
             db_session.scalars(
-                select(Chunk)
-                .where(Chunk.content_hash == "samehash")
-                .order_by(Chunk.recording_id)
+                select(Chunk).where(Chunk.content_hash == "samehash").order_by(Chunk.recording_id)
             )
         )
         assert [row.recording_id for row in rows] == [rec.id, other.id]

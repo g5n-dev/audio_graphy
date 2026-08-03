@@ -786,9 +786,7 @@ async def test_llm_request_uses_compact_segment_transport_and_dynamic_output_bud
         }
     ]
     assert evidence_items == {"type": "string", "enum": ["s0"]}
-    assert assignment_items["items"]["properties"]["tag_value"] == {
-        "enum": ["browse", "purchase"]
-    }
+    assert assignment_items["items"]["properties"]["tag_value"] == {"enum": ["browse", "purchase"]}
     assert assignment_items["maxItems"] == 1
     assert request.max_tokens == 256
     assert request.response_format == {
@@ -804,8 +802,9 @@ async def test_llm_request_uses_compact_segment_transport_and_dynamic_output_bud
         "access_class": "canonical_tagging_worker",
     }
     assert request.parser_version.endswith("-v2")
-    assert result.assignments[0]["evidence_refs"][0]["segment_id"] == (
-        result.input_snapshot["segments"][0]["segment_id"]
+    assert (
+        result.assignments[0]["evidence_refs"][0]["segment_id"]
+        == (result.input_snapshot["segments"][0]["segment_id"])
     )
 
 
@@ -910,16 +909,9 @@ async def test_multi_tag_response_schema_binds_each_value_domain_to_its_tag_key(
     )
 
     item_schema = captured[0].response_schema["properties"]["assignments"]["items"]
-    branches = {
-        branch["properties"]["tag_key"]["const"]: branch
-        for branch in item_schema["anyOf"]
-    }
-    assert branches["intent"]["properties"]["tag_value"] == {
-        "enum": ["browse", "purchase"]
-    }
-    assert branches["objection"]["properties"]["tag_value"] == {
-        "enum": ["none", "price"]
-    }
+    branches = {branch["properties"]["tag_key"]["const"]: branch for branch in item_schema["anyOf"]}
+    assert branches["intent"]["properties"]["tag_value"] == {"enum": ["browse", "purchase"]}
+    assert branches["objection"]["properties"]["tag_value"] == {"enum": ["none", "price"]}
     assert branches["intent"]["properties"]["evidence_segment_ids"] == {
         "$ref": "#/$defs/evidence_optional"
     }
@@ -995,9 +987,9 @@ async def test_high_confidence_rule_removes_only_covered_noncritical_label_from_
     payload = json.loads(captured[0].messages[1]["content"])
     assert [item["key"] for item in payload["schema"]] == ["objection"]
     assert {item["tag_key"] for item in result.assignments} == {"intent", "objection"}
-    assert next(item for item in result.assignments if item["tag_key"] == "intent")[
-        "source"
-    ] == "rule"
+    assert (
+        next(item for item in result.assignments if item["tag_key"] == "intent")["source"] == "rule"
+    )
 
 
 @pytest.mark.asyncio
@@ -1466,8 +1458,7 @@ async def test_long_subject_is_segment_chunked_under_the_input_budget(
     )
     assert transported_text == long_text
     assert all(
-        len(request.messages[0]["content"]) + len(request.messages[1]["content"])
-        <= 12_000
+        len(request.messages[0]["content"]) + len(request.messages[1]["content"]) <= 12_000
         for request in requests
     )
     assert result.provider_calls == len(requests)
@@ -1609,15 +1600,12 @@ async def test_long_reception_uses_tenant_scoped_dialogue_facts_before_chunking(
     assert result.input_snapshot["transcript"] == long_text
     assert result.input_snapshot["segments"][0]["text"] == long_text
     aggregation = result.input_snapshot["transport_aggregation"]
-    assert aggregation["source_reception_input_hash"] == result.input_snapshot[
-        "source_input_hash"
-    ]
+    assert aggregation["source_reception_input_hash"] == result.input_snapshot["source_input_hash"]
     assert aggregation["source_reception_input_hash"] != result.input_hash
     assert aggregation["dialogue_units"][0]["facts"][0]["fact_id"] == fact_id
     assert aggregation["dialogue_units"][0]["facts"][0]["source"] == expected_source
     provenance = {
-        (reference.source_type, reference.source_id)
-        for reference in requests[0].provenance
+        (reference.source_type, reference.source_id) for reference in requests[0].provenance
     }
     assert ("dialogue_unit", str(seeded.dialogue_unit_id)) in provenance
     assert ("tag_assignment_fact", str(fact_id)) in provenance

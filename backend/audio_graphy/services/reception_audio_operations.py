@@ -54,9 +54,7 @@ _ACTIVE_OPERATION_STATES = (
     "verifying",
     "committing",
 )
-_GENERATED_ARTIFACT_NAME = re.compile(
-    r"v[1-9][0-9]*-[A-Za-z0-9_-]{8,96}\.wav(?:\.enc)?"
-)
+_GENERATED_ARTIFACT_NAME = re.compile(r"v[1-9][0-9]*-[A-Za-z0-9_-]{8,96}\.wav(?:\.enc)?")
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,7 +129,9 @@ class ReceptionAudioOperationService:
                     )
                 ).all()
             )
-            by_mapping_id = {int(mapping.id): (mapping, recording) for mapping, recording in mappings}
+            by_mapping_id = {
+                int(mapping.id): (mapping, recording) for mapping, recording in mappings
+            }
             if len(by_mapping_id) != len(mapping_ids):
                 raise ValidationError(
                     "One or more mapping IDs do not belong to this reception",
@@ -184,9 +184,7 @@ class ReceptionAudioOperationService:
                     )
                 if source_end_ms is None:
                     source_end_ms = verified_ms
-                source_revision = int(
-                    getattr(recording, "source_revision", 0) or 0
-                )
+                source_revision = int(getattr(recording, "source_revision", 0) or 0)
                 source_sha256 = getattr(recording, "audio_sha256", None)
                 source_size_bytes = getattr(recording, "audio_size_bytes", None)
                 if (
@@ -196,9 +194,7 @@ class ReceptionAudioOperationService:
                     or int(source_size_bytes) <= 0
                 ):
                     physical_eligible = False
-                    warnings.append(
-                        f"recording:{int(recording.id)}:source_identity_unavailable"
-                    )
+                    warnings.append(f"recording:{int(recording.id)}:source_identity_unavailable")
                 if source_end_ms > verified_ms:
                     raise ValidationError(
                         "Source slice exceeds verified recording duration",
@@ -240,9 +236,7 @@ class ReceptionAudioOperationService:
                     "gap_before_ms": int(planned.gap_before_ms),
                     "timeline_start_ms": int(planned.timeline_start_ms),
                     "timeline_end_ms": int(planned.timeline_end_ms),
-                    "recording_source_revision": int(
-                        getattr(recording, "source_revision", 0) or 0
-                    ),
+                    "recording_source_revision": int(getattr(recording, "source_revision", 0) or 0),
                     "recording_sha256": getattr(recording, "audio_sha256", None),
                     "recording_size_bytes": getattr(recording, "audio_size_bytes", None),
                 }
@@ -408,16 +402,15 @@ class ReceptionAudioOperationService:
                     code="AUDIO_PLAN_NOT_PHYSICAL",
                     detail={"warnings": list(revision.warnings or [])},
                 )
-            if mode == "physical" and "timeline_geometry_changed" in (
-                revision.warnings or []
-            ):
+            if mode == "physical" and "timeline_geometry_changed" in (revision.warnings or []):
                 raise ValidationError(
                     "Physical mode cannot publish new timeline geometry",
                     code="PHYSICAL_MODE_GEOMETRY_CHANGE",
                 )
             active_operation = (
                 await db.execute(
-                    select(ReceptionAudioOperation.id).where(
+                    select(ReceptionAudioOperation.id)
+                    .where(
                         ReceptionAudioOperation.tenant_id == tenant_id,
                         ReceptionAudioOperation.reception_id == reception_id,
                         ReceptionAudioOperation.status.in_(
@@ -432,7 +425,8 @@ class ReceptionAudioOperationService:
                                 "committing",
                             )
                         ),
-                    ).limit(1)
+                    )
+                    .limit(1)
                 )
             ).scalar_one_or_none()
             if active_operation is not None:
@@ -584,8 +578,7 @@ class ReceptionAudioOperationService:
                 await self._set_stage(operation_id, lease_token, "slicing", 0.3)
                 await self._set_stage(operation_id, lease_token, "assembling", 0.45)
                 physical_generation = (
-                    f"op{operation.id}-a{operation.attempt_count}-"
-                    f"{secrets.token_hex(8)}"
+                    f"op{operation.id}-a{operation.attempt_count}-{secrets.token_hex(8)}"
                 )
                 preparing_path = await self._register_preparing_artifact(
                     operation=operation,
@@ -604,20 +597,12 @@ class ReceptionAudioOperationService:
                 expected_version=operation.expected_reception_version,
             )
             kwargs: dict[str, Any] = {"actor": f"audio-operation:{operation_id}"}
-            parameters = inspect.signature(
-                self._reception_service.merge_recordings
-            ).parameters
+            parameters = inspect.signature(self._reception_service.merge_recordings).parameters
             timeline_override = {
                 int(item["recording_id"]): ReceptionTimelineSliceOverride(
-                    source_start_sec=milliseconds_to_seconds(
-                        int(item["source_start_ms"])
-                    ),
-                    source_end_sec=milliseconds_to_seconds(
-                        int(item["source_end_ms"])
-                    ),
-                    gap_before_sec=milliseconds_to_seconds(
-                        int(item["gap_before_ms"])
-                    ),
+                    source_start_sec=milliseconds_to_seconds(int(item["source_start_ms"])),
+                    source_end_sec=milliseconds_to_seconds(int(item["source_end_ms"])),
+                    gap_before_sec=milliseconds_to_seconds(int(item["gap_before_ms"])),
                 )
                 for item in manifest
             }
@@ -646,9 +631,7 @@ class ReceptionAudioOperationService:
                 try:
                     progress = progress_by_status[status]
                 except KeyError as exc:
-                    raise RuntimeError(
-                        f"unsupported physical audio stage: {status}"
-                    ) from exc
+                    raise RuntimeError(f"unsupported physical audio stage: {status}") from exc
                 await self._set_stage(
                     operation_id,
                     lease_token,
@@ -676,9 +659,7 @@ class ReceptionAudioOperationService:
                 )
 
             if "before_commit" not in parameters:
-                raise RuntimeError(
-                    "Reception service cannot publish an operation atomically"
-                )
+                raise RuntimeError("Reception service cannot publish an operation atomically")
             kwargs["before_commit"] = publish_before_commit
             if operation.mode in {"physical", "both"}:
                 if (
@@ -719,9 +700,7 @@ class ReceptionAudioOperationService:
             else:
                 merge_task.cancel()
                 await asyncio.gather(merge_task, return_exceptions=True)
-                raise RuntimeError(
-                    "audio operation lease renewal failed during external work"
-                )
+                raise RuntimeError("audio operation lease renewal failed during external work")
         except asyncio.CancelledError:
             if merge_task is not None and not merge_task.done():
                 merge_task.cancel()
@@ -765,13 +744,10 @@ class ReceptionAudioOperationService:
                         .where(
                             ReceptionAudioOperation.id == operation_id,
                             ReceptionAudioOperation.lease_token == lease_token,
-                            ReceptionAudioOperation.status.in_(
-                                _ACTIVE_OPERATION_STATES
-                            ),
+                            ReceptionAudioOperation.status.in_(_ACTIVE_OPERATION_STATES),
                         )
                         .values(
-                            lease_expires_at=datetime.now(UTC)
-                            + timedelta(seconds=self._lease_sec)
+                            lease_expires_at=datetime.now(UTC) + timedelta(seconds=self._lease_sec)
                         )
                     )
                     if getattr(result, "rowcount", 0) != 1:
@@ -808,8 +784,7 @@ class ReceptionAudioOperationService:
                     select(ReceptionAudioOperation)
                     .where(
                         ReceptionAudioOperation.id == operation.id,
-                        ReceptionAudioOperation.tenant_id
-                        == operation.tenant_id,
+                        ReceptionAudioOperation.tenant_id == operation.tenant_id,
                         ReceptionAudioOperation.lease_token == lease_token,
                         ReceptionAudioOperation.status == "assembling",
                     )
@@ -817,9 +792,7 @@ class ReceptionAudioOperationService:
                 )
             ).scalar_one_or_none()
             if claimed is None:
-                raise RuntimeError(
-                    "audio operation lease was lost before artifact preparation"
-                )
+                raise RuntimeError("audio operation lease was lost before artifact preparation")
             db.add(
                 ReceptionAudioArtifact(
                     tenant_id=str(operation.tenant_id),
@@ -848,9 +821,7 @@ class ReceptionAudioOperationService:
             Path(f"{preparing_path}.enc"),
         }
         if prepared_path not in allowed_paths or not prepared_path.is_file():
-            raise RuntimeError(
-                "prepared physical artifact does not match its reserved generation"
-            )
+            raise RuntimeError("prepared physical artifact does not match its reserved generation")
         size_bytes = prepared_path.stat().st_size
         if size_bytes <= 0:
             raise RuntimeError("prepared physical artifact is empty")
@@ -870,17 +841,13 @@ class ReceptionAudioOperationService:
                 )
             ).scalar_one_or_none()
             if operation is None:
-                raise RuntimeError(
-                    "audio operation lease was lost while verifying artifact"
-                )
+                raise RuntimeError("audio operation lease was lost while verifying artifact")
             artifact = (
                 await db.execute(
                     select(ReceptionAudioArtifact)
                     .where(
-                        ReceptionAudioArtifact.tenant_id
-                        == operation.tenant_id,
-                        ReceptionAudioArtifact.reception_id
-                        == operation.reception_id,
+                        ReceptionAudioArtifact.tenant_id == operation.tenant_id,
+                        ReceptionAudioArtifact.reception_id == operation.reception_id,
                         ReceptionAudioArtifact.operation_id == operation_id,
                         ReceptionAudioArtifact.path == str(preparing_path),
                         ReceptionAudioArtifact.state == "PREPARING",
@@ -895,9 +862,7 @@ class ReceptionAudioOperationService:
             artifact.sha256 = sha256
             artifact.size_bytes = size_bytes
             artifact.duration_ms = duration_ms
-            artifact.sample_rate = (
-                int(sample_rate) if sample_rate is not None else None
-            )
+            artifact.sample_rate = int(sample_rate) if sample_rate is not None else None
             artifact.channels = int(channels) if channels is not None else None
 
     async def reconcile_stale(self, *, max_attempts: int = 3) -> int:
@@ -910,9 +875,7 @@ class ReceptionAudioOperationService:
                     await db.execute(
                         select(ReceptionAudioOperation)
                         .where(
-                            ReceptionAudioOperation.status.in_(
-                                _ACTIVE_OPERATION_STATES
-                            ),
+                            ReceptionAudioOperation.status.in_(_ACTIVE_OPERATION_STATES),
                             ReceptionAudioOperation.lease_expires_at < now,
                         )
                         .with_for_update(skip_locked=True)
@@ -925,25 +888,17 @@ class ReceptionAudioOperationService:
                         await db.execute(
                             select(ReceptionAudioArtifact)
                             .where(
-                                ReceptionAudioArtifact.tenant_id
-                                == row.tenant_id,
-                                ReceptionAudioArtifact.reception_id
-                                == row.reception_id,
+                                ReceptionAudioArtifact.tenant_id == row.tenant_id,
+                                ReceptionAudioArtifact.reception_id == row.reception_id,
                                 ReceptionAudioArtifact.operation_id == row.id,
-                                ReceptionAudioArtifact.state.in_(
-                                    ("PREPARING", "READY")
-                                ),
+                                ReceptionAudioArtifact.state.in_(("PREPARING", "READY")),
                             )
                             .with_for_update()
                         )
                     ).scalars()
                 )
                 for artifact in artifacts:
-                    artifact.state = (
-                        "FAILED"
-                        if artifact.state == "PREPARING"
-                        else "ORPHANED"
-                    )
+                    artifact.state = "FAILED" if artifact.state == "PREPARING" else "ORPHANED"
                     cleanup.append(
                         (
                             str(artifact.tenant_id),
@@ -1013,15 +968,11 @@ class ReceptionAudioOperationService:
                         operation.tenant_id != artifact.tenant_id
                         or operation.reception_id != artifact.reception_id
                     )
-                ) or (
-                    reception is not None
-                    and reception.tenant_id != artifact.tenant_id
-                ):
+                ) or (reception is not None and reception.tenant_id != artifact.tenant_id):
                     continue
                 pointer_matches = (
                     reception is not None
-                    and reception.active_timeline_revision_id
-                    == artifact.timeline_revision_id
+                    and reception.active_timeline_revision_id == artifact.timeline_revision_id
                     and reception.merged_audio_path == artifact.path
                 )
                 if pointer_matches:
@@ -1047,10 +998,8 @@ class ReceptionAudioOperationService:
                         await db.execute(
                             update(ReceptionAudioArtifact)
                             .where(
-                                ReceptionAudioArtifact.tenant_id
-                                == artifact.tenant_id,
-                                ReceptionAudioArtifact.reception_id
-                                == artifact.reception_id,
+                                ReceptionAudioArtifact.tenant_id == artifact.tenant_id,
+                                ReceptionAudioArtifact.reception_id == artifact.reception_id,
                                 ReceptionAudioArtifact.state == "ATTACHED",
                                 ReceptionAudioArtifact.id != artifact.id,
                             )
@@ -1059,10 +1008,8 @@ class ReceptionAudioOperationService:
                         await db.execute(
                             update(ReceptionTimelineRevision)
                             .where(
-                                ReceptionTimelineRevision.tenant_id
-                                == artifact.tenant_id,
-                                ReceptionTimelineRevision.reception_id
-                                == artifact.reception_id,
+                                ReceptionTimelineRevision.tenant_id == artifact.tenant_id,
+                                ReceptionTimelineRevision.reception_id == artifact.reception_id,
                                 ReceptionTimelineRevision.state == "ACTIVE",
                                 ReceptionTimelineRevision.id != revision.id,
                             )
@@ -1126,10 +1073,7 @@ class ReceptionAudioOperationService:
         size_bytes = candidates[0].stat().st_size
         if size_bytes != artifact.size_bytes:
             return False
-        return (
-            await asyncio.to_thread(_sha256_file, candidates[0])
-            == artifact.sha256
-        )
+        return await asyncio.to_thread(_sha256_file, candidates[0]) == artifact.sha256
 
     async def _load_claimed(
         self,
@@ -1181,8 +1125,7 @@ class ReceptionAudioOperationService:
                 .values(
                     status=status,
                     progress=progress,
-                    lease_expires_at=datetime.now(UTC)
-                    + timedelta(seconds=self._lease_sec),
+                    lease_expires_at=datetime.now(UTC) + timedelta(seconds=self._lease_sec),
                 )
             )
             if getattr(result, "rowcount", 0) != 1:
@@ -1208,25 +1151,17 @@ class ReceptionAudioOperationService:
                     await db.execute(
                         select(ReceptionAudioArtifact)
                         .where(
-                            ReceptionAudioArtifact.tenant_id
-                            == operation.tenant_id,
-                            ReceptionAudioArtifact.reception_id
-                            == operation.reception_id,
+                            ReceptionAudioArtifact.tenant_id == operation.tenant_id,
+                            ReceptionAudioArtifact.reception_id == operation.reception_id,
                             ReceptionAudioArtifact.operation_id == operation_id,
-                            ReceptionAudioArtifact.state.in_(
-                                ("PREPARING", "READY")
-                            ),
+                            ReceptionAudioArtifact.state.in_(("PREPARING", "READY")),
                         )
                         .with_for_update()
                     )
                 ).scalars()
             )
             for artifact in artifacts:
-                artifact.state = (
-                    "FAILED"
-                    if artifact.state == "PREPARING"
-                    else "ORPHANED"
-                )
+                artifact.state = "FAILED" if artifact.state == "PREPARING" else "ORPHANED"
                 cleanup.append(
                     (
                         str(artifact.tenant_id),
@@ -1293,10 +1228,7 @@ class ReceptionAudioOperationService:
         )
         if revision is None or revision.state != "STAGING":
             raise RuntimeError("audio timeline revision is not publishable")
-        if (
-            reception.id != operation.reception_id
-            or reception.tenant_id != operation.tenant_id
-        ):
+        if reception.id != operation.reception_id or reception.tenant_id != operation.tenant_id:
             raise RuntimeError("audio operation publication scope changed")
 
         recording_ids = {int(item["recording_id"]) for item in manifest}
@@ -1326,17 +1258,10 @@ class ReceptionAudioOperationService:
             ):
                 signed_value = item.get(manifest_key)
                 if signed_value is not None and getattr(recording, model_field) != signed_value:
-                    raise RuntimeError(
-                        f"signed audio source {model_field} changed before commit"
-                    )
+                    raise RuntimeError(f"signed audio source {model_field} changed before commit")
             verified_duration_ms = verified_recording_duration_ms(recording)
-            if (
-                verified_duration_ms is None
-                or int(item["source_end_ms"]) > verified_duration_ms
-            ):
-                raise RuntimeError(
-                    "signed audio source duration is unavailable or changed"
-                )
+            if verified_duration_ms is None or int(item["source_end_ms"]) > verified_duration_ms:
+                raise RuntimeError("signed audio source duration is unavailable or changed")
 
         operation.status = "committing"
         operation.progress = 0.9
@@ -1354,13 +1279,8 @@ class ReceptionAudioOperationService:
         revision.activated_at = now
         reception.active_timeline_revision_id = revision_id
 
-        by_recording_id = {
-            int(item["recording_id"]): item
-            for item in manifest
-        }
-        if {int(mapping.recording_id) for mapping in final_mappings} != set(
-            by_recording_id
-        ):
+        by_recording_id = {int(item["recording_id"]): item for item in manifest}
+        if {int(mapping.recording_id) for mapping in final_mappings} != set(by_recording_id):
             raise RuntimeError("committed reception sources differ from the signed plan")
         for mapping in final_mappings:
             item = by_recording_id[int(mapping.recording_id)]
@@ -1383,9 +1303,7 @@ class ReceptionAudioOperationService:
                 int(item["gap_before_ms"]),
             )
             if actual_geometry != signed_geometry:
-                raise RuntimeError(
-                    "committed reception geometry differs from the signed plan"
-                )
+                raise RuntimeError("committed reception geometry differs from the signed plan")
             mapping.timeline_revision_id = revision_id
             mapping.source_start_ms = signed_geometry[0]
             mapping.source_end_ms = signed_geometry[1]
@@ -1413,10 +1331,8 @@ class ReceptionAudioOperationService:
                 await db.execute(
                     select(ReceptionAudioArtifact)
                     .where(
-                        ReceptionAudioArtifact.tenant_id
-                        == operation.tenant_id,
-                        ReceptionAudioArtifact.reception_id
-                        == operation.reception_id,
+                        ReceptionAudioArtifact.tenant_id == operation.tenant_id,
+                        ReceptionAudioArtifact.reception_id == operation.reception_id,
                         ReceptionAudioArtifact.operation_id == operation.id,
                         ReceptionAudioArtifact.state == "READY",
                     )
@@ -1431,9 +1347,7 @@ class ReceptionAudioOperationService:
                 or artifact.sha256 != artifact_hash
                 or artifact.timeline_revision_id != revision_id
             ):
-                raise RuntimeError(
-                    "verified physical artifact changed before attachment"
-                )
+                raise RuntimeError("verified physical artifact changed before attachment")
             await db.execute(
                 update(ReceptionAudioArtifact)
                 .where(
@@ -1479,9 +1393,7 @@ class ReceptionAudioOperationService:
                     .where(
                         ReceptionAudioOperation.id == operation_id,
                         ReceptionAudioOperation.lease_token == lease_token,
-                        ReceptionAudioOperation.status.not_in(
-                            ("succeeded", "cancelled")
-                        ),
+                        ReceptionAudioOperation.status.not_in(("succeeded", "cancelled")),
                     )
                     .with_for_update()
                 )
@@ -1493,25 +1405,17 @@ class ReceptionAudioOperationService:
                     await db.execute(
                         select(ReceptionAudioArtifact)
                         .where(
-                            ReceptionAudioArtifact.tenant_id
-                            == operation.tenant_id,
-                            ReceptionAudioArtifact.reception_id
-                            == operation.reception_id,
+                            ReceptionAudioArtifact.tenant_id == operation.tenant_id,
+                            ReceptionAudioArtifact.reception_id == operation.reception_id,
                             ReceptionAudioArtifact.operation_id == operation_id,
-                            ReceptionAudioArtifact.state.in_(
-                                ("PREPARING", "READY")
-                            ),
+                            ReceptionAudioArtifact.state.in_(("PREPARING", "READY")),
                         )
                         .with_for_update()
                     )
                 ).scalars()
             )
             for artifact in artifacts:
-                artifact.state = (
-                    "FAILED"
-                    if artifact.state == "PREPARING"
-                    else "ORPHANED"
-                )
+                artifact.state = "FAILED" if artifact.state == "PREPARING" else "ORPHANED"
                 cleanup.append(
                     (
                         str(artifact.tenant_id),
@@ -1524,9 +1428,7 @@ class ReceptionAudioOperationService:
                 .where(
                     ReceptionAudioOperation.id == operation_id,
                     ReceptionAudioOperation.lease_token == lease_token,
-                    ReceptionAudioOperation.status.not_in(
-                        ("succeeded", "cancelled")
-                    ),
+                    ReceptionAudioOperation.status.not_in(("succeeded", "cancelled")),
                 )
                 .values(
                     status="failed",

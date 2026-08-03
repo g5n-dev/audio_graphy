@@ -483,14 +483,10 @@ class TestWSEndpointLifecycle:
                     ).scalar_one()
                 )
                 lineage_count = int(
-                    (
-                        await db.execute(select(func.count(ChunkSegment.id)))
-                    ).scalar_one()
+                    (await db.execute(select(func.count(ChunkSegment.id)))).scalar_one()
                 )
                 outbox_count = int(
-                    (
-                        await db.execute(select(func.count(ProjectionOutbox.id)))
-                    ).scalar_one()
+                    (await db.execute(select(func.count(ProjectionOutbox.id)))).scalar_one()
                 )
                 return (
                     row.status,

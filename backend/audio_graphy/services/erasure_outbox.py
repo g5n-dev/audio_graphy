@@ -176,9 +176,7 @@ async def _cascade_voiceprint_in_session(
         )
         for node in nodes:
             remaining = [
-                int(item)
-                for item in list(node.recordings_list or [])
-                if int(item) != recording_id
+                int(item) for item in list(node.recordings_list or []) if int(item) != recording_id
             ]
             if not remaining:
                 await session.delete(node)
@@ -316,9 +314,7 @@ async def stage_recording_erasure(
         "recording_id": recording_id,
         "audio_paths": list(
             dict.fromkeys(
-                str(path)
-                for path in (recording.path, recording.audio_encrypted_path)
-                if path
+                str(path) for path in (recording.path, recording.audio_encrypted_path) if path
             )
         ),
         "reception_artifact_paths": artifact_paths,
@@ -557,9 +553,7 @@ class ErasureOutboxProcessor:
         if cleanup.get("graph"):
             if self._graph_store_factory is None or self._graph_cleanup is None:
                 raise RuntimeError("graph erasure dependency is not configured")
-            graph_store = await self._maybe_await(
-                self._graph_store_factory(claim.tenant_id)
-            )
+            graph_store = await self._maybe_await(self._graph_store_factory(claim.tenant_id))
             if graph_store is not None:
                 await self._maybe_await(
                     self._graph_cleanup(
@@ -573,9 +567,7 @@ class ErasureOutboxProcessor:
         if cleanup.get("file_index"):
             if self._file_index_factory is None:
                 raise RuntimeError("file-index erasure dependency is not configured")
-            file_index = await self._maybe_await(
-                self._file_index_factory(claim.tenant_id)
-            )
+            file_index = await self._maybe_await(self._file_index_factory(claim.tenant_id))
             if file_index is not None:
                 await file_index.erase_recording(recording_id)
 
@@ -635,9 +627,7 @@ class ErasureOutboxProcessor:
 
     async def _mark_failed(self, claim: _Claim, exc: Exception) -> None:
         now = datetime.now(UTC)
-        error = (
-            f"{type(exc).__name__}: external erasure step failed"
-        )[:_MAX_ERROR_LENGTH]
+        error = (f"{type(exc).__name__}: external erasure step failed")[:_MAX_ERROR_LENGTH]
         async with self._factory() as session, session.begin():
             row = (
                 await session.execute(

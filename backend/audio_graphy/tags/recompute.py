@@ -106,8 +106,7 @@ def stratified_dialogue_unit_sample(
             )
         ].append(int(dialogue_unit_id))
     queues = {
-        key: deque(sorted(set(dialogue_unit_ids)))
-        for key, dialogue_unit_ids in groups.items()
+        key: deque(sorted(set(dialogue_unit_ids))) for key, dialogue_unit_ids in groups.items()
     }
     selected: list[int] = []
     while len(selected) < bounded_limit:
@@ -238,9 +237,7 @@ class RecomputeService:
             "sales.product_mention",
         ]
         normalized_candidate = (
-            prompt_content.replace("\r\n", "\n").strip()
-            if prompt_content is not None
-            else None
+            prompt_content.replace("\r\n", "\n").strip() if prompt_content is not None else None
         )
         normalized_baseline = (
             baseline_prompt_content.replace("\r\n", "\n").strip()
@@ -605,10 +602,7 @@ class RecomputeService:
         harness_spec["generation"]["prompt_template"] = prompt_content
         harness_spec["spec_version"] = "2.0"
         rule_bundle = deepcopy(baseline.rule_bundle or {})
-        thresholds = {
-            str(key): float(value)
-            for key, value in (baseline.thresholds or {}).items()
-        }
+        thresholds = {str(key): float(value) for key, value in (baseline.thresholds or {}).items()}
         change_summary = "Canonical Prompt activation candidate"
         config = {
             "schema_version_id": int(baseline.schema_version_id),
@@ -709,10 +703,7 @@ class RecomputeService:
                 f"canonical Prompt scope contains missing dialogue units: {missing_ids[:10]}"
             )
         return stratified_dialogue_unit_sample(
-            [
-                (int(row[0]), row[1], row[2], row[3])
-                for row in rows
-            ],
+            [(int(row[0]), row[1], row[2], row[3]) for row in rows],
             limit=bounded_limit,
         )
 
@@ -747,9 +738,8 @@ class RecomputeService:
         configured_cap = int(generation["max_tokens"])
         total_base_calls = 0
         total_base_tokens = 0
-        same_model_epoch = (
-            self._adapter_epoch(self._bundle.weak_llm)
-            == self._adapter_epoch(self._bundle.strong_llm)
+        same_model_epoch = self._adapter_epoch(self._bundle.weak_llm) == self._adapter_epoch(
+            self._bundle.strong_llm
         )
         for dialogue_unit_id in dialogue_unit_ids:
             # This is the exact production input materializer and performs no
@@ -775,15 +765,12 @@ class RecomputeService:
                 configured_cap=configured_cap,
             )
             total_base_calls += len(weak_batches)
-            total_base_tokens += len(weak_batches) * (
-                max_input_tokens + weak_output_tokens
-            )
+            total_base_tokens += len(weak_batches) * (max_input_tokens + weak_output_tokens)
 
             if route != "weak_then_strong_critic" or same_model_epoch:
                 continue
             evidence_refs = [
-                {"segment_id": int(segment.id)}
-                for segment, _text in prepared.segment_texts
+                {"segment_id": int(segment.id)} for segment, _text in prepared.segment_texts
             ]
             weak_candidates = {
                 key: {
@@ -809,9 +796,7 @@ class RecomputeService:
                 configured_cap=configured_cap,
             )
             total_base_calls += len(critic_batches)
-            total_base_tokens += len(critic_batches) * (
-                max_input_tokens + critic_output_tokens
-            )
+            total_base_tokens += len(critic_batches) * (max_input_tokens + critic_output_tokens)
 
         # Structured format repair is allowed once per generation.  Reserve it
         # up front so an over-budget request cannot begin and fail mid-sample.
@@ -852,10 +837,7 @@ class RecomputeService:
                     .join(
                         TagAssignmentFact,
                         (TagAssignmentFact.id == TagAssignmentCurrent.fact_id)
-                        & (
-                            TagAssignmentFact.tenant_id
-                            == TagAssignmentCurrent.tenant_id
-                        ),
+                        & (TagAssignmentFact.tenant_id == TagAssignmentCurrent.tenant_id),
                     )
                     .where(
                         TagAssignmentCurrent.tenant_id == tenant_id,
@@ -866,8 +848,7 @@ class RecomputeService:
                 )
             ).all()
         return {
-            (int(subject_id), str(tag_key)): tag_value
-            for subject_id, tag_key, tag_value in rows
+            (int(subject_id), str(tag_key)): tag_value for subject_id, tag_key, tag_value in rows
         }
 
     async def _count_affected(

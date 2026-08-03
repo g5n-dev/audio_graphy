@@ -135,10 +135,7 @@ class TestStreamSessionOnPCM:
             pass
         bytes_after_first = session.bytes_in
 
-        duplicate_events = [
-            event
-            async for event in session.on_pcm_chunk(b"\xff" * 1024, seq=7)
-        ]
+        duplicate_events = [event async for event in session.on_pcm_chunk(b"\xff" * 1024, seq=7)]
 
         assert duplicate_events == [
             {
@@ -154,10 +151,7 @@ class TestStreamSessionOnPCM:
     @pytest.mark.asyncio
     async def test_accepted_frame_is_acked_and_older_seen_frame_is_duplicate(self) -> None:
         session = _make_session()
-        first_events = [
-            event
-            async for event in session.on_pcm_chunk(b"\x00" * 1024, seq=10)
-        ]
+        first_events = [event async for event in session.on_pcm_chunk(b"\x00" * 1024, seq=10)]
         assert {
             "type": "frame_ack",
             "session_id": "test-session",
@@ -168,10 +162,7 @@ class TestStreamSessionOnPCM:
             pass
         bytes_after_two = session.bytes_in
 
-        replay_events = [
-            event
-            async for event in session.on_pcm_chunk(b"\xff" * 1024, seq=10)
-        ]
+        replay_events = [event async for event in session.on_pcm_chunk(b"\xff" * 1024, seq=10)]
 
         assert replay_events == [
             {
@@ -191,10 +182,7 @@ class TestStreamSessionOnPCM:
             pass
         bytes_after_first = session.bytes_in
 
-        events = [
-            event
-            async for event in session.on_pcm_chunk(b"\xff" * 1024, seq=4)
-        ]
+        events = [event async for event in session.on_pcm_chunk(b"\xff" * 1024, seq=4)]
 
         assert events == [
             {
@@ -397,19 +385,11 @@ class TestStreamSessionOnPCM:
             vad=DelayedVAD(),  # type: ignore[arg-type]
             asr=EarlyConfirmedASR(),  # type: ignore[arg-type]
         )
-        first_events = [
-            event
-            async for event in session.on_pcm_chunk(b"\x00" * 1024, seq=0)
-        ]
+        first_events = [event async for event in session.on_pcm_chunk(b"\x00" * 1024, seq=0)]
         assert not any(event["type"] == "segment_confirmed" for event in first_events)
 
-        second_events = [
-            event
-            async for event in session.on_pcm_chunk(b"\x00" * 1024, seq=1)
-        ]
-        confirmed = [
-            event for event in second_events if event["type"] == "segment_confirmed"
-        ]
+        second_events = [event async for event in session.on_pcm_chunk(b"\x00" * 1024, seq=1)]
+        confirmed = [event for event in second_events if event["type"] == "segment_confirmed"]
         assert confirmed[0]["text"] == "不会丢失的文本"
         assert confirmed[0]["segment"]["idx"] == 0
         assert session.confirmed_segments[0].transcript == "不会丢失的文本"

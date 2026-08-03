@@ -544,7 +544,5 @@ async def test_observer_persistence_failure_increments_drop_counter() -> None:
         )
 
     assert (
-        metrics.LLM_OBSERVER_DROPPED.labels("persistence_error")._value.get()
-        - dropped_before
-        == 1
+        metrics.LLM_OBSERVER_DROPPED.labels("persistence_error")._value.get() - dropped_before == 1
     )

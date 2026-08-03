@@ -782,9 +782,7 @@ async def test_representative_audit_counts_only_after_complete_applicable_matrix
 
     incomplete = await monitor.run_once(now=first_window_end + timedelta(seconds=1))
     assert incomplete[0].observation.audited_count == 0
-    assert incomplete[0].observation.metrics[
-        "representative_audit_subject_count_by_type"
-    ] == {}
+    assert incomplete[0].observation.metrics["representative_audit_subject_count_by_type"] == {}
     assert "critical_recall" not in incomplete[0].observation.metrics
 
     second_window_end = first_window_end + timedelta(minutes=5)
@@ -811,9 +809,9 @@ async def test_representative_audit_counts_only_after_complete_applicable_matrix
 
     complete = await monitor.run_once(now=second_window_end + timedelta(seconds=1))
     assert complete[0].observation.audited_count == 1
-    assert complete[0].observation.metrics[
-        "representative_audit_subject_count_by_type"
-    ] == {"dialogue_unit": 1}
+    assert complete[0].observation.metrics["representative_audit_subject_count_by_type"] == {
+        "dialogue_unit": 1
+    }
     assert complete[0].observation.metrics["critical_recall_by_subject_type"] == {
         "dialogue_unit": pytest.approx(1)
     }
@@ -1351,9 +1349,7 @@ async def test_monitor_pauses_near_budget_and_reuses_human_review_job(
             )
         )
         await session.execute(
-            TagAssignmentFact.__table__.delete().where(
-                TagAssignmentFact.id == seeded["fact_id"]
-            )
+            TagAssignmentFact.__table__.delete().where(TagAssignmentFact.id == seeded["fact_id"])
         )
 
     result = await TagDeploymentMonitor(monitor_factory).run_once(
@@ -1415,10 +1411,7 @@ async def test_monitor_pauses_near_budget_and_reuses_human_review_job(
     assert review_jobs[0].id == review_job_id
     assert review_jobs[0].scope["selection_policy"] == "budget_guard"
     assert review_jobs[0].total_items == 2
-    assert all(
-        "proposed_fact_id" not in subject
-        for subject in review_jobs[0].scope["subjects"]
-    )
+    assert all("proposed_fact_id" not in subject for subject in review_jobs[0].scope["subjects"])
     assert review_jobs[0].scope["trusted_observation_id"] == first.observation.id
     assert review_jobs[0].scope["linked_observation_ids"] == [
         first.observation.id,

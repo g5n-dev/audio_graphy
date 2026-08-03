@@ -134,18 +134,14 @@ def build_hybrid_bundle(settings: Settings) -> AdapterBundle:
             api_key=settings.openai_api_key,
             model=settings.llm_strong_model,
             model_epoch=settings.llm_strong_model_epoch or settings.llm_strong_model,
-            structured_output_capability=(
-                settings.llm_strong_structured_output_capability
-            ),
+            structured_output_capability=(settings.llm_strong_structured_output_capability),
         )
         weak_llm: LLMAdapter = LLMOpenAIAdapter(
             base_url=settings.openai_base_url_weak,
             api_key=settings.openai_api_key,
             model=settings.llm_weak_model,
             model_epoch=settings.llm_weak_model_epoch or settings.llm_weak_model,
-            structured_output_capability=(
-                settings.llm_weak_structured_output_capability
-            ),
+            structured_output_capability=(settings.llm_weak_structured_output_capability),
         )
     else:
         strong_llm = MockLLMAdapter(

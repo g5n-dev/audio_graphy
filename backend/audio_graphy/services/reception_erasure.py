@@ -61,9 +61,8 @@ async def _invalidate_canonical_tags(
         ).scalars()
     )
 
-    current_scope: ColumnElement[bool] = (
-        (TagAssignmentCurrent.subject_type == "reception")
-        & (TagAssignmentCurrent.subject_id == reception_id)
+    current_scope: ColumnElement[bool] = (TagAssignmentCurrent.subject_type == "reception") & (
+        TagAssignmentCurrent.subject_id == reception_id
     )
     if dialogue_unit_ids:
         current_scope = or_(

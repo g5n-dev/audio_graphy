@@ -341,8 +341,7 @@ class DialogueUnit(TenantScopedBase):
             name="ck_dialogue_units_boundary_confidence",
         ),
         CheckConstraint(
-            "stage_confidence IS NULL OR "
-            "(stage_confidence >= 0 AND stage_confidence <= 1)",
+            "stage_confidence IS NULL OR (stage_confidence >= 0 AND stage_confidence <= 1)",
             name="ck_dialogue_units_stage_confidence",
         ),
         CheckConstraint(

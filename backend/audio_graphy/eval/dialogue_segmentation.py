@@ -57,11 +57,7 @@ class DialogueGoldCase:
                     start_sec=float(item["start_sec"]),
                     end_sec=float(item["end_sec"]),
                     transcript=str(item.get("transcript", "")),
-                    speaker=(
-                        str(item["speaker"])
-                        if item.get("speaker") is not None
-                        else None
-                    ),
+                    speaker=(str(item["speaker"]) if item.get("speaker") is not None else None),
                     vad_conf=float(item.get("vad_conf", 1.0)),
                     semantic_embedding=(
                         tuple(float(value) for value in embedding)
@@ -69,14 +65,10 @@ class DialogueGoldCase:
                         else None
                     ),
                     topic_hint=(
-                        str(item["topic_hint"])
-                        if item.get("topic_hint") is not None
-                        else None
+                        str(item["topic_hint"]) if item.get("topic_hint") is not None else None
                     ),
                     stage_hint=(
-                        str(item["stage_hint"])
-                        if item.get("stage_hint") is not None
-                        else None
+                        str(item["stage_hint"]) if item.get("stage_hint") is not None else None
                     ),
                 )
             )
@@ -193,9 +185,7 @@ def evaluate_dialogue_gold(
         raise ValueError("at least one dialogue gold case is required")
     active_segmenter = segmenter or DialogueSegmenter()
     boundary_counts = [0, 0, 0]
-    boundary_counts_by_scenario: dict[str, list[int]] = defaultdict(
-        lambda: [0, 0, 0]
-    )
+    boundary_counts_by_scenario: dict[str, list[int]] = defaultdict(lambda: [0, 0, 0])
     gold_stage_pairs: list[tuple[str, str]] = []
     stage_pairs_by_scenario: dict[str, list[tuple[str, str]]] = defaultdict(list)
     segment_count = 0
@@ -206,12 +196,8 @@ def evaluate_dialogue_gold(
             scenario=case.scenario,
             recording_id=case.case_id,
         )
-        predicted_boundaries = {
-            unit.segment_refs[-1].segment_id for unit in predicted_units[:-1]
-        }
-        legal_boundaries = {
-            segment.segment_id for segment in case.segments[:-1]
-        }
+        predicted_boundaries = {unit.segment_refs[-1].segment_id for unit in predicted_units[:-1]}
+        legal_boundaries = {segment.segment_id for segment in case.segments[:-1]}
         predicted_boundaries &= legal_boundaries
         gold_boundaries = set(case.boundary_after_segment_ids)
         counts = _binary_counts(predicted_boundaries, gold_boundaries)
@@ -275,14 +261,10 @@ def evaluate_dialogue_release(
     metrics = evaluate_dialogue_gold(cases, segmenter=segmenter)
     failures: list[str] = []
     if metrics.boundary.f1 < minimum_boundary_f1:
-        failures.append(
-            "global boundary F1 "
-            f"{metrics.boundary.f1:.4f} < {minimum_boundary_f1:.4f}"
-        )
+        failures.append(f"global boundary F1 {metrics.boundary.f1:.4f} < {minimum_boundary_f1:.4f}")
     if metrics.stage_macro_f1 < minimum_stage_macro_f1:
         failures.append(
-            "global stage macro-F1 "
-            f"{metrics.stage_macro_f1:.4f} < {minimum_stage_macro_f1:.4f}"
+            f"global stage macro-F1 {metrics.stage_macro_f1:.4f} < {minimum_stage_macro_f1:.4f}"
         )
 
     for scenario, boundary_f1 in metrics.boundary_f1_by_scenario.items():
@@ -297,15 +279,11 @@ def evaluate_dialogue_release(
             continue
         if boundary_f1 < baseline_boundary:
             failures.append(
-                f"{scenario} boundary F1 {boundary_f1:.4f} "
-                f"< v1 {baseline_boundary:.4f}"
+                f"{scenario} boundary F1 {boundary_f1:.4f} < v1 {baseline_boundary:.4f}"
             )
         stage_f1 = metrics.stage_macro_f1_by_scenario[scenario]
         if stage_f1 < baseline_stage:
-            failures.append(
-                f"{scenario} stage macro-F1 {stage_f1:.4f} "
-                f"< v1 {baseline_stage:.4f}"
-            )
+            failures.append(f"{scenario} stage macro-F1 {stage_f1:.4f} < v1 {baseline_stage:.4f}")
 
     return DialogueReleaseDecision(
         publish_v2_default=not failures,
@@ -343,13 +321,11 @@ def _classification_metrics(
     precision = (
         true_positive / precision_denominator
         if precision_denominator
-        else 1.0 if recall_denominator == 0 else 0.0
-    )
-    recall = (
-        true_positive / recall_denominator
-        if recall_denominator
         else 1.0
+        if recall_denominator == 0
+        else 0.0
     )
+    recall = true_positive / recall_denominator if recall_denominator else 1.0
     denominator = precision + recall
     f1 = 2 * precision * recall / denominator if denominator else 0.0
     return ClassificationMetrics(
@@ -368,9 +344,7 @@ def _macro_f1(pairs: Sequence[tuple[str, str]]) -> float:
     labels = sorted({label for pair in pairs for label in pair})
     values: list[float] = []
     for label in labels:
-        true_positive = sum(
-            1 for expected, predicted in pairs if expected == predicted == label
-        )
+        true_positive = sum(1 for expected, predicted in pairs if expected == predicted == label)
         false_positive = sum(
             1 for expected, predicted in pairs if expected != label and predicted == label
         )

@@ -66,8 +66,7 @@ class _BatchEmbed:
     async def embed_texts(self, texts: Sequence[str]) -> Sequence[EmbeddingResult]:
         self.calls.append(tuple(texts))
         return tuple(
-            EmbeddingResult(vector=vector, dim=2, model=self.model)
-            for vector in self._vectors
+            EmbeddingResult(vector=vector, dim=2, model=self.model) for vector in self._vectors
         )
 
 
@@ -358,9 +357,7 @@ async def test_segmentation_revalidates_generation_after_embedding_without_holdi
     session_factory: Any,
     tmp_path: Path,
 ) -> None:
-    reception_id, recording_id, _ = await _seed_reception_with_generations(
-        session_factory
-    )
+    reception_id, recording_id, _ = await _seed_reception_with_generations(session_factory)
 
     class _ConcurrentGenerationActivation(_BatchEmbed):
         async def embed_texts(
@@ -465,8 +462,8 @@ async def test_first_automatic_segmentation_always_enqueues_new_units_for_recomp
     session_factory: Any,
     tmp_path: Path,
 ) -> None:
-    reception_id, _recording_id, _active_run_id = (
-        await _seed_reception_with_generations(session_factory)
+    reception_id, _recording_id, _active_run_id = await _seed_reception_with_generations(
+        session_factory
     )
     service = ReceptionService(session_factory, audio_root=tmp_path)
 
@@ -490,9 +487,7 @@ async def test_first_automatic_segmentation_always_enqueues_new_units_for_recomp
         jobs = list(
             (
                 await session.execute(
-                    select(TagExtractionJob).where(
-                        TagExtractionJob.tenant_id == TENANT_ID
-                    )
+                    select(TagExtractionJob).where(TagExtractionJob.tenant_id == TENANT_ID)
                 )
             ).scalars()
         )
@@ -507,8 +502,8 @@ async def test_automatic_resegmentation_keeps_facts_but_job_references_only_new_
     session_factory: Any,
     tmp_path: Path,
 ) -> None:
-    reception_id, _recording_id, _active_run_id = (
-        await _seed_reception_with_generations(session_factory)
+    reception_id, _recording_id, _active_run_id = await _seed_reception_with_generations(
+        session_factory
     )
     service = ReceptionService(session_factory, audio_root=tmp_path)
     await service.segment_reception(
@@ -718,9 +713,7 @@ async def test_timeline_geometry_change_clears_current_before_deleting_dialogue_
 
     async with session_factory() as session:
         unit = await session.get(DialogueUnit, old_unit_id)
-        currents = list(
-            (await session.execute(select(TagAssignmentCurrent))).scalars()
-        )
+        currents = list((await session.execute(select(TagAssignmentCurrent))).scalars())
         facts = list((await session.execute(select(TagAssignmentFact))).scalars())
     assert unit is None
     assert currents == []

@@ -91,9 +91,7 @@ async def _change_source_identity_without_touching_updated_at(
 
     async with factory() as session, session.begin():
         recording = (
-            await session.execute(
-                select(Recording).where(Recording.id == recording_id)
-            )
+            await session.execute(select(Recording).where(Recording.id == recording_id))
         ).scalar_one()
         original_updated_at = recording.updated_at
         await session.execute(
@@ -643,9 +641,7 @@ class TestAutomaticReceptionDiscovery:
             max_signals: int | None = None,
         ) -> Any:
             captured_texts.extend(turn.transcript for turn in turns)
-            captured_customer_voiceprints.extend(
-                turn.customer_voiceprint_id for turn in turns
-            )
+            captured_customer_voiceprints.extend(turn.customer_voiceprint_id for turn in turns)
             return original_detect(self, turns, max_signals=max_signals)
 
         monkeypatch.setattr(ReceptionMerger, "detect_recording_splits", capture_detect)

@@ -135,9 +135,7 @@ class AudioTimelinePlanner:
         planned: list[PlannedAudioSlice] = []
         for sequence_no, source in enumerate(sources):
             timeline_start_ms = cursor_ms + source.gap_before_ms
-            timeline_end_ms = timeline_start_ms + (
-                source.source_end_ms - source.source_start_ms
-            )
+            timeline_end_ms = timeline_start_ms + (source.source_end_ms - source.source_start_ms)
             planned.append(
                 PlannedAudioSlice(
                     source_id=source.source_id,

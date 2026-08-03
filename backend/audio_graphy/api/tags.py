@@ -110,9 +110,7 @@ async def get_tags(
         actor_user_id=user.id,
         access_kind="legacy_recording_tags",
     ):
-        raise ForbiddenError(
-            "Blind review isolation forbids tag output access before submission"
-        )
+        raise ForbiddenError("Blind review isolation forbids tag output access before submission")
 
     if view == "current":
         svc = TagCurrentService(factory)

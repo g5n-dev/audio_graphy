@@ -150,11 +150,14 @@ def _request(**overrides: Any) -> LLMRequest:
 def test_price_snapshot_separates_cached_prefill_and_rounds_per_attempt() -> None:
     snapshot = _price_snapshot()
 
-    assert snapshot.cost_microunits(
-        input_tokens=100,
-        output_tokens=10,
-        cached_prefill_tokens=80,
-    ) == 120
+    assert (
+        snapshot.cost_microunits(
+            input_tokens=100,
+            output_tokens=10,
+            cached_prefill_tokens=80,
+        )
+        == 120
+    )
     assert snapshot.cost_microunits(input_tokens=1, output_tokens=0) == 2
 
 
@@ -206,9 +209,7 @@ async def test_gateway_correlates_logical_request_and_retry_distinct_attempts() 
     assert len(attempts) == 2
     assert len({event.provider_attempt_id for event in attempts}) == 2
     assert all(event.provider_attempt_id for event in attempts)
-    assert {event.logical_request_id for event in attempts + logical} == {
-        "logical-fixed"
-    }
+    assert {event.logical_request_id for event in attempts + logical} == {"logical-fixed"}
     assert all(event.tagger_version_id == 11 for event in attempts + logical)
     assert all(event.deployment_id == 12 for event in attempts + logical)
     assert all(event.evaluation_run_id == 13 for event in attempts + logical)
@@ -285,9 +286,7 @@ async def test_gateway_prices_success_and_cache_hit_resets_actual_cost() -> None
     assert second.cost_microunits == 0
     assert second.price_version is None
     assert second.usage == first.usage
-    [provider_attempt] = [
-        event for event in observations if event.kind == "provider_attempt"
-    ]
+    [provider_attempt] = [event for event in observations if event.kind == "provider_attempt"]
     assert provider_attempt.cost_microunits == 10
     assert provider_attempt.price_version == "provider-price-2026-07"
 
@@ -534,9 +533,7 @@ async def test_recipe_v2_dual_reads_v1_and_promotes_without_provider_call() -> N
     request = _request()
     v1_sha256 = request.recipe_sha256(model=adapter.model, version="llm-recipe-v1")
     v2_sha256 = request.recipe_sha256(model=adapter.model)
-    cache.values[
-        LLMCacheIdentity(request.tenant_id, request.purpose, v1_sha256)
-    ] = CachedLLMValue(
+    cache.values[LLMCacheIdentity(request.tenant_id, request.purpose, v1_sha256)] = CachedLLMValue(
         text="legacy-hit",
         model=adapter.model,
         prompt_hash=v1_sha256,
@@ -573,16 +570,12 @@ async def test_recipe_shadow_serves_v1_and_observes_v2_without_changing_result()
     request = _request()
     v1_sha256 = request.recipe_sha256(model=adapter.model, version="llm-recipe-v1")
     v2_sha256 = request.recipe_sha256(model=adapter.model)
-    cache.values[
-        LLMCacheIdentity(request.tenant_id, request.purpose, v1_sha256)
-    ] = CachedLLMValue(
+    cache.values[LLMCacheIdentity(request.tenant_id, request.purpose, v1_sha256)] = CachedLLMValue(
         text="served-v1",
         model=adapter.model,
         prompt_hash=v1_sha256,
     )
-    cache.values[
-        LLMCacheIdentity(request.tenant_id, request.purpose, v2_sha256)
-    ] = CachedLLMValue(
+    cache.values[LLMCacheIdentity(request.tenant_id, request.purpose, v2_sha256)] = CachedLLMValue(
         text="shadow-v2",
         model=adapter.model,
         prompt_hash=v2_sha256,
@@ -615,9 +608,7 @@ async def test_recipe_shadow_backfills_v2_after_observing_a_miss() -> None:
     request = _request()
     v1_sha256 = request.recipe_sha256(model=adapter.model, version="llm-recipe-v1")
     v2_sha256 = request.recipe_sha256(model=adapter.model)
-    cache.values[
-        LLMCacheIdentity(request.tenant_id, request.purpose, v1_sha256)
-    ] = CachedLLMValue(
+    cache.values[LLMCacheIdentity(request.tenant_id, request.purpose, v1_sha256)] = CachedLLMValue(
         text="served-v1",
         model=adapter.model,
         prompt_hash=v1_sha256,

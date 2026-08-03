@@ -24,9 +24,7 @@ def wilson_lower_bound(
     z_squared = z * z
     denominator = 1 + z_squared / total
     centre = probability + z_squared / (2 * total)
-    margin = z * math.sqrt(
-        (probability * (1 - probability) + z_squared / (4 * total)) / total
-    )
+    margin = z * math.sqrt((probability * (1 - probability) + z_squared / (4 * total)) / total)
     return max(0.0, (centre - margin) / denominator)
 
 
@@ -55,9 +53,7 @@ def critical_enum_values(
     """Resolve the exact enum values governed by the critical-recall gate."""
 
     negative_values = {
-        str(value)
-        for value in definition.get("negative_values", [])
-        if value is not None
+        str(value) for value in definition.get("negative_values", []) if value is not None
     }
     critical_values: set[str] = set()
     configured = definition.get("critical_values")
@@ -74,9 +70,7 @@ def critical_enum_values(
             if isinstance(allowed, Sequence) and not isinstance(allowed, (str, bytes))
             else list(observed_values)
         )
-        critical_values.update(
-            value for value in registered if value not in negative_values
-        )
+        critical_values.update(value for value in registered if value not in negative_values)
     return tuple(sorted(critical_values))
 
 

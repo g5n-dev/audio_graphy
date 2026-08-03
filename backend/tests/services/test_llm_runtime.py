@@ -70,10 +70,7 @@ async def test_runtime_injects_distinct_immutable_tier_price_snapshots(
     assert strong.price_snapshot is not None
     assert weak.price_snapshot is not None
     assert strong.price_snapshot.version == "provider-price-2026-07"
-    assert (
-        strong.price_snapshot.input_microunits_per_million_tokens
-        == 2_000_000
-    )
+    assert strong.price_snapshot.input_microunits_per_million_tokens == 2_000_000
     assert weak.price_snapshot.input_microunits_per_million_tokens == 500_000
     await runtime.aclose()
 
@@ -165,9 +162,7 @@ async def test_runtime_passes_explicit_recipe_migration_mode_to_both_gateways(
     tmp_path: Path,
     mode: str,
 ) -> None:
-    settings = _settings(tmp_path).model_copy(
-        update={"llm_recipe_migration_mode": mode}
-    )
+    settings = _settings(tmp_path).model_copy(update={"llm_recipe_migration_mode": mode})
     runtime = await build_llm_runtime(
         settings,
         runtime_factory,

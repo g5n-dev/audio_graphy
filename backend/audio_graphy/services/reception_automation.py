@@ -627,8 +627,7 @@ class ReceptionAutomationService:
                     if verified_duration_ms is not None:
                         durations[recording.id] = verified_duration_ms / 1_000
                 segment_counts = {
-                    int(recording_id): int(count)
-                    for recording_id, count in duration_rows
+                    int(recording_id): int(count) for recording_id, count in duration_rows
                 }
 
             segments_by_recording: dict[int, list[Segment]] = {}
@@ -986,8 +985,7 @@ class ReceptionAutomationService:
                 and token_payload.get("recording_updated_at") == recording.updated_at.isoformat()
                 and token_payload.get("source_revision")
                 == int(getattr(recording, "source_revision", 0) or 0)
-                and token_payload.get("audio_sha256")
-                == getattr(recording, "audio_sha256", None)
+                and token_payload.get("audio_sha256") == getattr(recording, "audio_sha256", None)
                 and token_payload.get("audio_size_bytes")
                 == getattr(recording, "audio_size_bytes", None)
                 and token_payload.get("audio_duration_ms")
@@ -1128,9 +1126,7 @@ class ReceptionAutomationService:
                     source_start_ms=seconds_to_milliseconds(source_start),
                     source_end_ms=seconds_to_milliseconds(source_end),
                     timeline_start_ms=0,
-                    timeline_end_ms=seconds_to_milliseconds(
-                        source_end - source_start
-                    ),
+                    timeline_end_ms=seconds_to_milliseconds(source_end - source_start),
                     gap_before_ms=0,
                     gap_before_sec=0.0,
                     decision_source="manual",
@@ -1345,11 +1341,7 @@ class ReceptionAutomationService:
                     durations = {
                         recording_id: duration_ms / 1_000
                         for recording_id in requested_ids
-                        if (
-                            duration_ms := verified_recording_duration_ms(
-                                by_id[recording_id]
-                            )
-                        )
+                        if (duration_ms := verified_recording_duration_ms(by_id[recording_id]))
                         is not None
                     }
 
@@ -1660,23 +1652,15 @@ class ReceptionAutomationService:
                     timeline_end_sec=mapping.timeline_end_sec,
                     source_start_sec=mapping.source_start_sec,
                     source_end_sec=mapping.source_end_sec,
-                    source_start_ms=seconds_to_milliseconds(
-                        mapping.source_start_sec
-                    ),
+                    source_start_ms=seconds_to_milliseconds(mapping.source_start_sec),
                     source_end_ms=(
                         seconds_to_milliseconds(mapping.source_end_sec)
                         if mapping.source_end_sec is not None
                         else None
                     ),
-                    timeline_start_ms=seconds_to_milliseconds(
-                        mapping.timeline_start_sec
-                    ),
-                    timeline_end_ms=seconds_to_milliseconds(
-                        mapping.timeline_end_sec
-                    ),
-                    gap_before_ms=seconds_to_milliseconds(
-                        mapping.gap_before_sec
-                    ),
+                    timeline_start_ms=seconds_to_milliseconds(mapping.timeline_start_sec),
+                    timeline_end_ms=seconds_to_milliseconds(mapping.timeline_end_sec),
+                    gap_before_ms=seconds_to_milliseconds(mapping.gap_before_sec),
                     gap_before_sec=mapping.gap_before_sec,
                     decision_source=mapping.decision_source,
                     merge_confidence=mapping.merge_confidence,

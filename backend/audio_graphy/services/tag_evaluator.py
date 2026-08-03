@@ -1565,8 +1565,7 @@ class TagEvaluationService:
                         Gate(
                             code=(f"subject_type:{subject_type}:critical_value:{tag_key}:{value}"),
                             passed=(
-                                positive_support > 0
-                                and recall_lcb >= CRITICAL_RECALL_LCB_THRESHOLD
+                                positive_support > 0 and recall_lcb >= CRITICAL_RECALL_LCB_THRESHOLD
                             ),
                             actual=recall_lcb,
                             threshold=CRITICAL_RECALL_LCB_THRESHOLD,

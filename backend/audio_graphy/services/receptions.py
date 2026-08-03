@@ -202,9 +202,7 @@ def reception_mapping_playback_geometry(
             else None
         )
     )
-    persisted_timeline_start_ms = int(
-        getattr(mapping, "timeline_start_ms", 0) or 0
-    )
+    persisted_timeline_start_ms = int(getattr(mapping, "timeline_start_ms", 0) or 0)
     timeline_start_ms = (
         persisted_timeline_start_ms
         if persisted_timeline_start_ms > 0
@@ -224,9 +222,7 @@ def reception_mapping_playback_geometry(
     )
     legal_source_end_ms = source_end_ms
     if legal_source_end_ms is None:
-        legal_source_end_ms = source_start_ms + (
-            timeline_end_ms - timeline_start_ms
-        )
+        legal_source_end_ms = source_start_ms + (timeline_end_ms - timeline_start_ms)
     return ReceptionPlaybackGeometry(
         source_start_ms=source_start_ms,
         source_end_ms=source_end_ms,
@@ -1993,13 +1989,9 @@ class ReceptionService:
                 previous_predicate = DialogueUnit.unit_index < min(
                     unit.unit_index for unit in units
                 )
-                next_predicate = DialogueUnit.unit_index > max(
-                    unit.unit_index for unit in units
-                )
+                next_predicate = DialogueUnit.unit_index > max(unit.unit_index for unit in units)
             else:
-                previous_predicate = (
-                    DialogueUnit.end_sec <= effective_window_start
-                )
+                previous_predicate = DialogueUnit.end_sec <= effective_window_start
                 next_predicate = DialogueUnit.start_sec >= effective_window_end
             previous_dialogue_unit = (
                 await session.execute(
@@ -2184,9 +2176,7 @@ class ReceptionService:
         )
         return list(
             dict.fromkeys(
-                speaker
-                for speaker in result.scalars().all()
-                if speaker is not None and speaker
+                speaker for speaker in result.scalars().all() if speaker is not None and speaker
             )
         )
 
@@ -2326,22 +2316,14 @@ class ReceptionService:
                 recording = recordings[mapping.recording_id]
                 verified_duration_ms = verified_recording_duration_ms(recording)
                 verified_duration_sec = (
-                    verified_duration_ms / 1_000
-                    if verified_duration_ms is not None
-                    else None
+                    verified_duration_ms / 1_000 if verified_duration_ms is not None else None
                 )
                 source_end = mapping.source_end_sec
                 if source_end is None and verified_duration_sec is not None:
                     source_end = verified_duration_sec
-                if (
-                    verified_duration_sec is not None
-                    and (
-                        mapping.source_start_sec >= verified_duration_sec
-                        or (
-                            source_end is not None
-                            and source_end > verified_duration_sec + 0.001
-                        )
-                    )
+                if verified_duration_sec is not None and (
+                    mapping.source_start_sec >= verified_duration_sec
+                    or (source_end is not None and source_end > verified_duration_sec + 0.001)
                 ):
                     out_of_bounds.append(mapping.recording_id)
                 normalized_source_ends[mapping.recording_id] = source_end
@@ -2406,23 +2388,13 @@ class ReceptionService:
                         timeline_end_sec=mapping.timeline_end_sec,
                         source_start_sec=mapping.source_start_sec,
                         source_end_sec=source_end,
-                        source_start_ms=seconds_to_milliseconds(
-                            mapping.source_start_sec
-                        ),
+                        source_start_ms=seconds_to_milliseconds(mapping.source_start_sec),
                         source_end_ms=(
-                            seconds_to_milliseconds(source_end)
-                            if source_end is not None
-                            else None
+                            seconds_to_milliseconds(source_end) if source_end is not None else None
                         ),
-                        timeline_start_ms=seconds_to_milliseconds(
-                            mapping.timeline_start_sec
-                        ),
-                        timeline_end_ms=seconds_to_milliseconds(
-                            mapping.timeline_end_sec
-                        ),
-                        gap_before_ms=seconds_to_milliseconds(
-                            mapping.gap_before_sec
-                        ),
+                        timeline_start_ms=seconds_to_milliseconds(mapping.timeline_start_sec),
+                        timeline_end_ms=seconds_to_milliseconds(mapping.timeline_end_sec),
+                        gap_before_ms=seconds_to_milliseconds(mapping.gap_before_sec),
                         gap_before_sec=mapping.gap_before_sec,
                         decision_source=mapping.decision_source,
                         merge_confidence=mapping.merge_confidence,
@@ -2642,11 +2614,7 @@ class ReceptionService:
             durations = {
                 recording_id: verified_duration_ms / 1_000
                 for recording_id, recording in by_id.items()
-                if (
-                    verified_duration_ms
-                    := verified_recording_duration_ms(recording)
-                )
-                is not None
+                if (verified_duration_ms := verified_recording_duration_ms(recording)) is not None
             }
 
         unavailable_duration = [
@@ -3116,9 +3084,7 @@ class ReceptionService:
                 if audio_manifest is not None
                 else [None] * len(recordings)
             )
-            requested_geometry: list[
-                tuple[Recording, float, float, float]
-            ] = []
+            requested_geometry: list[tuple[Recording, float, float, float]] = []
             timeline_sources: list[AudioTimelineSource] = []
             for _sequence_no, (recording, manifest_input) in enumerate(
                 zip(recordings, manifest_inputs, strict=True)
@@ -3151,13 +3117,8 @@ class ReceptionService:
                 )
                 source_start_ms = seconds_to_milliseconds(source_start)
                 source_end_ms = seconds_to_milliseconds(source_end)
-                verified_duration_ms = (
-                    verified_recording_duration_ms(recording)
-                    or source_end_ms
-                )
-                requested_geometry.append(
-                    (recording, source_start, source_end, gap_before)
-                )
+                verified_duration_ms = verified_recording_duration_ms(recording) or source_end_ms
+                requested_geometry.append((recording, source_start, source_end, gap_before))
                 timeline_sources.append(
                     AudioTimelineSource(
                         source_id=recording.id,
@@ -3182,23 +3143,13 @@ class ReceptionService:
                     {
                         "recording": recording,
                         "sequence_no": planned.sequence_no,
-                        "timeline_start_sec": milliseconds_to_seconds(
-                            planned.timeline_start_ms
-                        ),
-                        "timeline_end_sec": milliseconds_to_seconds(
-                            planned.timeline_end_ms
-                        ),
-                        "source_start_sec": milliseconds_to_seconds(
-                            planned.source_start_ms
-                        ),
-                        "source_end_sec": milliseconds_to_seconds(
-                            planned.source_end_ms
-                        ),
+                        "timeline_start_sec": milliseconds_to_seconds(planned.timeline_start_ms),
+                        "timeline_end_sec": milliseconds_to_seconds(planned.timeline_end_ms),
+                        "source_start_sec": milliseconds_to_seconds(planned.source_start_ms),
+                        "source_end_sec": milliseconds_to_seconds(planned.source_end_ms),
                         "decision_source": "manual",
                         "merge_confidence": 1.0,
-                        "gap_before_sec": milliseconds_to_seconds(
-                            planned.gap_before_ms
-                        ),
+                        "gap_before_sec": milliseconds_to_seconds(planned.gap_before_ms),
                         "merge_reasons": {
                             "manual_reorder": True,
                             "actor": actor,
@@ -3422,21 +3373,11 @@ class ReceptionService:
                     timeline_end_sec=float(plan["timeline_end_sec"]),
                     source_start_sec=float(plan["source_start_sec"]),
                     source_end_sec=float(plan["source_end_sec"]),
-                    source_start_ms=seconds_to_milliseconds(
-                        float(plan["source_start_sec"])
-                    ),
-                    source_end_ms=seconds_to_milliseconds(
-                        float(plan["source_end_sec"])
-                    ),
-                    timeline_start_ms=seconds_to_milliseconds(
-                        float(plan["timeline_start_sec"])
-                    ),
-                    timeline_end_ms=seconds_to_milliseconds(
-                        float(plan["timeline_end_sec"])
-                    ),
-                    gap_before_ms=seconds_to_milliseconds(
-                        float(plan["gap_before_sec"])
-                    ),
+                    source_start_ms=seconds_to_milliseconds(float(plan["source_start_sec"])),
+                    source_end_ms=seconds_to_milliseconds(float(plan["source_end_sec"])),
+                    timeline_start_ms=seconds_to_milliseconds(float(plan["timeline_start_sec"])),
+                    timeline_end_ms=seconds_to_milliseconds(float(plan["timeline_end_sec"])),
+                    gap_before_ms=seconds_to_milliseconds(float(plan["gap_before_sec"])),
                     gap_before_sec=float(plan["gap_before_sec"]),
                     decision_source="manual",
                     merge_confidence=1.0,
@@ -3539,10 +3480,7 @@ class ReceptionService:
                     occurred_at=datetime.now(UTC),
                 )
             )
-            if (
-                previous_merged_audio_path
-                and previous_merged_audio_path != merged_audio_path
-            ):
+            if previous_merged_audio_path and previous_merged_audio_path != merged_audio_path:
                 retired_audio_path = previous_merged_audio_path
             if before_commit is not None:
                 # Flush gives the hook stable mapping IDs while keeping every
@@ -3811,9 +3749,7 @@ class ReceptionService:
 
         try:
             results = tuple(
-                await self._embed_adapter.embed_texts(
-                    tuple(item.transcript for item in inputs)
-                )
+                await self._embed_adapter.embed_texts(tuple(item.transcript for item in inputs))
             )
             if len(results) != len(inputs):
                 raise ValueError("embedding result count does not match segment count")
@@ -3912,9 +3848,7 @@ class ReceptionService:
             "requested_algorithm_version": requested_algorithm_version,
             "config_hash": config_hash,
             "enabled_signals": enabled_signals,
-            "capability": (
-                "rules+semantic" if semantic.status == "enabled" else "rules-only"
-            ),
+            "capability": ("rules+semantic" if semantic.status == "enabled" else "rules-only"),
             "semantic_embedding": {
                 "status": semantic.status,
                 "model": semantic.model,
@@ -3922,9 +3856,7 @@ class ReceptionService:
                 "error_type": semantic.error_type,
             },
             "input_generation": dict(snapshot.input_generation),
-            "legacy_fallback_recording_ids": list(
-                snapshot.legacy_fallback_recording_ids
-            ),
+            "legacy_fallback_recording_ids": list(snapshot.legacy_fallback_recording_ids),
             "input_fingerprint": snapshot.fingerprint,
         }
 
@@ -3975,9 +3907,7 @@ class ReceptionService:
                 select(func.count(DialogueTagAssignment.id)).where(
                     DialogueTagAssignment.tenant_id == tenant_id,
                     DialogueTagAssignment.reception_id == reception_id,
-                    DialogueTagAssignment.dialogue_unit_id.in_(
-                        [unit.id for unit in existing]
-                    ),
+                    DialogueTagAssignment.dialogue_unit_id.in_([unit.id for unit in existing]),
                 )
             )
             if int(tag_count_result.scalar_one()) > 0:
@@ -4287,11 +4217,7 @@ class ReceptionService:
                     *[unit.id for unit in persisted_units],
                 ],
                 recompute_dialogue_unit_ids=[unit.id for unit in persisted_units],
-                cause=(
-                    "automatic_resegmentation"
-                    if existing
-                    else "automatic_segmentation"
-                ),
+                cause=("automatic_resegmentation" if existing else "automatic_segmentation"),
                 reception_version=reception.version,
                 actor_user_id=_actor_user_id(actor),
             )
@@ -4790,10 +4716,7 @@ class ReceptionService:
             survivor_boundary_reasons = [
                 deepcopy(reason)
                 for reason in survivor.boundary_reasons
-                if not (
-                    isinstance(reason, Mapping)
-                    and reason.get("code") == "stage_inference"
-                )
+                if not (isinstance(reason, Mapping) and reason.get("code") == "stage_inference")
             ]
             survivor_stage_confidence = _unit_stage_confidence(survivor)
             removed_stage_confidence = _unit_stage_confidence(removed)

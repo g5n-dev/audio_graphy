@@ -754,8 +754,7 @@ async def test_mature_baseline_derives_p99_budget_and_explicit_budget_overrides_
                         budget_consumed_provider_tokens=index,
                         budget_consumed_provider_calls=index,
                         budget_consumed_cost_microunits=index * 2,
-                        budget_started_at=sample_finished_at
-                        - timedelta(seconds=index),
+                        budget_started_at=sample_finished_at - timedelta(seconds=index),
                         budget_source="alert_only",
                         budget_purpose="extract",
                         budget_baseline_sample_count=0,
@@ -853,9 +852,7 @@ async def test_high_throughput_budget_age_uses_full_history_not_recent_p99_windo
     async with factory() as session, session.begin():
         for index in range(101):
             finished_at = (
-                now - timedelta(days=8)
-                if index == 0
-                else now - timedelta(hours=1, seconds=index)
+                now - timedelta(days=8) if index == 0 else now - timedelta(hours=1, seconds=index)
             )
             session.add(
                 TagExtractionJob(

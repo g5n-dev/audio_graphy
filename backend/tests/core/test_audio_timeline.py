@@ -144,9 +144,7 @@ def test_randomized_timeline_preserves_every_source_span_and_gap() -> None:
 
         plan = planner.plan(sources)
         cursor_ms = 0
-        for sequence_no, (source, planned) in enumerate(
-            zip(sources, plan.slices, strict=True)
-        ):
+        for sequence_no, (source, planned) in enumerate(zip(sources, plan.slices, strict=True)):
             assert planned.sequence_no == sequence_no
             assert planned.source_start_ms == source.source_start_ms
             assert planned.source_end_ms == source.source_end_ms

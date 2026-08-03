@@ -228,9 +228,11 @@ class TestStreamingSessionORM:
             for index in StreamingSession.__table__.indexes
             if index.unique
         }
-        assert unique_indexes[
-            "ux_streaming_sessions_tenant_session_epoch"
-        ] == ("tenant_id", "session_id", "epoch")
+        assert unique_indexes["ux_streaming_sessions_tenant_session_epoch"] == (
+            "tenant_id",
+            "session_id",
+            "epoch",
+        )
 
     def test_check_constraint_on_end_reason(self) -> None:
         from audio_graphy.models.streaming_session import StreamingSession

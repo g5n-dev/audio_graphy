@@ -417,9 +417,7 @@ def test_erase_voiceprint_cascade_is_in_the_database_transaction(
         async with db_session_factory() as session:
             speaker = await session.get(SpeakerNode, speaker_id)
             voiceprint = await session.scalar(
-                select(VoiceprintVector.id).where(
-                    VoiceprintVector.recording_id == rec_id
-                )
+                select(VoiceprintVector.id).where(VoiceprintVector.recording_id == rec_id)
             )
             link = await session.scalar(
                 select(SpeakerLink.id).where(SpeakerLink.recording_id == rec_id)

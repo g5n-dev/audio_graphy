@@ -164,9 +164,7 @@ class MockLLMAdapter:
         except json.JSONDecodeError:
             return None
         tag_paths = (
-            payload.get("k", payload.get("tag_paths"))
-            if isinstance(payload, dict)
-            else None
+            payload.get("k", payload.get("tag_paths")) if isinstance(payload, dict) else None
         )
         if not isinstance(tag_paths, list) or not all(
             isinstance(path, str) and path for path in tag_paths

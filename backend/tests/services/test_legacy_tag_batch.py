@@ -31,9 +31,7 @@ class _StructuredTagLLM:
     ) -> LLMResponse:
         del temperature, cache_key
         self.calls.append(messages)
-        self.generation_kwargs.append(
-            {"max_tokens": max_tokens, **generation_kwargs}
-        )
+        self.generation_kwargs.append({"max_tokens": max_tokens, **generation_kwargs})
         return LLMResponse(
             text=json.dumps(self._payload, ensure_ascii=False),
             model=self.model,

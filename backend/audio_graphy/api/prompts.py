@@ -236,11 +236,9 @@ async def activate_prompt(
     )
     prev_active = prev_result.scalar_one_or_none()
     prev_active_id = prev_active.id if prev_active is not None else None
-    prompt_unchanged = (
-        prev_active is not None
-        and _normalized_prompt_content(prompt.content)
-        == _normalized_prompt_content(prev_active.content)
-    )
+    prompt_unchanged = prev_active is not None and _normalized_prompt_content(
+        prompt.content
+    ) == _normalized_prompt_content(prev_active.content)
 
     if body.dry_run:
         if prompt_unchanged:
@@ -388,9 +386,7 @@ async def activate_prompt(
 
     # Trigger recompute
     recompute_task_id = None
-    affected_count = (
-        len(resolved_target.dialogue_unit_ids) if resolved_target is not None else 0
-    )
+    affected_count = len(resolved_target.dialogue_unit_ids) if resolved_target is not None else 0
 
     if (
         compatibility is not None
@@ -405,8 +401,7 @@ async def activate_prompt(
             actor_user_id=current_user.id,
             operation="legacy_prompt_activation",
             idempotency_key=(
-                f"legacy-prompt-activation-{prompt.id}-"
-                f"{resolved_target.tagger_version_id}"
+                f"legacy-prompt-activation-{prompt.id}-{resolved_target.tagger_version_id}"
             ),
             resolved_target=resolved_target,
             prompt_id=prompt.id,
@@ -445,9 +440,7 @@ async def activate_prompt(
             resolved_target.tagger_version_id if resolved_target is not None else None
         ),
         quality_gate_status=(
-            "production_bound"
-            if resolved_target is not None
-            else "unchanged_prompt"
+            "production_bound" if resolved_target is not None else "unchanged_prompt"
         ),
         message=(
             "Prompt activated. Canonical recompute task created."

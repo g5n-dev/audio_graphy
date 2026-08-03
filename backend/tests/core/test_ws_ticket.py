@@ -115,9 +115,7 @@ async def test_expired_ticket_is_rejected(
     async with ticket_factory() as db:
         state = (
             await db.execute(
-                select(StreamingWSTicket.state).where(
-                    StreamingWSTicket.token_hash.is_not(None)
-                )
+                select(StreamingWSTicket.state).where(StreamingWSTicket.token_hash.is_not(None))
             )
         ).scalar_one()
     assert state == "EXPIRED"

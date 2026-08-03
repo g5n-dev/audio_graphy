@@ -301,9 +301,7 @@ async def export_recording(
         actor_user_id=user.id,
         access_kind="dsar_export_semantics",
     ):
-        raise ForbiddenError(
-            "Blind review isolation forbids semantic export before submission"
-        )
+        raise ForbiddenError("Blind review isolation forbids semantic export before submission")
 
     bundle = await _build_export_bundle(factory, rec, crypto)
 

@@ -12,9 +12,7 @@ from audio_graphy.eval.dialogue_segmentation import (
     load_dialogue_gold,
 )
 
-_GOLD_PATH = (
-    Path(__file__).parents[1] / "fixtures" / "dialogue_segmentation_gold.json"
-)
+_GOLD_PATH = Path(__file__).parents[1] / "fixtures" / "dialogue_segmentation_gold.json"
 
 
 def test_dialogue_hybrid_v2_clears_global_and_per_scenario_release_gates() -> None:
@@ -31,14 +29,8 @@ def test_dialogue_hybrid_v2_clears_global_and_per_scenario_release_gates() -> No
     assert decision.metrics.case_count == 4
     assert decision.metrics.segment_count == 19
     for scenario, baseline in v1_baselines.items():
-        assert (
-            decision.metrics.boundary_f1_by_scenario[scenario]
-            >= baseline["boundary_f1"]
-        )
-        assert (
-            decision.metrics.stage_macro_f1_by_scenario[scenario]
-            >= baseline["stage_macro_f1"]
-        )
+        assert decision.metrics.boundary_f1_by_scenario[scenario] >= baseline["boundary_f1"]
+        assert decision.metrics.stage_macro_f1_by_scenario[scenario] >= baseline["stage_macro_f1"]
 
 
 def test_regressed_candidate_is_not_promoted_even_if_code_is_publishable() -> None:

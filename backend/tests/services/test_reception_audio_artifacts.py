@@ -43,9 +43,7 @@ from audio_graphy.services.receptions import (
 async def artifact_factory(
     tmp_path: Path,
 ) -> AsyncIterator[async_sessionmaker[AsyncSession]]:
-    engine = create_async_engine(
-        f"sqlite+aiosqlite:///{tmp_path / 'audio-artifacts.sqlite3'}"
-    )
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'audio-artifacts.sqlite3'}")
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
     yield async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
@@ -189,9 +187,7 @@ class _WritingAssembler:
             size_bytes=32_044,
             duration_sec=source_end - request.source_start_sec,
             timeline_start_sec=request.gap_before_sec,
-            timeline_end_sec=request.gap_before_sec
-            + source_end
-            - request.source_start_sec,
+            timeline_end_sec=request.gap_before_sec + source_end - request.source_start_sec,
             codec="pcm_s16le",
             sample_rate=16_000,
             channels=1,
@@ -414,9 +410,7 @@ async def test_physical_generation_is_registered_before_build_and_attached_atomi
         reception = await db.get(Reception, reception_id)
         artifacts = list(
             (
-                await db.execute(
-                    select(ReceptionAudioArtifact).order_by(ReceptionAudioArtifact.id)
-                )
+                await db.execute(select(ReceptionAudioArtifact).order_by(ReceptionAudioArtifact.id))
             ).scalars()
         )
     assert operation is not None and operation.status == "succeeded"
@@ -454,9 +448,7 @@ async def test_real_reception_service_honours_durable_artifact_callbacks(
         reception = await db.get(Reception, reception_id)
         artifacts = list(
             (
-                await db.execute(
-                    select(ReceptionAudioArtifact).order_by(ReceptionAudioArtifact.id)
-                )
+                await db.execute(select(ReceptionAudioArtifact).order_by(ReceptionAudioArtifact.id))
             ).scalars()
         )
     assert operation is not None and operation.status == "succeeded"
@@ -507,9 +499,7 @@ async def test_failure_windows_never_replace_old_attached_artifact(
         reception = await db.get(Reception, reception_id)
         artifacts = list(
             (
-                await db.execute(
-                    select(ReceptionAudioArtifact).order_by(ReceptionAudioArtifact.id)
-                )
+                await db.execute(select(ReceptionAudioArtifact).order_by(ReceptionAudioArtifact.id))
             ).scalars()
         )
     assert operation is not None and operation.status == "failed"
@@ -536,11 +526,7 @@ async def test_artifact_reconciler_is_confined_idempotent_and_repairs_ready_poin
     )
     now = datetime.now(UTC)
     valid_directory = (
-        audio_root
-        / "assembled_audio"
-        / "tenant-a"
-        / "receptions"
-        / f"reception-{reception_id}"
+        audio_root / "assembled_audio" / "tenant-a" / "receptions" / f"reception-{reception_id}"
     )
     valid_directory.mkdir(parents=True, exist_ok=True)
     retired_path = valid_directory / "v2-retiredartifact.wav"
@@ -620,25 +606,15 @@ async def test_artifact_reconciler_is_confined_idempotent_and_repairs_ready_poin
 
     harness = _PhysicalMergeHarness(artifact_factory, audio_root)
     service = ReceptionAudioOperationService(artifact_factory, harness)  # type: ignore[arg-type]
-    first_count = await service.reconcile_artifacts(
-        stale_before=now - timedelta(hours=1)
-    )
-    second_count = await service.reconcile_artifacts(
-        stale_before=now - timedelta(hours=1)
-    )
+    first_count = await service.reconcile_artifacts(stale_before=now - timedelta(hours=1))
+    second_count = await service.reconcile_artifacts(stale_before=now - timedelta(hours=1))
 
     async with artifact_factory() as db:
-        artifacts = list(
-            (
-                await db.execute(select(ReceptionAudioArtifact))
-            ).scalars()
-        )
+        artifacts = list((await db.execute(select(ReceptionAudioArtifact))).scalars())
         revisions = list(
             (
                 await db.execute(
-                    select(ReceptionTimelineRevision).order_by(
-                        ReceptionTimelineRevision.revision
-                    )
+                    select(ReceptionTimelineRevision).order_by(ReceptionTimelineRevision.revision)
                 )
             ).scalars()
         )
@@ -710,12 +686,7 @@ async def test_artifact_reconciler_never_attaches_or_deletes_corrupt_active_poin
 
     harness = _PhysicalMergeHarness(artifact_factory, audio_root)
     service = ReceptionAudioOperationService(artifact_factory, harness)  # type: ignore[arg-type]
-    assert (
-        await service.reconcile_artifacts(
-            stale_before=now - timedelta(hours=1)
-        )
-        == 0
-    )
+    assert await service.reconcile_artifacts(stale_before=now - timedelta(hours=1)) == 0
 
     async with artifact_factory() as db:
         artifact = (

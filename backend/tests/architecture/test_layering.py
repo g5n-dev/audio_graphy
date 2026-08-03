@@ -44,6 +44,12 @@ Outstanding debt — real upward runtime dependencies that should be inverted:
 * ``adapters`` ↔ ``core.chunker`` is a genuine cycle (``core.chunker`` imports
   ``adapters.bundle`` and ``adapters.protocols`` at module scope), already papered over
   with ``TYPE_CHECKING`` and lazy imports in the three adapter modules on the other side.
+* ``services`` ↔ ``optimizers`` is a second genuine cycle: ``optimizers.artifacts``
+  imports ``services.tag_governance`` and ``services.tag_harness_runtime``, while
+  ``services.prompt_lab`` imports ``optimizers.artifacts``. Both packages sit on the same
+  layer below, so the ratchet does not flag it — that placement is a description of the
+  current state, not an endorsement. Whoever owns the prompt-lab work should decide which
+  direction the dependency runs and split the shared helpers out accordingly.
 
 Fixing any entry means deleting it here: ``test_known_violations_still_exist`` fails on
 a stale allowlist, so this list cannot rot into permanent permission.
@@ -70,7 +76,15 @@ LAYERS: tuple[tuple[str, ...], ...] = (
     # while it lived under services/ those five imports pointed upward.
     ("storage", "llm"),
     ("core", "auth"),
-    ("services", "tags", "eval", "analytics"),
+    # `optimizers` is placed alongside `services` rather than below it because
+    # the two are currently mutually dependent, not because that is where it
+    # belongs: `optimizers.artifacts` imports `services.tag_governance` and
+    # `services.tag_harness_runtime`, while `services.prompt_lab` imports
+    # `optimizers.artifacts` — a package-level cycle of the same shape as the
+    # api<->core one that was untangled earlier. Same-layer edges are legal
+    # here, so this classification keeps the ratchet honest about everything
+    # else without silently blessing the cycle; see the note in the docstring.
+    ("services", "tags", "eval", "analytics", "optimizers"),
     ("api",),
 )
 ROOT_LAYER = len(LAYERS)

@@ -125,9 +125,9 @@ class ReceptionCreate(_StrictModel):
                     "reception_first_gap",
                     "the first source cannot have gap_before_sec",
                 )
-            expected_start_ms = seconds_to_milliseconds(
-                previous_end
-            ) + seconds_to_milliseconds(mapping.gap_before_sec)
+            expected_start_ms = seconds_to_milliseconds(previous_end) + seconds_to_milliseconds(
+                mapping.gap_before_sec
+            )
             if seconds_to_milliseconds(mapping.timeline_start_sec) != expected_start_ms:
                 raise PydanticCustomError(
                     "reception_timeline_gap",

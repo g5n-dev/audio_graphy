@@ -197,20 +197,14 @@ async def test_rolling_back_production_atomically_invalidates_bound_child_releas
 
     async with baseline_factory() as session:
         deployments = list(
-            (
-                await session.execute(
-                    select(TagDeployment).order_by(TagDeployment.id)
-                )
-            )
+            (await session.execute(select(TagDeployment).order_by(TagDeployment.id)))
             .scalars()
             .all()
         )
         production_count = int(
             (
                 await session.execute(
-                    select(func.count(TagDeployment.id)).where(
-                        TagDeployment.status == "production"
-                    )
+                    select(func.count(TagDeployment.id)).where(TagDeployment.status == "production")
                 )
             ).scalar_one()
         )

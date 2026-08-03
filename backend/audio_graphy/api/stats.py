@@ -46,9 +46,7 @@ async def get_tag_stats(
         actor_user_id=user.id,
         access_kind="legacy_tag_stats",
     ):
-        raise ForbiddenError(
-            "Blind review isolation forbids tag statistics before submission"
-        )
+        raise ForbiddenError("Blind review isolation forbids tag statistics before submission")
     svc = TagStatsService(factory)
 
     stats = await svc.get_stats(

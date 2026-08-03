@@ -508,20 +508,16 @@ def _provider_budget_health(
         for dimension, ratio in completion.items():
             max_by_dimension[dimension] = max(max_by_dimension[dimension], ratio)
         explicitly_exhausted = bool(
-            job.budget_exhausted_at is not None
-            or job.last_error_code == "budget_exhausted"
+            job.budget_exhausted_at is not None or job.last_error_code == "budget_exhausted"
         )
         successfully_completed = job.status == "completed"
         exhausted = explicitly_exhausted or (
-            not successfully_completed
-            and any(ratio >= 1 for ratio in completion.values())
+            not successfully_completed and any(ratio >= 1 for ratio in completion.values())
         )
         near_exhaustion = (
             not exhausted
             and job.status in {"queued", "running", "retry_wait"}
-            and any(
-                ratio >= JOB_BUDGET_NEAR_EXHAUSTION_THRESHOLD for ratio in completion.values()
-            )
+            and any(ratio >= JOB_BUDGET_NEAR_EXHAUSTION_THRESHOLD for ratio in completion.values())
         )
         if exhausted:
             exhausted_job_ids.append(int(job.id))
@@ -1436,11 +1432,7 @@ class TagDeploymentMonitor:
             "provider_token_regression_rate": None,
             "cost_regression_rate": None,
         }
-        run_ids = {
-            int(run.id)
-            for candidate, baseline in pairs
-            for run in (candidate, baseline)
-        }
+        run_ids = {int(run.id) for candidate, baseline in pairs for run in (candidate, baseline)}
         if not run_ids:
             return default
         executions = list(
@@ -1562,12 +1554,8 @@ class TagDeploymentMonitor:
                 baseline_tokens,
             ),
             "cost_regression_rate": regression(candidate_cost, baseline_cost),
-            "efficiency_soft_regression_threshold": (
-                EFFICIENCY_SOFT_REGRESSION_THRESHOLD
-            ),
-            "efficiency_hard_regression_threshold": (
-                EFFICIENCY_HARD_REGRESSION_THRESHOLD
-            ),
+            "efficiency_soft_regression_threshold": (EFFICIENCY_SOFT_REGRESSION_THRESHOLD),
+            "efficiency_hard_regression_threshold": (EFFICIENCY_HARD_REGRESSION_THRESHOLD),
         }
 
     async def _input_scene_profile_drift_metrics(
@@ -1970,9 +1958,7 @@ class TagDeploymentMonitor:
                             )
                         ),
                         TagFeedbackEvent.truth_tier == "t3",
-                        TagFeedbackEvent.truth_state.in_(
-                            ("present", "absent", "not_applicable")
-                        ),
+                        TagFeedbackEvent.truth_state.in_(("present", "absent", "not_applicable")),
                         TagFeedbackEvent.sampling_probability.is_not(None),
                         TagReviewDecision.tenant_id == tenant_id,
                         TagReviewDecision.adjudication.is_(True),

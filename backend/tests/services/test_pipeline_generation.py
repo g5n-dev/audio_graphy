@@ -336,9 +336,7 @@ async def test_stale_worker_cannot_mutate_a_run_after_lease_reassignment(
         run = (
             await db.execute(
                 select(RecordingPipelineRun)
-                .where(
-                    RecordingPipelineRun.recording_id == seeded_recording.id
-                )
+                .where(RecordingPipelineRun.recording_id == seeded_recording.id)
                 .with_for_update()
             )
         ).scalar_one()

@@ -94,13 +94,8 @@ class StreamingDurabilityWriter:
                 )
             ).scalar_one_or_none()
             if existing is not None:
-                if (
-                    existing.recording_id != session.recording_id
-                    or bytes(existing.pcm) != pcm
-                ):
-                    raise RuntimeError(
-                        "a streaming sequence was replayed with different audio"
-                    )
+                if existing.recording_id != session.recording_id or bytes(existing.pcm) != pcm:
+                    raise RuntimeError("a streaming sequence was replayed with different audio")
                 session_row.ack_seq_high_watermark = max(
                     int(session_row.ack_seq_high_watermark),
                     source_seq,
@@ -160,8 +155,7 @@ class StreamingDurabilityWriter:
                         select(StreamingPCMFrame)
                         .where(
                             StreamingPCMFrame.tenant_id == session.tenant_id,
-                            StreamingPCMFrame.session_key
-                            == session.session_id.value,
+                            StreamingPCMFrame.session_key == session.session_id.value,
                             StreamingPCMFrame.recording_id == session.recording_id,
                             StreamingPCMFrame.state == "ACCEPTED",
                         )
@@ -212,9 +206,7 @@ class StreamingDurabilityWriter:
                         StreamingSessionORM.tenant_id == session.tenant_id,
                         StreamingSessionORM.recording_id == session.recording_id,
                         StreamingSessionORM.lease_token == session.lease_token,
-                        StreamingSessionORM.status.in_(
-                            ("ACTIVE", "DRAINING", "COMMITTING")
-                        ),
+                        StreamingSessionORM.status.in_(("ACTIVE", "DRAINING", "COMMITTING")),
                     )
                     .with_for_update()
                 )
@@ -239,8 +231,7 @@ class StreamingDurabilityWriter:
                 await db.execute(
                     select(StreamingSegmentReceipt).where(
                         StreamingSegmentReceipt.tenant_id == session.tenant_id,
-                        StreamingSegmentReceipt.session_key
-                        == session.session_id.value,
+                        StreamingSegmentReceipt.session_key == session.session_id.value,
                         StreamingSegmentReceipt.source_event_key == source_event_key,
                     )
                 )
@@ -305,9 +296,7 @@ class StreamingDurabilityWriter:
                     )
                 )
             ).scalar_one_or_none()
-            next_segment_idx = (
-                int(max_segment_idx) + 1 if max_segment_idx is not None else 0
-            )
+            next_segment_idx = int(max_segment_idx) + 1 if max_segment_idx is not None else 0
             segment = Segment(
                 tenant_id=session.tenant_id,
                 recording_id=session.recording_id,
@@ -340,11 +329,7 @@ class StreamingDurabilityWriter:
                     )
                 )
             ).scalar_one_or_none()
-            next_chunk_ordinal = (
-                int(max_chunk_ordinal) + 1
-                if max_chunk_ordinal is not None
-                else 0
-            )
+            next_chunk_ordinal = int(max_chunk_ordinal) + 1 if max_chunk_ordinal is not None else 0
             content_hash = hashlib.sha256(scrubbed_text.encode("utf-8")).hexdigest()
             chunk = Chunk(
                 tenant_id=session.tenant_id,
@@ -400,9 +385,7 @@ class StreamingDurabilityWriter:
                             "segment_id": int(segment.id),
                             "streaming_session_id": int(session_row.id),
                         },
-                        idempotency_key=(
-                            f"stream:{event_fingerprint[:48]}:{projection_type}"
-                        ),
+                        idempotency_key=(f"stream:{event_fingerprint[:48]}:{projection_type}"),
                     )
                 )
             receipt = StreamingSegmentReceipt(
@@ -466,9 +449,7 @@ def _finite_float(value: Any, field_name: str) -> float:
 
 
 def _lease_deadline(session: StreamSession) -> datetime:
-    return datetime.now(UTC) + timedelta(
-        seconds=max(1.0, float(session.lease_ttl_seconds))
-    )
+    return datetime.now(UTC) + timedelta(seconds=max(1.0, float(session.lease_ttl_seconds)))
 
 
 __all__ = [
