@@ -10,7 +10,7 @@ API contract (M7 architecture §4.2 / §6.2):
         {
             "segments": [
                 {"start_sec": float, "end_sec": float,
-                 "speaker_id": "spk_0", "confidence": float},
+                 "speaker_id": "spk_0", "confidence": float | null},
                 ...
             ],
             "num_speakers": int,
@@ -54,6 +54,9 @@ from audio_graphy.adapters.exceptions import (
     _redact,
 )
 from audio_graphy.adapters.protocols import (
+    DEFAULT_MAX_SPEAKERS,
+    DEFAULT_MIN_SEGMENT_SEC,
+    VOICEPRINT_DIM,
     DiarizationResult,
     DiarizationSegment,
     VoiceprintAdapter,
@@ -66,7 +69,7 @@ _DEFAULT_TIMEOUT = 60.0  # diarize runs the whole file → heavier
 _DEFAULT_MAX_CONNECT_SEC = 5.0
 _DIARIZE_PATH = "/v1/diarize"
 _VOICEPRINT_PATH = "/v1/voiceprint/extract"
-_EXPECTED_DIM = 192  # L2 locked
+_EXPECTED_DIM = VOICEPRINT_DIM  # L2 locked
 _L2_TOLERANCE = 1e-5
 
 
@@ -107,8 +110,8 @@ class CAMPlusPlusAdapter:
         self,
         audio_path: str,
         *,
-        min_segment_sec: float = 0.5,
-        max_speakers: int = 10,
+        min_segment_sec: float = DEFAULT_MIN_SEGMENT_SEC,
+        max_speakers: int = DEFAULT_MAX_SPEAKERS,
     ) -> DiarizationResult:
         """POST audio to /v1/diarize → speaker-segmented timeline.
 
@@ -310,7 +313,9 @@ class CAMPlusPlusAdapter:
                         start_sec=float(seg["start_sec"]),
                         end_sec=float(seg["end_sec"]),
                         speaker_id=str(seg["speaker_id"]),
-                        confidence=float(seg.get("confidence", 1.0)),
+                        confidence=(
+                            float(seg["confidence"]) if seg.get("confidence") is not None else None
+                        ),
                     )
                 )
             except (KeyError, TypeError, ValueError) as exc:
@@ -391,13 +396,28 @@ class CAMPlusPlusAdapter:
                 status_code=resp.status_code,
             )
 
-        # Defensive L2 check — service contract says L2-normalized.
+        # Cosine scoring here treats vectors as unit-norm, so an off-norm
+        # vector would score against stored templates on a different scale.
+        # Re-normalize rather than trust the wire.
+        #
+        # This does not make ``voiceprint_id`` reproducible across
+        # deployments — the hash covers the exact float32 bytes, so any
+        # difference in model weights, quantization or even the normalization
+        # we apply here yields a different id. That id is a within-deployment
+        # dedup key, not a portable identifier.
         norm = math.sqrt(sum(v * v for v in vector))
+        if norm < 1e-12:
+            raise VoiceprintServerError(
+                "CAM++ voiceprint has zero norm; cannot normalize",
+                url=self._base_url,
+                status_code=resp.status_code,
+            )
         if abs(norm - 1.0) > _L2_TOLERANCE:
             logger.warning(
-                "CAM++ voiceprint L2 norm=%f (expected 1.0); accepting as-is",
+                "CAM++ voiceprint L2 norm=%f (expected 1.0); re-normalizing",
                 norm,
             )
+            vector = tuple(v / norm for v in vector)
 
         try:
             duration_sec = float(payload.get("duration_sec", 0.0))

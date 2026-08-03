@@ -93,11 +93,18 @@ class ChunkerOutput:
         recording_id: The recording that was processed.
         segments: All segment records.
         chunks: All chunk records (with chunk_id set if MySQL write succeeded).
+        diarization: The raw CAM++ speaker timeline, empty when diarization
+            did not run. Kept separate from ``segments`` because the two use
+            different boundaries: a VAD segment is cut on silence and can span
+            a speaker change, carrying only the label of whoever owns its
+            midpoint. Voiceprint sampling must crop on these boundaries
+            instead, or it feeds another person's speech into the embedding.
     """
 
     recording_id: int
     segments: list[SegmentRecord]
     chunks: list[ChunkRecord]
+    diarization: tuple[DiarizationSegment, ...] = ()
 
 
 # ============================================================
@@ -177,7 +184,7 @@ class Chunker:
         logger.debug("VAD returned %d segments for recording %d", len(vad_segments), recording_id)
 
         # Step 2: ASR per segment
-        segment_records = await self._transcribe_segments(vad_segments, audio_path)
+        segment_records, diar_timeline = await self._transcribe_segments(vad_segments, audio_path)
 
         # Raw ASR text exists only in memory. Redact before chunk construction,
         # database persistence, embeddings, graph extraction or file-index
@@ -214,6 +221,7 @@ class Chunker:
             recording_id=recording_id,
             segments=segment_records,
             chunks=chunks,
+            diarization=tuple(diar_timeline),
         )
 
     def _scrub_segments(
@@ -239,7 +247,7 @@ class Chunker:
         self,
         vad_segments: Sequence[VADSegment],
         audio_path: str,
-    ) -> list[SegmentRecord]:
+    ) -> tuple[list[SegmentRecord], list[DiarizationSegment]]:
         """Transcribe each VAD segment via ASR, optionally tag speaker via diarization.
 
         M7: When ``enable_voiceprint=True`` and ``bundle.voiceprint`` is set,
@@ -257,7 +265,10 @@ class Chunker:
             audio_path: Path to the audio file (passed to ASR + CAM++).
 
         Returns:
-            List of SegmentRecord objects.
+            ``(segment records, diarization timeline)``. The timeline is
+            empty when diarization is disabled or failed; it is returned
+            rather than discarded because voiceprint sampling needs the
+            speaker boundaries, not the VAD ones.
         """
         # Optional diarization — M7 enable_voiceprint flag gate.
         diar_timeline: list[DiarizationSegment] = []
@@ -307,7 +318,7 @@ class Chunker:
                     vad_conf=seg.confidence,
                 )
             )
-        return records
+        return records, diar_timeline
 
     @staticmethod
     def _match_speaker(
@@ -615,9 +626,7 @@ class Chunker:
             )
 
         # Write video path
-        video_path_key = (
-            f"{recording_id}_g{generation}" if generation > 0 else str(recording_id)
-        )
+        video_path_key = f"{recording_id}_g{generation}" if generation > 0 else str(recording_id)
         await self._file_index.set(
             "kv_store_video_path",
             video_path_key,

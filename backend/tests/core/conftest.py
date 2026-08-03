@@ -24,13 +24,21 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 import audio_graphy.models  # noqa: F401
 from audio_graphy.adapters.protocols import LLMResponse
 from audio_graphy.models.base import Base
+from tests.dbreset import drop_every_table_async, ensure_database, suite_database
 
 # MySQL connection for integration tests
 MYSQL_HOST = os.environ.get("MODEL_TEST_MYSQL_HOST", "127.0.0.1")
 MYSQL_PORT = os.environ.get("MODEL_TEST_MYSQL_PORT", "3307")
 MYSQL_USER = os.environ.get("MODEL_TEST_MYSQL_USER", "audiography")
 MYSQL_PASSWORD = os.environ.get("MODEL_TEST_MYSQL_PASSWORD", "change-me")
-MYSQL_DB = os.environ.get("MODEL_TEST_MYSQL_DB", "audiography_test")
+MYSQL_DB = suite_database("core")
+ensure_database(
+    host=MYSQL_HOST,
+    port=MYSQL_PORT,
+    user=MYSQL_USER,
+    password=MYSQL_PASSWORD,
+    name=MYSQL_DB,
+)
 
 ASYNC_DSN = (
     f"mysql+aiomysql://{MYSQL_USER}:{MYSQL_PASSWORD}"
@@ -152,14 +160,15 @@ async def async_engine() -> AsyncIterator[Any]:
     """Create an async SQLAlchemy engine and initialise all tables (function-scoped)."""
     engine = create_async_engine(ASYNC_DSN, echo=False, pool_size=5)
 
+    # Introspect and drop rather than metadata.drop_all, so a schema left behind by
+    # older models cannot wedge the fixture that exists to reset it.
+    await drop_every_table_async(engine)
     async with engine.begin() as conn:
-        await conn.run_sync(lambda sync_conn: Base.metadata.drop_all(sync_conn))
         await conn.run_sync(lambda sync_conn: Base.metadata.create_all(sync_conn))
 
     yield engine
 
-    async with engine.begin() as conn:
-        await conn.run_sync(lambda sync_conn: Base.metadata.drop_all(sync_conn))
+    await drop_every_table_async(engine)
     await engine.dispose()
 
 

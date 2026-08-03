@@ -153,6 +153,47 @@ def test_list_merge_pending_status_filter(test_client, auth_headers, seeded_spea
     assert resp.json()["total"] == 0  # no resolved items yet
 
 
+def test_list_merge_pending_matched_speaker_filter(
+    test_client, auth_headers, db_session_factory, seeded_speaker_data
+):
+    """?matched_speaker_node_id=N returns only rows targeting that speaker.
+
+    Server-side filtering is what keeps a speaker detail view correct once
+    the tenant queue grows past one page.
+    """
+    other_node_id = _run_async(
+        _seed_speaker_node(
+            db_session_factory,
+            voiceprint_id="ffffffffffffffff",
+            display_name="speaker:vp_ffffffff",
+        )
+    )
+    _run_async(
+        _seed_pending(
+            db_session_factory,
+            matched_node_id=other_node_id,
+            candidate_name="speaker:vp_ffffffff",
+        )
+    )
+
+    resp = test_client.get(
+        "/api/v1/speakers/merge-pending",
+        headers=auth_headers["inspector_t1"],
+        params={"matched_speaker_node_id": seeded_speaker_data["node_id"]},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["total"] == 1
+    assert [i["id"] for i in body["items"]] == [seeded_speaker_data["pending_id"]]
+
+    # Without the filter both rows come back.
+    resp_all = test_client.get(
+        "/api/v1/speakers/merge-pending",
+        headers=auth_headers["inspector_t1"],
+    )
+    assert resp_all.json()["total"] == 2
+
+
 def test_list_merge_pending_cross_tenant_empty(test_client, auth_headers, seeded_speaker_data):
     """Tenant 2 viewer sees no rows from tenant 1."""
     resp = test_client.get(

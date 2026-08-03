@@ -25,9 +25,14 @@ CORE_SERVICES = {"mysql", "master-key-init", "backend", "tag-worker", "frontend"
 PROFILE_SERVICES = {
     "mock": CORE_SERVICES | {"adminer"},
     "cache-redis": CORE_SERVICES | {"redis"},
-    "models-cpu": CORE_SERVICES | {"bge-m3-cpu", "campplus-service", "funasr"},
+    # bge-m3-cache-init warms tei_cache for whichever TEI variant the profile
+    # selects, so it belongs to all three. It is deliberately absent from
+    # MODEL_SERVICES below: a one-shot container that exits 0 is depended on
+    # via service_completed_successfully and has no healthcheck to assert.
+    "models-cpu": CORE_SERVICES | {"bge-m3-cache-init", "bge-m3-cpu", "campplus-service", "funasr"},
     "models-single-gpu": CORE_SERVICES
     | {
+        "bge-m3-cache-init",
         "bge-m3-gpu",
         "campplus-service",
         "clap-service",
@@ -36,6 +41,7 @@ PROFILE_SERVICES = {
     },
     "models-multi-gpu": CORE_SERVICES
     | {
+        "bge-m3-cache-init",
         "bge-m3-gpu",
         "campplus-service",
         "clap-service",

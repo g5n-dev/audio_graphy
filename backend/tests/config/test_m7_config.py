@@ -26,10 +26,20 @@ def _base_kwargs() -> dict:
 
 
 class TestDefaults:
-    def test_voiceprint_default_off(self, tmp_path) -> None:
+    def test_voiceprint_default_on_clap_off(self, tmp_path) -> None:
+        """Speaker linking ships enabled; CLAP still requires a GPU opt-in."""
         s = Settings(working_dir=str(tmp_path), master_key_path=str(tmp_path / "k"))
-        assert s.enable_voiceprint is False
+        assert s.enable_voiceprint is True
         assert s.enable_clap is False
+
+    def test_voiceprint_can_be_turned_off(self, tmp_path) -> None:
+        """The M3-M6 escape hatch must still work."""
+        s = Settings(
+            working_dir=str(tmp_path),
+            master_key_path=str(tmp_path / "k"),
+            enable_voiceprint=False,
+        )
+        assert s.enable_voiceprint is False
 
     def test_audio_embed_mode_default_mock(self, tmp_path) -> None:
         s = Settings(working_dir=str(tmp_path), master_key_path=str(tmp_path / "k"))
@@ -153,3 +163,74 @@ class TestRerankWeightsValidator:
             rerank_channel_weights=(0.6, 0.2, 0.2),
         )
         assert s.rerank_channel_weights == (0.6, 0.2, 0.2)
+
+
+class TestVoiceprintSamplingConfig:
+    """ADR-0001 — sampling strategy + quality gates."""
+
+    def test_defaults(self, tmp_path) -> None:
+        s = Settings(working_dir=str(tmp_path), master_key_path=str(tmp_path / "k"))
+        assert s.voiceprint_sampling_strategy == "weighted_mean"
+        assert s.voiceprint_sample_min_segment_sec == 1.0
+        assert s.voiceprint_sample_min_total_sec == 3.0
+        assert s.voiceprint_sample_max_segments == 8
+        assert s.voiceprint_sample_outlier_cosine == 0.5
+
+    def test_longest_segment_strategy_accepted(self, tmp_path) -> None:
+        s = Settings(
+            working_dir=str(tmp_path),
+            master_key_path=str(tmp_path / "k"),
+            voiceprint_sampling_strategy="longest_segment",
+        )
+        assert s.voiceprint_sampling_strategy == "longest_segment"
+
+    def test_unknown_strategy_rejected(self, tmp_path) -> None:
+        with pytest.raises(ValidationError):
+            Settings(
+                working_dir=str(tmp_path),
+                master_key_path=str(tmp_path / "k"),
+                voiceprint_sampling_strategy="merged_reception_audio",
+            )
+
+    def test_segment_floor_above_total_floor_rejected(self, tmp_path) -> None:
+        """Otherwise no speaker could ever clear the total-speech gate."""
+        with pytest.raises(ValidationError, match=r"MIN_SEGMENT_SEC must be"):
+            Settings(
+                working_dir=str(tmp_path),
+                master_key_path=str(tmp_path / "k"),
+                voiceprint_sample_min_segment_sec=5.0,
+                voiceprint_sample_min_total_sec=3.0,
+            )
+
+    @pytest.mark.parametrize("value", [0.0, -1.0])
+    def test_non_positive_durations_rejected(self, tmp_path, value: float) -> None:
+        with pytest.raises(ValidationError, match=r"must be > 0"):
+            Settings(
+                working_dir=str(tmp_path),
+                master_key_path=str(tmp_path / "k"),
+                voiceprint_sample_min_segment_sec=value,
+            )
+
+    def test_zero_max_segments_rejected(self, tmp_path) -> None:
+        with pytest.raises(ValidationError, match=r"MAX_SEGMENTS must be"):
+            Settings(
+                working_dir=str(tmp_path),
+                master_key_path=str(tmp_path / "k"),
+                voiceprint_sample_max_segments=0,
+            )
+
+    def test_outlier_cosine_out_of_range_rejected(self, tmp_path) -> None:
+        with pytest.raises(ValidationError, match=r"OUTLIER_COSINE must be"):
+            Settings(
+                working_dir=str(tmp_path),
+                master_key_path=str(tmp_path / "k"),
+                voiceprint_sample_outlier_cosine=1.5,
+            )
+
+    def test_outlier_rejection_can_be_disabled(self, tmp_path) -> None:
+        s = Settings(
+            working_dir=str(tmp_path),
+            master_key_path=str(tmp_path / "k"),
+            voiceprint_sample_outlier_cosine=0.0,
+        )
+        assert s.voiceprint_sample_outlier_cosine == 0.0

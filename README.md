@@ -390,6 +390,8 @@ Redis 当时不可用，在途 leader 也不能复活结果，恢复后会自动
 - [总体设计](./docs/DESIGN.md)：早期总体设计、核心模型与路线图。
 - [Advanced Graph](./docs/advanced-graph.md)：双时态、Leiden、全局搜索、压缩与说话人复核。
 - [Streaming 架构](./docs/m8-architecture.md)：Streaming VAD/ASR、会话与增量图谱。
+- [架构决策记录](./docs/adr/)：长期有效的技术裁决。
+  - [ADR-0001 声纹采样](./docs/adr/0001-voiceprint-sampling.md)：采样来源、加权均值策略、质量门控与代表模板选取。
 - [架构图资产](./docs/assets/)：索引、查询、存储分层与标签版本图。
 
 ### 部署与合规

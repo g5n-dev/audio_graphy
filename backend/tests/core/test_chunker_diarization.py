@@ -146,7 +146,7 @@ class TestChunkerVoiceprintDisabled:
         chunker, vp = _make_chunker(segs, enable_voiceprint=False)
         assert vp is None  # no voiceprint adapter at all
 
-        records = await chunker._transcribe_segments(segs, "/tmp/fake.wav")
+        records, _diar = await chunker._transcribe_segments(segs, "/tmp/fake.wav")
 
         assert len(records) == 1
         assert records[0].speaker is None
@@ -160,7 +160,7 @@ class TestChunkerVoiceprintDisabled:
             VADSegment(start_sec=5.0, end_sec=7.0, confidence=0.92),
         ]
         chunker, _ = _make_chunker(segs, enable_voiceprint=False)
-        records = await chunker._transcribe_segments(segs, "/tmp/fake.wav")
+        records, _diar = await chunker._transcribe_segments(segs, "/tmp/fake.wav")
 
         assert all(r.speaker is None for r in records)
         assert len(records) == 3
@@ -188,7 +188,7 @@ class TestChunkerVoiceprintDisabled:
             enable_voiceprint=False,
         )
 
-        records = await chunker._transcribe_segments(segs, "/tmp/fake.wav")
+        records, _diar = await chunker._transcribe_segments(segs, "/tmp/fake.wav")
 
         assert vp.diarize_called == 0
         assert all(r.speaker is None for r in records)
@@ -228,7 +228,7 @@ class TestChunkerVoiceprintEnabled:
             DiarizationSegment(speaker_id="spk_1", start_sec=4.0, end_sec=7.5),
         ]
         chunker, _ = _make_chunker(segs, enable_voiceprint=True, voiceprint_segments=diar)
-        records = await chunker._transcribe_segments(segs, "/tmp/fake.wav")
+        records, _diar = await chunker._transcribe_segments(segs, "/tmp/fake.wav")
 
         assert records[0].speaker == "spk_0"
         assert records[1].speaker == "spk_1"
@@ -247,7 +247,7 @@ class TestChunkerVoiceprintEnabled:
             DiarizationSegment(speaker_id="spk_1", start_sec=4.0, end_sec=7.5),
         ]
         chunker, _ = _make_chunker(segs, enable_voiceprint=True, voiceprint_segments=diar)
-        records = await chunker._transcribe_segments(segs, "/tmp/fake.wav")
+        records, _diar = await chunker._transcribe_segments(segs, "/tmp/fake.wav")
 
         # midpoint=3.75 not in any diar seg → fallback to max overlap (tie → first).
         assert records[0].speaker in {"spk_0", "spk_1"}
@@ -261,7 +261,7 @@ class TestChunkerVoiceprintEnabled:
             DiarizationSegment(speaker_id="spk_0", start_sec=0.0, end_sec=10.0),
         ]
         chunker, _ = _make_chunker(segs, enable_voiceprint=True, voiceprint_segments=diar)
-        records = await chunker._transcribe_segments(segs, "/tmp/fake.wav")
+        records, _diar = await chunker._transcribe_segments(segs, "/tmp/fake.wav")
 
         assert records[0].speaker is None
 
@@ -278,7 +278,7 @@ class TestChunkerVoiceprintEnabled:
             enable_voiceprint=True,
             voiceprint_raise=RuntimeError("service down"),
         )
-        records = await chunker._transcribe_segments(segs, "/tmp/fake.wav")
+        records, _diar = await chunker._transcribe_segments(segs, "/tmp/fake.wav")
 
         assert vp is not None
         assert vp.diarize_called == 1
@@ -288,7 +288,7 @@ class TestChunkerVoiceprintEnabled:
         """voiceprint adapter returns 0 speakers → all speaker=None."""
         segs = [VADSegment(start_sec=0.0, end_sec=2.0, confidence=0.9)]
         chunker, _ = _make_chunker(segs, enable_voiceprint=True, voiceprint_segments=[])
-        records = await chunker._transcribe_segments(segs, "/tmp/fake.wav")
+        records, _diar = await chunker._transcribe_segments(segs, "/tmp/fake.wav")
 
         assert records[0].speaker is None
 

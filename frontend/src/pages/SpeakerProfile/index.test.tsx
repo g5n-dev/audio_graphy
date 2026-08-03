@@ -19,20 +19,32 @@ import type { SpeakerListResponse } from "@/types/api";
 // Mock speakers API
 vi.mock("@/api/speakers", () => ({
   listSpeakers: vi.fn(),
+  getVoiceprintPolicy: vi.fn(),
 }));
 
-import { listSpeakers } from "@/api/speakers";
+vi.mock("@/api/advancedGraph", () => ({
+  listSpeakerMergePending: vi.fn(),
+  confirmSpeakerMerge: vi.fn(),
+  rejectSpeakerMerge: vi.fn(),
+}));
+
+import { getVoiceprintPolicy, listSpeakers } from "@/api/speakers";
+import { listSpeakerMergePending } from "@/api/advancedGraph";
 
 const mockedListSpeakers = listSpeakers as unknown as ReturnType<typeof vi.fn>;
+const mockedGetVoiceprintPolicy =
+  getVoiceprintPolicy as unknown as ReturnType<typeof vi.fn>;
+const mockedListSpeakerMergePending =
+  listSpeakerMergePending as unknown as ReturnType<typeof vi.fn>;
 
-function renderWithProviders(): void {
+function renderWithProviders(entry = "/speakers"): void {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
 
   render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={["/speakers"]}>
+      <MemoryRouter initialEntries={[entry]}>
         <Routes>
           <Route path="/speakers" element={<SpeakerProfileListPage />} />
         </Routes>
@@ -73,9 +85,40 @@ const MOCK_SPEAKERS: SpeakerListResponse = {
   total: 2,
 };
 
+const MOCK_POLICY = {
+  enable_voiceprint: false,
+  adapter_voiceprint_mode: "mock",
+  layer1: { cosine_threshold: 0.5, ambiguous_threshold: 0.7 },
+  layer2: {
+    enabled: true,
+    fuzzy_inferred_threshold: 0.6,
+    fuzzy_ambiguous_threshold: 0.85,
+    voiceprint_reconfirm_cosine: 0.7,
+  },
+  sampling: {
+    strategy: "weighted_mean",
+    min_segment_sec: 0.5,
+    min_total_sec: 3,
+    max_segments_per_speaker: 8,
+    diarization_min_segment_sec: 0.5,
+    max_speakers: 10,
+    embedding_dim: 192,
+  },
+  retention_cascade: true,
+};
+
 describe("SpeakerProfileListPage", () => {
   beforeEach(() => {
     mockedListSpeakers.mockReset();
+    mockedGetVoiceprintPolicy.mockReset();
+    mockedGetVoiceprintPolicy.mockResolvedValue(MOCK_POLICY);
+    mockedListSpeakerMergePending.mockReset();
+    mockedListSpeakerMergePending.mockResolvedValue({
+      items: [],
+      total: 0,
+      page: 1,
+      page_size: 1,
+    });
   });
 
   it("renders title 说话人管理", async () => {
@@ -123,5 +166,49 @@ describe("SpeakerProfileListPage", () => {
     expect(await screen.findByText("Alice")).toBeInTheDocument();
     expect(screen.getByText("voiceprint")).toBeInTheDocument();
     expect(screen.getByText("fuzzy")).toBeInTheDocument();
+  });
+
+  it("narrows the roster to a recording when arriving with ?focus=录音:N", async () => {
+    mockedListSpeakers.mockResolvedValueOnce({ items: [], total: 0 });
+    renderWithProviders(`/speakers?focus=${encodeURIComponent("录音")}%3A42`);
+    expect(await screen.findByText(/录音 #42/)).toBeInTheDocument();
+    expect(mockedListSpeakers).toHaveBeenCalledWith({
+      speaker_role: undefined,
+      ambiguity: undefined,
+      recording_id: 42,
+      limit: 200,
+    });
+  });
+
+  it("preselects the role for an entity focus and says why it cannot filter", async () => {
+    mockedListSpeakers.mockResolvedValueOnce({ items: [], total: 0 });
+    renderWithProviders(`/speakers?focus=${encodeURIComponent("客户")}%3A%E7%8E%8B%E5%B0%8F%E5%A7%90`);
+    // Display names are voiceprint hashes, so an honest banner beats a
+    // silently unfiltered list.
+    expect(await screen.findByText(/无法按姓名精确匹配/)).toBeInTheDocument();
+    expect(mockedListSpeakers).toHaveBeenCalledWith({
+      speaker_role: "customer",
+      ambiguity: undefined,
+      recording_id: undefined,
+      limit: 200,
+    });
+  });
+
+  it("renders the 声纹质量 entry button with pending badge count", async () => {
+    mockedListSpeakers.mockResolvedValueOnce({ items: [], total: 0 });
+    mockedListSpeakerMergePending.mockResolvedValue({
+      items: [],
+      total: 3,
+      page: 1,
+      page_size: 1,
+    });
+    renderWithProviders();
+    expect(await screen.findByText("声纹质量")).toBeInTheDocument();
+    // Badge renders the pending total from the merge-pending endpoint.
+    expect(await screen.findByText("3")).toBeInTheDocument();
+    expect(mockedListSpeakerMergePending).toHaveBeenCalledWith({
+      status: "pending",
+      limit: 1,
+    });
   });
 });

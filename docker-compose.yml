@@ -309,6 +309,43 @@ services:
   # Host ports are loopback-only and deliberately separated from backend:8000.
   # ============================================================
 
+  # CPU-runnable OpenAI-compatible LLM, for hosts without CUDA.
+  # vllm-strong/weak are CUDA-only images and cannot run on an arm64 Mac or
+  # any GPU-less host; this serves the same OpenAI contract the backend
+  # already speaks, so switching between them is a matter of
+  # OPENAI_BASE_URL_* and LLM_*_MODEL, with no code change.
+  #
+  # On a Mac, prefer an Ollama installed on the host: a container on Docker
+  # Desktop gets no Metal access and runs CPU-only, several times slower.
+  # Point the backend at http://host.docker.internal:11434/v1 instead and
+  # leave this profile unused. It is here for Linux hosts, and for anyone
+  # who wants the whole stack inside compose.
+  #
+  # Deliberately NOT under model-security: ollama writes model blobs and a
+  # runner cache into its own volume, and a read-only root breaks it.
+  ollama:
+    image: ollama/ollama:latest
+    container_name: audiography-ollama
+    profiles: ["models-cpu-llm"]
+    restart: unless-stopped
+    environment:
+      # Keep a loaded model resident; cold-loading per request dominates
+      # latency on CPU.
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-30m}
+      OLLAMA_NUM_PARALLEL: ${OLLAMA_NUM_PARALLEL:-1}
+    volumes:
+      - ollama_models:/root/.ollama
+    ports:
+      - "${COMPOSE_PRIVATE_BIND_HOST:-127.0.0.1}:${OLLAMA_HOST_PORT:-11434}:11434"
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+    networks:
+      - audiography_net
+
   vllm-strong:
     <<: *model-security
     image: vllm/vllm-openai:v0.7.2
@@ -389,12 +426,33 @@ services:
     networks:
       - audiography_net
 
+  # TEI ships its CPU builds per architecture under *different* tags. The
+  # versioned `cpu-<version>` tags are amd64-only — `docker manifest inspect
+  # ...:cpu-1.8.2` lists exactly one platform, linux/amd64. On an arm64 host
+  # (Apple Silicon, Graviton) that tag still runs under Docker Desktop's x86
+  # emulation, but measured on an M3 Max it is 13x slower per request
+  # (1 text: 1.04s emulated vs 0.077s native; 32 texts: ~7s vs 1.5s) and warm-up
+  # takes ~3min instead of ~20s. Use the native arm64 build instead.
+  #
+  # Upstream's arm64 CPU build is published only under the rolling
+  # `cpu-arm64-latest` tag; `cpu-arm64-sha-<rev>` pins that same image to a
+  # commit, so prefer the pinned form. Verified on arm64 (TEI 1.9.3, rev
+  # 4150561): BAAI/bge-m3 loads through the ORT backend and /v1/embeddings
+  # returns 1024-d vectors.
+  #
+  #   BGE_M3_CPU_IMAGE=ghcr.io/huggingface/text-embeddings-inference:cpu-arm64-sha-4150561
   bge-m3-cpu:
     <<: *model-security
-    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.8.2
+    image: ${BGE_M3_CPU_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:cpu-1.8.2}
     container_name: audiography-bge-m3-cpu
     profiles: ["models-cpu"]
     restart: unless-stopped
+    # TEI cannot fetch bge-m3's 2.2GB external-data blob itself (no resume — see
+    # bge-m3-cache-init below). Gate startup on the warmer so a clean
+    # `docker compose --profile models-cpu up -d` works from an empty volume.
+    depends_on:
+      bge-m3-cache-init:
+        condition: service_completed_successfully
     environment:
       HF_TOKEN: ${HF_TOKEN:-}
     volumes:
@@ -409,14 +467,80 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 120s
+      # First start downloads ~2.3GB of bge-m3 weights into tei_cache before the
+      # HTTP server binds; 120s only covers a warm cache. Measured cold start on
+      # a domestic link: ~40min. Anything that waits on service_healthy would
+      # otherwise give up while the download is still in flight.
+      start_period: ${BGE_M3_START_PERIOD:-1800s}
+    # --max-client-batch-size must be >= the adapter's per-call cap (64, see
+    # BGEEmbedAdapter._MAX_BATCH). TEI defaults to 32 and rejects larger
+    # batches with HTTP 422 "batch size 64 > maximum allowed batch size 32",
+    # which surfaces as EmbedServerError rather than a retryable condition.
+    #
+    # --max-batch-tokens dominates RSS: the CPU backend runs bge-m3 in float32
+    # and pre-sizes its arena from this value. Measured on arm64 — 8192 tokens
+    # ≈ 12.7GB resident, 2048 ≈ 4.8GB. Lower it on a memory-constrained host.
     command: >
       --model-id ${BGE_M3_MODEL:-BAAI/bge-m3}
       --max-batch-tokens ${BGE_M3_MAX_BATCH_TOKENS:-8192}
+      --max-client-batch-size ${BGE_M3_MAX_CLIENT_BATCH_SIZE:-64}
     networks:
       audiography_net:
         aliases:
           - bge-m3
+
+  # One-shot cache warmer — the reason bge-m3 comes up at all on a real link.
+  #
+  # TEI's built-in Rust downloader has NO resume. bge-m3 keeps its ONNX weights
+  # as external data: `onnx/model.onnx` is a ~0.7MB graph and
+  # `onnx/model.onnx_data` is a ~2.2GB blob. When that body is truncated
+  # mid-stream TEI logs
+  #     WARN Could not download `onnx/model.onnx_data`:
+  #          request error: error decoding response body
+  # and the next attempt restarts from byte 0 — forever, on a lossy link. Every
+  # fallback fails too: BAAI/bge-m3 publishes no model.safetensors (404) and
+  # pytorch_model.bin hits the same truncation, so the ORT backend aborts with
+  # "cannot get file size: .../onnx/model.onnx_data" and :80 is never bound.
+  # No start_period is long enough to fix a transfer that never makes progress.
+  #
+  # huggingface_hub DOES resume — it streams into `<blob>.incomplete`, retries
+  # with a Range request, and only renames to the final `<sha256>` blob name
+  # once the file is whole — so this service fills tei_cache first and TEI then
+  # finds every artifact locally and downloads nothing.
+  #
+  # Idempotent and offline-safe: a warm cache short-circuits on a stdlib-only
+  # verify with no pip and no network, which is what makes restarts free.
+  #   docker compose --profile models-cpu run --rm \
+  #     bge-m3-cache-init python /opt/bge-m3/fetch_model.py --verify-only --deep
+  # re-hashes every cached blob against its HF blob name (blob names *are* the
+  # sha256) to prove the weights on disk are byte-exact.
+  bge-m3-cache-init:
+    <<: *model-security
+    image: ${BGE_M3_CACHE_INIT_IMAGE:-python:3.12-slim}
+    container_name: audiography-bge-m3-cache-init
+    profiles: ["models-cpu", "models-single-gpu", "models-multi-gpu"]
+    restart: "no"
+    environment:
+      HUGGINGFACE_HUB_CACHE: /data
+      HF_HOME: /data
+      # Point at a mirror when huggingface.co is the bottleneck, e.g.
+      # HF_ENDPOINT=https://hf-mirror.com
+      HF_ENDPOINT: ${HF_ENDPOINT:-https://huggingface.co}
+      HF_HUB_DOWNLOAD_TIMEOUT: ${HF_HUB_DOWNLOAD_TIMEOUT:-60}
+      HF_TOKEN: ${HF_TOKEN:-}
+      BGE_M3_MODEL: ${BGE_M3_MODEL:-BAAI/bge-m3}
+    volumes:
+      - tei_cache:/data
+      - ./docker/bge-m3:/opt/bge-m3:ro
+    command:
+      - sh
+      - -ec
+      - |
+        python /opt/bge-m3/fetch_model.py --verify-only && exit 0
+        pip install --quiet --no-cache-dir --disable-pip-version-check 'huggingface_hub>=0.26,<1.0'
+        python /opt/bge-m3/fetch_model.py
+    networks:
+      - audiography_net
 
   bge-m3-gpu:
     <<: *model-security
@@ -424,6 +548,10 @@ services:
     container_name: audiography-bge-m3-gpu
     profiles: ["models-single-gpu", "models-multi-gpu"]
     restart: unless-stopped
+    # Same tei_cache, same no-resume downloader — warm the cache first.
+    depends_on:
+      bge-m3-cache-init:
+        condition: service_completed_successfully
     environment:
       HF_TOKEN: ${HF_TOKEN:-}
     volumes:
@@ -438,7 +566,8 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 120s
+      # Same cold-weight-download caveat as bge-m3-cpu above.
+      start_period: ${BGE_M3_START_PERIOD:-1800s}
     deploy:
       resources:
         limits:
@@ -451,30 +580,70 @@ services:
     command: >
       --model-id ${BGE_M3_MODEL:-BAAI/bge-m3}
       --max-batch-tokens ${BGE_M3_MAX_BATCH_TOKENS:-16384}
+      --max-client-batch-size ${BGE_M3_MAX_CLIENT_BATCH_SIZE:-64}
     networks:
       audiography_net:
         aliases:
           - bge-m3
 
+  # ASR. Formerly `image: funasr/server:1.0.5` — that repository does not exist
+  # on Docker Hub (registry 404s, zero tags), so the service could never start
+  # on any architecture. Replaced with a self-built FastAPI wrapper around the
+  # funasr Python package running Paraformer-large + FSMN-VAD + CT-Transformer
+  # punctuation, which is arm64-native. It serves the same OpenAI-compatible
+  # /v1/audio/transcriptions contract, so FUNASR_URL and the ASR adapter are
+  # unchanged.
   funasr:
     <<: *model-security
-    image: funasr/server:1.0.5
+    build:
+      context: ./backend
+      dockerfile: ../docker/paraformer-service/Dockerfile
+      additional_contexts:
+        model_files: ./docker
     container_name: audiography-funasr
     profiles: ["models-cpu", "models-single-gpu", "models-multi-gpu"]
     restart: unless-stopped
     environment:
+      # Served-model label echoed back to callers; the pipeline below is what
+      # actually runs. Kept as-is so existing .env files stay valid.
       FUNASR_MODEL: ${FUNASR_MODEL:-fun-asr-nano}
       FUNASR_DEVICE: cpu
+      FUNASR_LANGUAGE: ${FUNASR_LANGUAGE:-zh}
+      # ModelScope ids, all verified to resolve (HTTP 200 on
+      # https://modelscope.cn/api/v1/models/<id>).
+      PARAFORMER_ASR_MODEL: ${PARAFORMER_ASR_MODEL:-iic/speech_seaco_paraformer_large_asr_nat-zh-cn-16k-common-vocab8404-pytorch}
+      PARAFORMER_VAD_MODEL: ${PARAFORMER_VAD_MODEL:-iic/speech_fsmn_vad_zh-cn-16k-common-pytorch}
+      PARAFORMER_PUNC_MODEL: ${PARAFORMER_PUNC_MODEL:-iic/punc_ct-transformer_cn-en-common-vocab471067-large}
     ports:
       - "${COMPOSE_PRIVATE_BIND_HOST:-127.0.0.1}:${FUNASR_HOST_PORT:-10095}:8000"
     volumes:
-      - funasr_cache:/root/.cache/funasr
+      # ~2 GB of ModelScope weights. A named volume keeps this portable, but on
+      # Docker Desktop it lands inside the fixed-size VM disk rather than on the
+      # host filesystem — where an exhausted disk shows up only as repeated
+      # "[Errno 28] No space left on device" download retries. To keep the
+      # weights on the host there instead, swap in a bind mount:
+      #   - ${FUNASR_MODEL_CACHE:-funasr_cache}:/home/audiography/.cache/modelscope
+      # with FUNASR_MODEL_CACHE=/absolute/host/path
+      - funasr_cache:/home/audiography/.cache/modelscope
+    read_only: true
+    tmpfs:
+      # Paraformer decodes long audio into /tmp and numba caches kernels there.
+      - /tmp:rw,noexec,nosuid,size=1g
+      # modelscope writes an SDK directory to ~/.modelscope, a different path
+      # from MODELSCOPE_CACHE. On a read-only root its absence makes the model
+      # download fail, and funasr then reports the model as "not registered" —
+      # which reads like a bad model id rather than a filesystem problem.
+      # tmpfs rather than a named volume because a named volume is created
+      # root-owned and this container runs as UID 10001 with no way to chown
+      # it. The directory holds only credentials and telemetry state.
+      - /home/audiography/.modelscope:rw,noexec,nosuid,size=16m,uid=10001,gid=10001
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/v1/models', timeout=2).read()\""]
       interval: 30s
       timeout: 10s
-      retries: 5
-      start_period: 60s
+      retries: 20
+      # First boot downloads ~1.5 GB of models from ModelScope.
+      start_period: 300s
     networks:
       - audiography_net
 
@@ -529,25 +698,50 @@ services:
     restart: unless-stopped
     environment:
       CAMPPLUS_DEVICE: cpu
+      # Load the ASR + speaker pipeline at startup instead of on the first
+      # request; a warm load is ~120s, past every caller's timeout. Set to 0 to
+      # defer it — /v1/voiceprint/extract works either way and never waits on it.
+      CAMPPLUS_ASR_PRELOAD: ${CAMPPLUS_ASR_PRELOAD:-1}
     volumes:
       - campplus_cache:/home/audiography/.cache/modelscope
     read_only: true
     tmpfs:
-      - /tmp:rw,noexec,nosuid,size=512m
+      # 1g, not 512m: this container now runs the full Paraformer pipeline,
+      # which decodes long audio into /tmp alongside the numba kernel cache and
+      # torch's inductor scratch. Same size as funasr, which runs the same
+      # models. Note tmpfs is RAM — this is on top of the pipeline's ~4 GB RSS.
+      - /tmp:rw,noexec,nosuid,size=1g
+      # modelscope writes an SDK directory to ~/.modelscope — a different
+      # path from MODELSCOPE_CACHE, and on the read-only root without this.
+      # Its absence made the download fail and funasr then report the model
+      # as "not registered", which reads like a bad model id rather than a
+      # filesystem problem. tmpfs rather than a named volume because a named
+      # volume is created root-owned and this container runs as UID 10001
+      # with no way to chown it. The directory holds only credentials and
+      # telemetry state, so losing it on restart costs nothing.
+      - /home/audiography/.modelscope:rw,noexec,nosuid,size=16m,uid=10001,gid=10001
     ports:
       - "${COMPOSE_PRIVATE_BIND_HOST:-127.0.0.1}:${CAMPPLUS_HOST_PORT:-18007}:8007"
     healthcheck:
+      # Liveness only. /health answers 200 as soon as the SV model is up, which
+      # is seconds; the ASR pipeline keeps loading behind it for another ~120s
+      # (much longer on a cold model cache). Gating health on the ASR pipeline
+      # would mark the container unhealthy whenever diarization is unavailable
+      # and take /v1/voiceprint/extract down with it, so readiness for ASR and
+      # diarization is published as asr_loaded / spk_loaded in the body instead.
       test:
         - "CMD-SHELL"
-        - "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8007/health', timeout=2).status==200 else 1)\""
+        - "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8007/health', timeout=5).status==200 else 1)\""
       interval: 15s
-      timeout: 5s
+      timeout: 10s
       retries: 10
-      start_period: 90s
+      start_period: 120s
     networks:
       - audiography_net
 
 volumes:
+  ollama_models:
+    name: audiography_ollama_models
   mysql_data:
     name: audiography_mysql_data
   working_dir:

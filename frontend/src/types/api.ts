@@ -310,11 +310,68 @@ export interface SpeakerRecordingRef {
   duration_sec: number;
   strategy: string;
   ambiguity_tag: "AMBIGUOUS" | "PENDING_REVIEW" | null;
+  /** Null when the link was made without a voiceprint comparison. */
+  cosine_similarity: number | null;
+  merge_confidence: number | null;
 }
 
 export interface SpeakerDetailResponse extends SpeakerListItem {
   recordings_list: number[];
   related_recordings: SpeakerRecordingRef[];
+}
+
+/** One diarization label in a recording, resolved to its canonical speaker. */
+export interface RecordingSpeakerRef {
+  /** Diarization-local label, e.g. "spk_0" — what segments actually store. */
+  source_speaker_label: string;
+  speaker_node_id: number;
+  display_name: string;
+  speaker_role: "agent" | "customer" | "unknown";
+  ambiguity_tag: "AMBIGUOUS" | "PENDING_REVIEW" | null;
+  merge_confidence: number | null;
+  cosine_similarity: number | null;
+  strategy: string;
+}
+
+export interface RecordingSpeakerListResponse {
+  recording_id: number;
+  items: RecordingSpeakerRef[];
+}
+
+export interface VoiceprintPolicyLayer1 {
+  cosine_threshold: number;
+  ambiguous_threshold: number;
+}
+
+export interface VoiceprintPolicyLayer2 {
+  enabled: boolean;
+  fuzzy_inferred_threshold: number;
+  fuzzy_ambiguous_threshold: number;
+  voiceprint_reconfirm_cosine: number;
+}
+
+export interface VoiceprintPolicySampling {
+  /** "weighted_mean" or "longest_segment" (ADR-0001). */
+  strategy: string;
+  /** Segments shorter than this never contribute to a candidate. */
+  min_segment_sec: number;
+  /** Below this much qualifying speech a speaker gets no voiceprint. */
+  min_total_sec: number;
+  max_segments_per_speaker: number;
+  /** Upstream diarization floor, distinct from the sampler's own floor. */
+  diarization_min_segment_sec: number;
+  max_speakers: number;
+  embedding_dim: number;
+}
+
+/** GET /speakers/voiceprint-policy — read-only merge/sampling policy. */
+export interface VoiceprintPolicyResponse {
+  enable_voiceprint: boolean;
+  adapter_voiceprint_mode: string;
+  layer1: VoiceprintPolicyLayer1;
+  layer2: VoiceprintPolicyLayer2;
+  sampling: VoiceprintPolicySampling;
+  retention_cascade: boolean;
 }
 
 // ============================================================

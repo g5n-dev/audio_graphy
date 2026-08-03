@@ -24,6 +24,7 @@ from audio_graphy.core.chunker import Chunker, ChunkerOutput
 from audio_graphy.core.extractor import EntityExtractor
 from audio_graphy.core.graph import GraphBuilder
 from audio_graphy.core.pii import PIIScrubber
+from audio_graphy.core.tenant_lock import tenant_advisory_lock
 from audio_graphy.core.types import DEFAULT_ENTITY_TYPES
 from audio_graphy.models.chunk import Chunk
 from audio_graphy.models.enums import PipelineState, RecordingStatus
@@ -58,6 +59,29 @@ _DEFAULT_PROMPT_TEMPLATE = (
 )
 
 
+# Bounded so a stuck peer cannot hold up an indexing run indefinitely; the
+# linking section itself is short (sampling happens outside the lock).
+_SPEAKER_LOCK_TIMEOUT_SEC = 30
+
+
+class _EverythingLinked(frozenset[str]):
+    """A label set that claims to contain everything.
+
+    Returned when the "what is already linked" query itself fails, so the
+    caller skips rather than risking a double-link. A plain empty set would
+    mean the opposite.
+    """
+
+    def __contains__(self, item: object) -> bool:
+        return True
+
+    def __ge__(self, other: object) -> bool:
+        return True
+
+
+_ALL_LABELS_UNKNOWN: frozenset[str] = _EverythingLinked()
+
+
 class PipelineIncompleteError(RuntimeError):
     """A required AI stage produced no publishable result."""
 
@@ -72,6 +96,49 @@ class _PipelineLeaseFence:
     attempt_count: int
 
 
+@dataclass(frozen=True, slots=True)
+class _SpeakerWindow:
+    """One crop window attributed to a single speaker."""
+
+    start_sec: float
+    end_sec: float
+    speaker: str | None
+
+
+def _speaker_windows(output: ChunkerOutput) -> list[_SpeakerWindow]:
+    """Crop windows for voiceprint sampling, speaker boundaries preferred.
+
+    The diarization timeline is the authority on who spoke when. VAD
+    segments are cut on silence, so a single one can span a speaker change
+    and still carry only its midpoint owner's label — cropping on those
+    boundaries feeds the other person's speech into the embedding, and
+    because sampling takes the longest windows first it would preferentially
+    pick exactly the segments most likely to straddle a hand-off.
+
+    Falls back to labelled VAD segments only when no timeline is available
+    (older ChunkerOutput, or a diarization failure that still left labels).
+    """
+    if output.diarization:
+        return [
+            _SpeakerWindow(
+                start_sec=float(d.start_sec),
+                end_sec=float(d.end_sec),
+                speaker=str(d.speaker_id),
+            )
+            for d in output.diarization
+            if d.speaker_id and d.end_sec > d.start_sec
+        ]
+    return [
+        _SpeakerWindow(
+            start_sec=float(seg.start_sec),
+            end_sec=float(seg.end_sec),
+            speaker=seg.speaker,
+        )
+        for seg in output.segments
+        if seg.speaker
+    ]
+
+
 class IndexingService:
     """Pipeline orchestration service.
 
@@ -84,6 +151,11 @@ class IndexingService:
         graph_store: Per-tenant NetworkXGraphStore.
         file_index: Per-tenant FileIndex.
         enable_adaptive_gleaning: Opt-in multi-round early-stop extraction.
+        settings: Application settings. Required to run speaker linking —
+            without it the voiceprint stage stays off, preserving the
+            pre-ADR-0001 behaviour for callers that never wired it.
+        audio_crypto: Encrypts voiceprint vectors at rest (PIPL §14.3).
+            Speaker linking is skipped when absent.
     """
 
     def __init__(
@@ -96,6 +168,8 @@ class IndexingService:
         *,
         pii_scrubber: PIIScrubber | None = None,
         enable_adaptive_gleaning: bool = False,
+        settings: Any = None,
+        audio_crypto: Any = None,
     ) -> None:
         self._session_factory = session_factory
         self._bundle = bundle
@@ -106,6 +180,24 @@ class IndexingService:
         # chunks, embeddings, extraction prompts, graphs, or file indexes.
         self._pii_scrubber = pii_scrubber or PIIScrubber()
         self._enable_adaptive_gleaning = enable_adaptive_gleaning
+        self._settings = settings
+        self._audio_crypto = audio_crypto
+
+    @property
+    def _voiceprint_enabled(self) -> bool:
+        """Whether this recording pipeline should diarize and link speakers.
+
+        Every dependency must be present: the feature flag, the CAM++
+        adapter, settings, and the crypto key that protects the vectors at
+        rest. A half-wired deployment stays off rather than writing
+        unencrypted or unlinkable voiceprints.
+        """
+        return bool(
+            self._settings is not None
+            and getattr(self._settings, "enable_voiceprint", False)
+            and self._bundle.voiceprint is not None
+            and self._audio_crypto is not None
+        )
 
     async def run_pipeline(
         self,
@@ -226,6 +318,9 @@ class IndexingService:
                 pipeline_state=PipelineState.EMBEDDING.value,
                 fence=fence,
             )
+            # Speaker linking runs before extraction so entity extraction and
+            # the graph see a recording whose speakers are already resolved.
+            await self._stage_speaker_link(recording, chunker_output)
             extractions = await self._stage_extract(recording, run)
             await self._complete_projection(run.id, "vector", fence=fence)
             await self._stage_graph_merge(recording, extractions)
@@ -348,9 +443,7 @@ class IndexingService:
             lease_expires_at = run.lease_expires_at
             if lease_expires_at is not None and lease_expires_at.tzinfo is None:
                 lease_expires_at = lease_expires_at.replace(tzinfo=UTC)
-            already_claimed_by_caller = (
-                run.state == "claimed" and run.lease_owner == lease_owner
-            )
+            already_claimed_by_caller = run.state == "claimed" and run.lease_owner == lease_owner
             if (
                 run.state == "claimed"
                 and run.lease_owner not in {None, lease_owner}
@@ -359,9 +452,7 @@ class IndexingService:
             ):
                 raise RuntimeError("pipeline run is leased by another worker")
             if not pipeline_run_transition_allowed(run.state, "claimed"):
-                raise RuntimeError(
-                    f"pipeline run cannot be claimed from state: {run.state}"
-                )
+                raise RuntimeError(f"pipeline run cannot be claimed from state: {run.state}")
             run.state = "claimed"
             run.lease_owner = lease_owner or f"direct:{recording.id}"
             run.lease_expires_at = now + timedelta(seconds=max(lease_seconds, 10))
@@ -403,22 +494,15 @@ class IndexingService:
                     }
                 ):
                     return
-                run.lease_expires_at = datetime.now(UTC) + timedelta(
-                    seconds=max(lease_seconds, 10)
-                )
+                run.lease_expires_at = datetime.now(UTC) + timedelta(seconds=max(lease_seconds, 10))
 
     @staticmethod
     def _require_lease_fence(
         run: RecordingPipelineRun,
         fence: _PipelineLeaseFence,
     ) -> None:
-        if (
-            run.lease_owner != fence.owner
-            or int(run.attempt_count) != fence.attempt_count
-        ):
-            raise PipelineLeaseLostError(
-                "pipeline lease was reassigned to another worker attempt"
-            )
+        if run.lease_owner != fence.owner or int(run.attempt_count) != fence.attempt_count:
+            raise PipelineLeaseLostError("pipeline lease was reassigned to another worker attempt")
 
     async def _transition_run(
         self,
@@ -434,9 +518,7 @@ class IndexingService:
                 raise RuntimeError("pipeline run disappeared")
             self._require_lease_fence(run, fence)
             if not pipeline_run_transition_allowed(run.state, state):
-                raise RuntimeError(
-                    f"illegal pipeline transition: {run.state} -> {state}"
-                )
+                raise RuntimeError(f"illegal pipeline transition: {run.state} -> {state}")
             run.state = state
             recording = await session.get(Recording, run.recording_id, with_for_update=True)
             if recording is None:
@@ -533,9 +615,7 @@ class IndexingService:
             outbox.lease_owner = None
             outbox.lease_expires_at = None
             outbox.error_message = None
-            run.completed_projections = sorted(
-                {*run.completed_projections, projection_type}
-            )
+            run.completed_projections = sorted({*run.completed_projections, projection_type})
 
     async def _activate_run(
         self,
@@ -553,9 +633,7 @@ class IndexingService:
                 raise RuntimeError("pipeline run disappeared")
             self._require_lease_fence(run, fence)
             if not pipeline_run_transition_allowed(run.state, ready_state):
-                raise RuntimeError(
-                    f"illegal pipeline transition: {run.state} -> {ready_state}"
-                )
+                raise RuntimeError(f"illegal pipeline transition: {run.state} -> {ready_state}")
             if not run.projections_complete():
                 raise PipelineIncompleteError("required projections are incomplete")
             incomplete_outboxes = (
@@ -626,9 +704,7 @@ class IndexingService:
         fence: _PipelineLeaseFence,
     ) -> None:
         now = datetime.now(UTC)
-        target_state = (
-            "partial" if isinstance(exc, PipelineIncompleteError) else "failed_retryable"
-        )
+        target_state = "partial" if isinstance(exc, PipelineIncompleteError) else "failed_retryable"
         async with self._session_factory() as session, session.begin():
             run = await session.get(RecordingPipelineRun, run_id, with_for_update=True)
             if run is None:
@@ -672,6 +748,7 @@ class IndexingService:
             session_factory=self._session_factory,
             file_index=self._file_index,
             pii_scrubber=self._pii_scrubber,
+            enable_voiceprint=self._voiceprint_enabled,
         )
         return await chunker.process_recording(
             recording.id,
@@ -681,6 +758,166 @@ class IndexingService:
             pipeline_run_id=run.id,
             generation=run.generation,
         )
+
+    async def _linked_labels(self, recording: Recording) -> frozenset[str] | set[str]:
+        """Diarization labels already linked for this recording.
+
+        On failure returns a sentinel that makes the caller skip: re-linking
+        double-counts a speaker's speech, while skipping only leaves the work
+        for a later run.
+        """
+        from audio_graphy.core.recording_speaker_link import linked_speaker_labels
+
+        try:
+            return await linked_speaker_labels(
+                self._session_factory,
+                str(recording.tenant_id),
+                int(recording.id),
+            )
+        except Exception as exc:
+            logger.warning(
+                "Could not read existing speaker links for recording %d; "
+                "skipping speaker link to avoid double-counting: %s",
+                recording.id,
+                exc,
+            )
+            return _ALL_LABELS_UNKNOWN
+
+    async def _stage_speaker_link(
+        self,
+        recording: Recording,
+        chunker_output: ChunkerOutput,
+    ) -> None:
+        """Sample per-speaker voiceprints and link them across recordings.
+
+        This is the caller ``SpeakerLinker.run()`` was written for. Best
+        effort by design: a voiceprint service outage must not fail an
+        otherwise complete indexing run, so failures are logged and the
+        pipeline continues. The recording keeps its transcripts, chunks and
+        graph; only cross-recording speaker identity is missing, and a later
+        re-run can fill it in.
+
+        Sampling reads ``recording.path`` — the recording's own audio. Merged
+        reception artifacts are never valid input (ADR-0001).
+
+        Skipped when the recording already has speaker links. The pipeline is
+        retryable (any transient extraction failure re-runs the whole thing)
+        and linking is not idempotent: sampling is deterministic, so a second
+        pass produces the same ``voiceprint_id`` and collides with the unique
+        index, aborting the rest of the candidate loop — while a merge that
+        did succeed would double-count the speaker's speech.
+        """
+        voiceprint_adapter = self._bundle.voiceprint
+        if not self._voiceprint_enabled or voiceprint_adapter is None:
+            return
+        labelled = _speaker_windows(chunker_output)
+        if not labelled:
+            logger.debug(
+                "Recording %d has no diarized segments; skipping speaker link",
+                recording.id,
+            )
+            return
+        # Compare against the labels this recording actually has, not
+        # "does it have any link at all": each candidate commits separately,
+        # so a run that died partway leaves some speakers linked and some
+        # not, and a coarser check would call that finished forever.
+        expected_labels = {str(window.speaker) for window in labelled if window.speaker}
+        linked_labels = await self._linked_labels(recording)
+        if expected_labels and expected_labels <= linked_labels:
+            logger.info(
+                "Recording %d: all %d speaker(s) already linked; skipping",
+                recording.id,
+                len(expected_labels),
+            )
+            return
+
+        from audio_graphy.core.speaker_linker import SpeakerLinker, derive_role_hint
+        from audio_graphy.core.voiceprint_sampler import VoiceprintSampler
+
+        settings = self._settings
+        try:
+            sampler = VoiceprintSampler(
+                voiceprint_adapter,
+                strategy=settings.voiceprint_sampling_strategy,
+                min_segment_sec=settings.voiceprint_sample_min_segment_sec,
+                min_total_sec=settings.voiceprint_sample_min_total_sec,
+                max_segments=settings.voiceprint_sample_max_segments,
+                outlier_cosine=settings.voiceprint_sample_outlier_cosine,
+            )
+            role_hints = derive_role_hint(
+                [(str(seg.speaker), seg.end_sec - seg.start_sec) for seg in labelled]
+            )
+            sample_report = await sampler.sample(
+                recording_id=int(recording.id),
+                audio_path=str(recording.path),
+                segments=labelled,
+                recorded_at=recording.recorded_at,
+                role_hints=role_hints,
+            )
+            if not sample_report.candidates:
+                logger.info(
+                    "Recording %d produced no voiceprint candidates (skipped: %s)",
+                    recording.id,
+                    sample_report.skipped_speakers or "none",
+                )
+                return
+
+            # Linking is a read-snapshot-then-write across several
+            # transactions: two workers linking the same person's recordings
+            # concurrently would each see no match and create a separate
+            # SpeakerNode, and nothing merges them afterwards
+            # (``link_speakers`` is still a stub). Serialize per tenant.
+            # Sampling stays outside the lock — it is the slow part and needs
+            # no cross-recording state.
+            linker = SpeakerLinker(
+                self._session_factory,
+                self._audio_crypto,
+                tenant_id=str(recording.tenant_id),
+                voiceprint_threshold=settings.voiceprint_cosine_threshold,
+                ambiguity_threshold=settings.voiceprint_ambiguous_threshold,
+                enable_layer2_fuzzy=settings.enable_speaker_layer2_fuzzy,
+            )
+            async with tenant_advisory_lock(
+                self._session_factory,
+                purpose="speaker_link",
+                tenant_id=str(recording.tenant_id),
+                timeout_sec=_SPEAKER_LOCK_TIMEOUT_SEC,
+            ):
+                # Another worker may have linked some of these speakers while
+                # we were sampling; re-check per label under the lock.
+                done = await self._linked_labels(recording)
+                remaining = tuple(
+                    candidate
+                    for candidate in sample_report.candidates
+                    if candidate.speaker_id not in done
+                )
+                if not remaining:
+                    logger.info(
+                        "Recording %d was linked concurrently; discarding samples",
+                        recording.id,
+                    )
+                    return
+                link_report = await linker.run(int(recording.id), remaining)
+            logger.info(
+                "Speaker link for recording %d: %d new, %d merged "
+                "(%d ambiguous), %d extract calls, %d outlier segments dropped",
+                recording.id,
+                link_report.new_speakers,
+                link_report.merged_speakers,
+                link_report.ambiguous_merges,
+                sample_report.extract_calls,
+                sample_report.dropped_outlier_segments,
+            )
+        except asyncio.CancelledError:
+            # Shutdown, not a linking failure — never swallow it.
+            raise
+        except Exception as exc:
+            logger.warning(
+                "Speaker linking failed for recording %d (indexing continues): %s",
+                recording.id,
+                exc,
+                exc_info=True,
+            )
 
     async def _stage_extract(
         self,
@@ -695,11 +932,7 @@ class IndexingService:
                 .where(
                     Chunk.recording_id == recording.id,
                     Chunk.tenant_id == recording.tenant_id,
-                    *(
-                        (Chunk.pipeline_run_id == run.id,)
-                        if run is not None
-                        else ()
-                    ),
+                    *((Chunk.pipeline_run_id == run.id,) if run is not None else ()),
                 )
                 .order_by(Chunk.id)
             )

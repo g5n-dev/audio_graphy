@@ -87,6 +87,29 @@ POST /api/v1/speakers/{pending_id}/reject-merge        {notes?}
 * Status transitions: `pending → resolved_inferred | resolved_rejected`.
   Re-resolving an already-resolved row returns **409**.
 
+Repeat `status` to match several at once (the "resolved" tab asks for both
+resolved states), and pass `matched_speaker_node_id` to scope the queue to
+one speaker — filtering client-side after a capped page silently drops older
+rows once the queue outgrows `limit`.
+
+### 2.6 Speaker quality surfaces (ADR-0001)
+
+```
+GET  /api/v1/speakers/voiceprint-policy      -> thresholds + sampling gates
+GET  /api/v1/speakers?recording_id=          -> speakers appearing in a recording
+GET  /api/v1/recordings/{id}/speakers        -> spk_N label -> canonical speaker
+```
+
+* RBAC: `voiceprint-policy` and `recordings/{id}/speakers` are viewer+ and
+  carry no biometric data; `GET /speakers` stays inspector+.
+* `recordings/{id}/speakers` is what lets a transcript or timeline show who
+  is speaking: segments store only the diarization-local label, so without
+  this mapping every line reads `spk_0` with no identity and no confidence.
+  Links written before migration `0035` have no label and are omitted rather
+  than guessed at.
+* The policy endpoint reads live settings, so the quality drawer cannot drift
+  from the thresholds the pipeline actually applies.
+
 ## 3. Frontend pages
 
 | Path | Component | Role |
@@ -94,6 +117,7 @@ POST /api/v1/speakers/{pending_id}/reject-merge        {notes?}
 | `/time-travel` | `TimeTravel/index.tsx` | Inspector+ |
 | `/communities` | `CommunityExplorer/index.tsx` | Inspector+ |
 | `/speakers/:id` (extended) | `SpeakerProfile/Detail.tsx` + `PendingMergesCard` | Inspector+ |
+| `/speakers` (quality drawer) | `components/VoiceprintQualityDrawer.tsx` | Viewer+ reads, Inspector+ reviews |
 
 All API calls go through `frontend/src/api/advancedGraph.ts`. When the
 backend returns 404 (master flag off), the UI surfaces a friendly

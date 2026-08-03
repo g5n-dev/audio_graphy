@@ -533,6 +533,18 @@ async def ws_stream(
             await ws.close(
                 code=WS_CLOSE_NORMAL if persisted else WS_CLOSE_BACKPRESSURE,
             )
+        # Last, and off this coroutine: linking re-reads the whole recording
+        # (one diarization plus up to 8 extractions per speaker, each a
+        # full-file upload). Awaiting it here would hold this session's
+        # pooled ASR permit for that entire time — eight such sessions would
+        # exhaust a tenant's pool and get the next one refused — and would
+        # delay session_closed and the socket close by the same amount.
+        _schedule_speaker_link(
+            ws.app,
+            settings,
+            tenant_id=user.tenant_id,
+            recording_id=recording_id_raw,
+        )
 
 
 # ------------------------------------------------------------------
@@ -963,6 +975,125 @@ def _build_tag_scheduler(
         tenant_id=user.tenant_id,
         recording_id=recording_id,
     )
+
+
+def _schedule_speaker_link(
+    app: Any,
+    settings: Settings,
+    *,
+    tenant_id: str,
+    recording_id: int,
+) -> None:
+    """Run speaker linking after the session is fully torn down.
+
+    Detached on purpose: the work re-reads the whole recording and can take
+    tens of seconds, which must not sit between a client disconnecting and
+    this session releasing its pooled ASR permit.
+
+    The task is registered on ``app.state`` so shutdown can wait for it
+    instead of tearing a half-written link out from under the database.
+    """
+    if not settings.enable_voiceprint:
+        return
+
+    async def _run() -> None:
+        try:
+            await _link_session_speakers(
+                app,
+                settings,
+                tenant_id=tenant_id,
+                recording_id=recording_id,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "Deferred speaker link failed for recording %d: %s",
+                recording_id,
+                exc,
+            )
+
+    task = asyncio.create_task(_run())
+    pending: set[asyncio.Task[None]] = getattr(app.state, "speaker_link_tasks", set())
+    pending.add(task)
+    app.state.speaker_link_tasks = pending
+    task.add_done_callback(pending.discard)
+
+
+async def _link_session_speakers(
+    app: Any,
+    settings: Settings,
+    *,
+    tenant_id: str,
+    recording_id: int,
+) -> None:
+    """Link this session's speakers once, at finalization.
+
+    Streaming cannot do this incrementally: a speaker's identity is decided
+    from all of their speech, so per-chunk linking would re-link the same
+    people over and over. It also cannot reuse a diarization timeline —
+    streaming never runs batch diarization, and its PCM frames are transient
+    staging that is discarded once segments are durable. So this re-reads
+    the bound recording's own audio, exactly like the backfill job.
+
+    Best effort throughout: a session that has already closed must not fail
+    because speaker identity could not be resolved. When the recording has
+    no readable audio (streaming-only capture), the reason is logged and
+    the session still closes cleanly.
+    """
+    if not settings.enable_voiceprint:
+        return
+    bundle = getattr(app.state, "adapter_bundle", None)
+    voiceprint = getattr(bundle, "voiceprint", None)
+    crypto = getattr(app.state, "audio_crypto", None)
+    session_factory = getattr(app.state, "session_factory", None)
+    if voiceprint is None or crypto is None or session_factory is None:
+        return
+
+    from sqlalchemy import select
+
+    from audio_graphy.core.recording_speaker_link import link_recording_speakers
+    from audio_graphy.models.recording import Recording
+
+    # No "already linked?" shortcut here: link_recording_speakers decides
+    # per speaker label under the lock, which is what lets a recording whose
+    # earlier attempt died partway be finished rather than written off.
+
+    async with session_factory() as session:
+        row = (
+            await session.execute(
+                select(Recording.path, Recording.recorded_at).where(
+                    Recording.id == recording_id,
+                    Recording.tenant_id == tenant_id,
+                )
+            )
+        ).first()
+    if row is None:
+        return
+
+    outcome = await link_recording_speakers(
+        session_factory=session_factory,
+        voiceprint=voiceprint,
+        crypto=crypto,
+        settings=settings,
+        tenant_id=tenant_id,
+        recording_id=recording_id,
+        audio_path=str(row[0] or ""),
+        recorded_at=row[1],
+    )
+    if outcome.linked:
+        logger.info(
+            "Streaming session linked speakers for recording %d: %d new, %d merged",
+            recording_id,
+            outcome.new_speakers,
+            outcome.merged_speakers,
+        )
+    else:
+        logger.info(
+            "Streaming session did not link recording %d: %s",
+            recording_id,
+            outcome.skipped_reason,
+        )
 
 
 # ------------------------------------------------------------------

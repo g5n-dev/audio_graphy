@@ -44,6 +44,14 @@ WORKDIR /app
 COPY --from=builder /install /usr/local
 COPY --chown=app:app . /app
 
+# WORKING_DIR's mount point must exist in the image and be owned by app. Docker
+# seeds a fresh named volume from the image path — including its ownership — but
+# when the path is absent it creates the mount point root-owned, and this
+# container runs as uid 1000 with no way to chown it. The result is a backend
+# that starts, answers /health, and fails /health/readiness with
+# "not writable: /data/working_dir" — healthy-looking but unable to store audio.
+RUN mkdir -p /data/working_dir && chown -R app:app /data
+
 # Alembic + uvicorn live in /usr/local/bin (copied from builder). Test and
 # lint tooling stay outside the runtime image and run in CI/the local venv.
 

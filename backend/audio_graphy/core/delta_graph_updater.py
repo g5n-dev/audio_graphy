@@ -78,7 +78,9 @@ class DeltaUpdateReport:
         merged_entities: Number of entities merged into existing canonicals.
         new_edges: Number of new edges added to the graph.
         ambiguous_edges: Subset of new_edges tagged AMBIGUOUS.
-        speaker_links: Number of speaker-link operations invoked (always 0 in M8 P0).
+        speaker_links: Always 0 — linking is per-recording and happens at
+            session finalization, not per chunk. Retained so the report shape
+            stays stable for existing consumers.
         extraction_ms: Wall-clock time of the LLM extraction step.
         merge_ms: Wall-clock time of EntityMerger.merge().
         persist_ms: Wall-clock time of chunk + entity + edge DB writes.
@@ -114,8 +116,9 @@ class DeltaGraphUpdater:
         session_factory: Async session maker for DB access.
         prompt_template: GraphRAG extraction prompt template.
         merger_factory: Per-tenant ``EntityMerger`` factory.
-        linker_factory: Per-tenant ``SpeakerLinker`` factory (unused in M8 P0
-            but kept for future use; callers may pass a no-op).
+        linker_factory: Accepted for call-site compatibility but never
+            invoked. Speaker linking is per-recording, not per-chunk, so it
+            runs at session finalization instead — see step 6 in ``update``.
         file_index: Optional FileIndex for LLM cache Layer 2.
         graph_store_factory: Per-tenant ``NetworkXGraphStore`` factory.
         rwlock: StreamingRWLock guarding the in-memory graph (per-tenant).
@@ -247,8 +250,13 @@ class DeltaGraphUpdater:
             new_entity_count, merged_entity_count = self._count_entity_outcomes(merge_scores)
             ambiguous_count = sum(1 for _, c in edges_with_conf if c == "AMBIGUOUS")
 
-            # Step 6: speaker link (M8 P0: no-op — kept as a stable call site).
-            speaker_links = 0  # deferred to round 2 (StreamingTagScheduler WS-3).
+            # Step 6: speaker linking does NOT belong here. It is a
+            # per-recording operation — a speaker's identity is decided from
+            # all of their speech — while this runs once per chunk, so
+            # linking here would re-link the same people on every chunk.
+            # Streaming links its speakers once, at session finalization
+            # (api/ws_stream.py), via core.recording_speaker_link.
+            speaker_links = 0
 
             # Step 7: update NetworkX graph store under write-lock.
             graph_store = self._graph_store_factory(tenant_id)

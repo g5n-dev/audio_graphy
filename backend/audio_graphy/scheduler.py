@@ -77,6 +77,8 @@ class PipelineWorker:
         enable_adaptive_gleaning: bool = False,
         worker_id: str | None = None,
         lease_seconds: int = 120,
+        settings: Any = None,
+        audio_crypto: Any = None,
     ) -> None:
         if lease_seconds < 10:
             raise ValueError("lease_seconds must be at least 10")
@@ -90,6 +92,10 @@ class PipelineWorker:
         self._concurrency = concurrency
         self._pii_scrubber = pii_scrubber
         self._enable_adaptive_gleaning = enable_adaptive_gleaning
+        # Forwarded to IndexingService: speaker linking needs the voiceprint
+        # settings and the key that encrypts vectors at rest.
+        self._settings = settings
+        self._audio_crypto = audio_crypto
         self._worker_id = worker_id or f"pipeline-{uuid.uuid4().hex}"
         self._lease_seconds = lease_seconds
         self._lock = asyncio.Lock()
@@ -141,6 +147,8 @@ class PipelineWorker:
                     file_index,
                     pii_scrubber=self._pii_scrubber,
                     enable_adaptive_gleaning=self._enable_adaptive_gleaning,
+                    settings=self._settings,
+                    audio_crypto=self._audio_crypto,
                 )
                 try:
                     await svc.run_pipeline(
@@ -193,23 +201,24 @@ class PipelineWorker:
                         )
                     ).scalar_one_or_none()
                     generation = int(latest or 0) + 1
-                    source_fingerprint = recording.audio_sha256 or hashlib.sha256(
-                        f"{recording.path}:{recording.source_revision}".encode()
-                    ).hexdigest()
+                    source_fingerprint = (
+                        recording.audio_sha256
+                        or hashlib.sha256(
+                            f"{recording.path}:{recording.source_revision}".encode()
+                        ).hexdigest()
+                    )
                     session.add(
                         RecordingPipelineRun(
                             tenant_id=str(recording.tenant_id),
                             recording_id=recording.id,
                             generation=generation,
                             idempotency_key=(
-                                f"pipeline:{recording.tenant_id}:"
-                                f"{recording.id}:{generation}"
+                                f"pipeline:{recording.tenant_id}:{recording.id}:{generation}"
                             ),
                             source_fingerprint=source_fingerprint,
                             config_fingerprint=hashlib.sha256(
                                 (
-                                    "recording-generation-v1:"
-                                    f"{recording.prompt_version or ''}"
+                                    f"recording-generation-v1:{recording.prompt_version or ''}"
                                 ).encode()
                             ).hexdigest(),
                             state="queued",
@@ -230,9 +239,7 @@ class PipelineWorker:
         eligible = or_(
             RecordingPipelineRun.state == "queued",
             and_(
-                RecordingPipelineRun.state.in_(
-                    tuple(PIPELINE_RUN_CLAIMABLE_STATES - {"queued"})
-                ),
+                RecordingPipelineRun.state.in_(tuple(PIPELINE_RUN_CLAIMABLE_STATES - {"queued"})),
                 or_(
                     RecordingPipelineRun.lease_expires_at.is_(None),
                     RecordingPipelineRun.lease_expires_at <= now,

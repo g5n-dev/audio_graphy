@@ -47,6 +47,14 @@ class VoiceprintVector(TenantScopedBase):
         vector_encrypted: AES-256-GCM envelope ciphertext of float32 bytes.
         encryption_meta: JSON envelope header (mirrors ``Recordings.audio_encryption_meta``).
         duration_sec: Audio duration used for extraction (quality signal).
+        attach_cosine: Cosine that justified attaching this vector to its
+            speaker. ``1.0`` when the vector *defines* the speaker (the node
+            was created from it) or when a human confirmed the merge. A value
+            below ``voiceprint_ambiguous_threshold`` marks a tentative
+            attribution, which ``SpeakerLinker`` refuses to use as the
+            speaker's representative template (ADR-0001). Legacy rows default
+            to ``1.0``: their confidence is unknown and demoting them
+            retroactively would change existing tenants' matching.
         created_at: Insertion timestamp.
     """
 
@@ -67,6 +75,7 @@ class VoiceprintVector(TenantScopedBase):
     vector_encrypted: Mapped[bytes] = mapped_column(LargeBinary(length=8192), nullable=False)
     encryption_meta: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     duration_sec: Mapped[float] = mapped_column(Float, default=0.0)
+    attach_cosine: Mapped[float] = mapped_column(Float, default=1.0, server_default="1.0")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=_utcnow,
@@ -83,6 +92,18 @@ class VoiceprintVector(TenantScopedBase):
             "tenant_id",
             "speaker_entity_id",
             "created_at",
+        ),
+        # SpeakerLinker ranks each speaker's vectors by duration to pick a
+        # representative template (ADR-0001). This index narrows the rows
+        # read per tenant; it does NOT remove the sort — the ranking's
+        # window function sits in a derived table that MySQL 8 always
+        # materializes, and the ORDER BY mixes ascending partition keys
+        # with descending sort keys, so a filesort remains.
+        Index(
+            "ix_vp_tenant_speaker_duration",
+            "tenant_id",
+            "speaker_entity_id",
+            "duration_sec",
         ),
         Index("ux_vp_voiceprint_id", "tenant_id", "voiceprint_id", unique=True),
     )

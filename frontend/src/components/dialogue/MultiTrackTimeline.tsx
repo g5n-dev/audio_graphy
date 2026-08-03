@@ -16,6 +16,7 @@ import { IconLeft, IconRight } from "@arco-design/web-react/icon";
 import type {
   EntityId,
   ReceptionDialogueUnit,
+  RecordingSpeakerRef,
   ReceptionTagAssignment,
   ReceptionWorkspaceResponse,
 } from "@/types/api";
@@ -40,6 +41,13 @@ interface MultiTrackTimelineProps {
   onSeek: (timelineSecond: number) => void;
   onToggleUnit: (unit: ReceptionDialogueUnit) => void;
   onSelectTag: (tag: ReceptionTagAssignment) => void;
+  /**
+   * `recording_id:spk_N` → the speaker that label resolves to.
+   *
+   * Optional: when voiceprint linking has not run, the timeline keeps
+   * showing the raw diarization labels rather than inventing identities.
+   */
+  speakerByLabel?: ReadonlyMap<string, RecordingSpeakerRef>;
 }
 
 interface TrackProps {
@@ -454,6 +462,7 @@ export const MultiTrackTimeline = memo(function MultiTrackTimeline({
   onSeek,
   onToggleUnit,
   onSelectTag,
+  speakerByLabel,
 }: MultiTrackTimelineProps) {
   const [zoom, setZoom] = useState(1);
   const scrollerRef = useRef<HTMLDivElement>(null);
@@ -493,19 +502,33 @@ export const MultiTrackTimeline = memo(function MultiTrackTimeline({
   const speakerBlocks = useMemo<TimelineBlock[]>(
     () =>
       workspace.transcript_items.length > 0
-        ? workspace.transcript_items.map((item) => ({
-            id: `speaker-${item.id}`,
-            start: item.start_sec,
-            end: item.end_sec,
-            label: item.speaker_label,
-            tone:
-              item.speaker_role === "agent"
-                ? "agent"
-                : item.speaker_role === "customer"
-                  ? "customer"
-                  : "unknown",
-            unitId: item.dialogue_unit_id ?? undefined,
-          }))
+        ? workspace.transcript_items.map((item) => {
+            // Prefer the voiceprint-resolved speaker: the fallback role comes
+            // from a keyword guess on the raw label, which is always "unknown"
+            // for diarization output like "spk_0".
+            const resolved = speakerByLabel?.get(
+              `${item.recording_id}:${item.speaker_label}`,
+            );
+            const role = resolved?.speaker_role ?? item.speaker_role;
+            const ambiguity = resolved?.ambiguity_tag ?? null;
+            return {
+              id: `speaker-${item.id}`,
+              start: item.start_sec,
+              end: item.end_sec,
+              // The warning sign is what tells a reviewer this attribution is
+              // provisional; without it a low-confidence merge looks certain.
+              label: ambiguity
+                ? `⚠ ${resolved?.display_name ?? item.speaker_label}`
+                : (resolved?.display_name ?? item.speaker_label),
+              tone:
+                role === "agent"
+                  ? "agent"
+                  : role === "customer"
+                    ? "customer"
+                    : "unknown",
+              unitId: item.dialogue_unit_id ?? undefined,
+            };
+          })
         : workspace.dialogue_units.flatMap((unit) =>
             (unit.speaker_refs ?? []).map((speaker, index) => ({
               id: `speaker-${unit.id}-${index}`,
@@ -516,7 +539,7 @@ export const MultiTrackTimeline = memo(function MultiTrackTimeline({
               unitId: unit.id,
             })),
           ),
-    [workspace.dialogue_units, workspace.transcript_items],
+    [workspace.dialogue_units, workspace.transcript_items, speakerByLabel],
   );
   const topicBlocks = useMemo<TimelineBlock[]>(
     () =>

@@ -77,7 +77,10 @@ class TestPhase2Dataclasses:
         s = DiarizationSegment(start_sec=0.0, end_sec=1.0, speaker_id="spk_0")
         assert s.start_sec == 0.0
         assert s.speaker_id == "spk_0"
-        assert s.confidence == 1.0
+        # Unknown by default: funasr rarely reports one, and defaulting to
+        # 1.0 would let callers filter on a constant and believe they had
+        # filtered on a signal.
+        assert s.confidence is None
 
     def test_diarization_result_defaults(self) -> None:
         r = DiarizationResult(segments=(), num_speakers=0, model="m")

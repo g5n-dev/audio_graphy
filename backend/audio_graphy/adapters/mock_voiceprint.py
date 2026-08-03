@@ -31,8 +31,12 @@ import logging
 import math
 import struct
 from collections.abc import Sequence
+from pathlib import PurePosixPath
 
 from audio_graphy.adapters.protocols import (
+    DEFAULT_MAX_SPEAKERS,
+    DEFAULT_MIN_SEGMENT_SEC,
+    VOICEPRINT_DIM,
     DiarizationResult,
     DiarizationSegment,
     VoiceprintAdapter,
@@ -41,7 +45,7 @@ from audio_graphy.adapters.protocols import (
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_DIM = 192
+_DEFAULT_DIM = VOICEPRINT_DIM
 _DEFAULT_LATENCY_MS = 5.0
 _DEFAULT_NUM_SPEAKERS = 2
 _SPEAKER_BIAS_DIMS = 8  # first 8 dims encode the speaker signal
@@ -59,6 +63,21 @@ class MockVoiceprintAdapter:
         model: Reported model identifier.
         latency_ms: Simulated request latency.
         num_speakers: Number of speakers in mock diarization. Default 2.
+        speaker_from_filename: Where to read a speaker identity from when
+            no ``speaker_id`` is supplied. ``""`` (default) means nowhere —
+            every file is its own speaker. ``"filename"`` reads the filename
+            stem before its first separator; ``"dirname"`` reads the parent
+            directory. See ``_speaker_key_from_path`` for why the caller has
+            to choose.
+
+            Off by default, and deliberately so: speaker-verification
+            scoring cannot pass a ``speaker_id`` — identity is the thing it
+            measures — and production filenames tend to be timestamps or
+            UUIDs, where the filename heuristic quietly merges unrelated
+            people (``20260801_1030.wav`` and ``20260801_1045.wav`` both key
+            on ``20260801``). Turn it on only for a trial set laid out by
+            speaker, to exercise the eval and calibration tooling without a
+            model server. Real adapters derive identity from the audio.
     """
 
     def __init__(
@@ -68,6 +87,7 @@ class MockVoiceprintAdapter:
         model: str = "mock-cam++",
         latency_ms: float = _DEFAULT_LATENCY_MS,
         num_speakers: int = _DEFAULT_NUM_SPEAKERS,
+        speaker_from_filename: str = "",
     ) -> None:
         if dim <= 0 or dim < _SPEAKER_BIAS_DIMS:
             raise ValueError(f"dim must be ≥ {_SPEAKER_BIAS_DIMS} to fit speaker bias, got {dim}")
@@ -77,6 +97,7 @@ class MockVoiceprintAdapter:
         self.model = model
         self._latency_ms = latency_ms
         self._num_speakers = num_speakers
+        self._speaker_from_filename = speaker_from_filename
         self._diarize_count = 0
         self._voiceprint_count = 0
 
@@ -84,8 +105,8 @@ class MockVoiceprintAdapter:
         self,
         audio_path: str,
         *,
-        min_segment_sec: float = 0.5,
-        max_speakers: int = 10,
+        min_segment_sec: float = DEFAULT_MIN_SEGMENT_SEC,
+        max_speakers: int = DEFAULT_MAX_SPEAKERS,
     ) -> DiarizationResult:
         """Deterministic diarization: alternating N speakers in 5s chunks."""
         del min_segment_sec  # mock does not enforce minimum
@@ -159,6 +180,34 @@ class MockVoiceprintAdapter:
         val = struct.unpack("<I", h[:4])[0]
         return float(10.0 + (val % 50))
 
+    def _speaker_key_from_path(self, audio_path: str) -> str:
+        """Mock-only identity guess. Which part of the path to read is a
+        choice the caller has to make, because both conventions exist:
+
+        ``dirname``  — ``/data/id00042/interview-01-001.flac`` → ``id00042``.
+            One directory per speaker, as in CN-Celeb's ``data/`` tree.
+        ``filename`` — ``/clips/alice_01.wav`` → ``alice``. A flat directory
+            whose files are named by speaker.
+
+        Guessing between them is not possible from a single path: with the
+        first convention a filename prefix is a recording type shared by
+        every speaker, and with the second the parent directory is shared by
+        every speaker. Either wrong guess collapses the whole corpus into
+        one identity.
+        """
+        pure = PurePosixPath(audio_path.replace("\\", "/"))
+        if self._speaker_from_filename == "dirname":
+            parent = pure.parent.name
+            return parent or pure.stem or audio_path
+        stem = pure.stem
+        if not stem:
+            return audio_path
+        for separator in ("_", "-"):
+            head = stem.split(separator, 1)[0]
+            if head and head != stem:
+                return head
+        return stem
+
     def _hash_to_voiceprint(
         self,
         audio_path: str,
@@ -166,11 +215,16 @@ class MockVoiceprintAdapter:
     ) -> tuple[float, ...]:
         """Build a deterministic 192-d L2-normalized voiceprint.
 
-        When ``speaker_id`` is provided, the first ``_SPEAKER_BIAS_DIMS`` dims
-        are seeded with a hash of the speaker_id. This biases same-speaker
-        pairs toward high cosine similarity (≥ 0.6) while keeping different
-        pairs at ≤ 0.3.
+        The first ``_SPEAKER_BIAS_DIMS`` dims are seeded with a hash of the
+        speaker's identity, biasing same-speaker pairs toward cosine ≥ 0.6
+        while different pairs stay ≤ 0.3.
+
+        With no ``speaker_id`` the whole path seeds the vector, so every file
+        is its own speaker — unless ``speaker_from_filename`` is on, which is
+        opt-in for a reason (see the constructor).
         """
+        if not speaker_id and self._speaker_from_filename:
+            speaker_id = self._speaker_key_from_path(audio_path)
         bytes_needed = self.dim * 4
         buf = bytearray()
         counter = 0

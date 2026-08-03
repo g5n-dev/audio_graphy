@@ -36,6 +36,7 @@ from audio_graphy.api.reception_tags import router as reception_tags_router
 from audio_graphy.api.receptions import router as receptions_router
 from audio_graphy.api.recordings import router as recordings_router
 from audio_graphy.api.segments import router as segments_router
+from audio_graphy.api.speakers import recordings_router as recording_speakers_router
 from audio_graphy.api.speakers import router as speakers_router
 from audio_graphy.api.stats import router as stats_router
 from audio_graphy.api.tag_governance import router as tag_governance_router
@@ -54,6 +55,11 @@ if TYPE_CHECKING:
     from audio_graphy.core.crypto import AudioCrypto
 
 logger = logging.getLogger(__name__)
+
+# Bounded so a stuck voiceprint service cannot hold up a deploy; anything
+# still running past this is cancelled and its recording stays unlinked,
+# which the backfill job can pick up later.
+_SPEAKER_LINK_DRAIN_SEC = 30
 
 API_VERSION = "v1"
 API_PREFIX = f"/api/{API_VERSION}"
@@ -599,6 +605,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     yield
 
     # Shutdown
+    # Deferred speaker links first, and by waiting rather than cancelling:
+    # each one is a short sequence of separate commits, so killing it
+    # mid-flight leaves a recording half-linked, which nothing retries.
+    speaker_link_tasks = getattr(app.state, "speaker_link_tasks", None)
+    if speaker_link_tasks:
+        pending = list(speaker_link_tasks)
+        logger.info("Waiting for %d deferred speaker link(s)", len(pending))
+        with contextlib.suppress(Exception):
+            await asyncio.wait(pending, timeout=_SPEAKER_LINK_DRAIN_SEC)
+        still_running = [task for task in pending if not task.done()]
+        for task in still_running:
+            task.cancel()
+        if still_running:
+            logger.warning(
+                "%d speaker link(s) did not finish within %ds and were cancelled",
+                len(still_running),
+                _SPEAKER_LINK_DRAIN_SEC,
+            )
     if worker_task is not None:
         worker_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
@@ -722,6 +746,7 @@ def create_app() -> FastAPI:
     app.include_router(dsar_router, prefix=API_PREFIX)
     app.include_router(eval_router, prefix=API_PREFIX)
     app.include_router(speakers_router, prefix=API_PREFIX)
+    app.include_router(recording_speakers_router, prefix=API_PREFIX)
 
     # M8 Phase 4 — WebSocket /ws/stream router. Only mounted when
     # ``enable_streaming=True`` (default False per PRD §17.11). When False,

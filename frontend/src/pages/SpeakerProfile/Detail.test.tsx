@@ -17,6 +17,27 @@ import type { SpeakerDetailResponse } from "@/types/api";
 
 vi.mock("@/api/speakers", () => ({
   getSpeaker: vi.fn(),
+  getVoiceprintPolicy: vi.fn().mockResolvedValue({
+    enable_voiceprint: false,
+    adapter_voiceprint_mode: "mock",
+    layer1: { cosine_threshold: 0.5, ambiguous_threshold: 0.7 },
+    layer2: {
+      enabled: true,
+      fuzzy_inferred_threshold: 0.6,
+      fuzzy_ambiguous_threshold: 0.85,
+      voiceprint_reconfirm_cosine: 0.7,
+    },
+    sampling: {
+      strategy: "weighted_mean",
+      min_segment_sec: 0.5,
+      min_total_sec: 3,
+      max_segments_per_speaker: 8,
+      diarization_min_segment_sec: 0.5,
+      max_speakers: 10,
+      embedding_dim: 192,
+    },
+    retention_cascade: true,
+  }),
 }));
 
 vi.mock("@/api/advancedGraph", () => ({
@@ -52,6 +73,8 @@ const MOCK_DETAIL: SpeakerDetailResponse = {
       duration_sec: 250.0,
       strategy: "voiceprint",
       ambiguity_tag: null,
+      cosine_similarity: 0.91,
+      merge_confidence: 0.91,
     },
     {
       recording_id: 20,
@@ -59,6 +82,8 @@ const MOCK_DETAIL: SpeakerDetailResponse = {
       duration_sec: 180.5,
       strategy: "voiceprint",
       ambiguity_tag: "AMBIGUOUS",
+      cosine_similarity: 0.58,
+      merge_confidence: 0.58,
     },
   ],
 };
@@ -112,6 +137,15 @@ describe("SpeakerProfileDetailPage", () => {
     expect(screen.getAllByText("20").length).toBeGreaterThan(0);
   });
 
+  it("shows each link's voiceprint cosine", async () => {
+    mockedGetSpeaker.mockResolvedValueOnce(MOCK_DETAIL);
+    renderDetailWithId("7");
+    expect(await screen.findByText("Carol")).toBeInTheDocument();
+    // Users could see *that* a merge happened but not how close it was.
+    expect(screen.getByText("0.910")).toBeInTheDocument();
+    expect(screen.getByText("0.580")).toBeInTheDocument();
+  });
+
   it("renders cross-recording mini-view section", async () => {
     mockedGetSpeaker.mockResolvedValueOnce(MOCK_DETAIL);
     renderDetailWithId("7");
@@ -148,5 +182,32 @@ describe("SpeakerProfileDetailPage", () => {
     expect(
       screen.getByText("在图谱中查看"),
     ).toBeInTheDocument();
+  });
+
+  it("requests pending merges filtered by this speaker server-side", async () => {
+    mockedGetSpeaker.mockResolvedValueOnce(MOCK_DETAIL);
+    renderDetailWithId("7");
+    await screen.findByText("Carol");
+    // Client-side filtering over one capped page would hide this speaker's
+    // older rows once the tenant queue grows past the limit.
+    expect(mockedListSpeakerMergePending).toHaveBeenCalledWith({
+      status: "pending",
+      matched_speaker_node_id: 7,
+      limit: 50,
+    });
+  });
+
+  it("shows the backend message when the detail request fails", async () => {
+    mockedGetSpeaker.mockRejectedValueOnce({
+      response: {
+        status: 403,
+        data: { error: { code: "FORBIDDEN", message: "需要 inspector 权限" } },
+      },
+    });
+    renderDetailWithId("7");
+    expect(
+      await screen.findByText("说话人不存在或加载失败"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("需要 inspector 权限")).toBeInTheDocument();
   });
 });

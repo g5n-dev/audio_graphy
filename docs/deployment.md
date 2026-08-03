@@ -273,6 +273,80 @@ ADAPTER_STREAMING_VAD_MODE=real
 SILERO_VAD_MODEL_PATH=/models/silero_vad.onnx
 ```
 
+## 5.3 首次开启声纹后的存量回填
+
+`ENABLE_VOICEPRINT=true` 只对**此后入库**的录音生效。此前的录音是在
+diarization 关闭的状态下切分的，段上没有说话人标签，不会自己长出跨录音身份。
+开启后需要跑一次回填，否则说话人库只覆盖新数据：
+
+```bash
+# 先看有多少待回填（不产生任何写入与推理开销）
+docker compose exec backend python scripts/backfill_voiceprints.py \
+  --tenant chang_an --dry-run
+
+# 分批处理；每条录音需要一次整文件 diarization，务必在低峰期执行
+docker compose exec backend python scripts/backfill_voiceprints.py \
+  --tenant chang_an --limit 50
+```
+
+脚本会按录音 ID 游标自动连跑多批直到没有待处理项（`--max-batches` 兜底，默认 20 批）。
+用游标而不是"还没有链接"来推进是必要的：音频已被保留期清理、无语音、无人过质量门的
+录音永远不会产生链接，只按"未链接"筛选会让这些录音把每一批都填满，后面的永远轮不到。
+
+重复运行是安全的：已链接的说话人会被逐个跳过，中途失败的录音下次会**只补没做完的
+那部分**。脚本与在线管线共用同一把租户锁，可以在系统运行期间执行。详见
+[ADR-0001](./adr/0001-voiceprint-sampling.md)。
+
+## 5.4 校准声纹合并阈值
+
+`VOICEPRINT_COSINE_THRESHOLD` / `VOICEPRINT_AMBIGUOUS_THRESHOLD` 是普通配置项，
+改起来很容易；难的是知道该改成多少。默认值 0.5 / 0.7 从未针对本部署的音频校准过。
+先准备试验对文件（每行 `<注册音频> <测试音频> <0|1>`）。语料选型 `docs/DESIGN.md` §8
+已有裁决：**声纹 EER 用 CN-Celeb**，AliMeeting 是 DER（说话人分离）的基准，不是这里用的。
+`scripts/build_voiceprint_trials.py` 负责生成：
+
+```bash
+# 布局一：一个说话人一个目录（CN-Celeb 的 data/ 树，也适合自建标注集）
+python scripts/build_voiceprint_trials.py \
+  --from-dir /data/CN-Celeb/data --out /data/eval/trials.txt
+
+# 布局二：CN-Celeb 官方评测列表（结果可与公开数字对比，CAM++ 约 6.8% EER）
+python scripts/build_voiceprint_trials.py \
+  --from-cnceleb-trials /data/CN-Celeb/eval/lists/trials.lst \
+  --enroll-list /data/CN-Celeb/eval/enroll/lst \
+  --audio-root /data/CN-Celeb/eval \
+  --out /data/eval/trials.txt
+```
+
+采样是定过种子的，两次运行结果可比；引用不存在音频的配对会被丢弃并计数，
+而不是留到打分阶段静默缩水。异人配对少于 100 对时会告警——1% 的误接受率
+目标从那么少的样本里估不出来。
+
+然后跑：
+
+```bash
+docker compose exec backend python scripts/calibrate_voiceprint_thresholds.py \
+  --trials /data/eval/trials.txt
+```
+
+脚本会用**当前配置的** adapter 提取声纹、统计同人/异人余弦分布，并给出两个阈值的
+建议值；它只打印建议，不写任何配置。输出会标明用的是哪种 adapter 模式——
+`mock` 模式可以完整验证这条工作流，但不构成对真实音频的建议。
+
+mock 模式下还需加 `--mock-speaker-from dirname|filename` 才能得到有意义的分布：
+mock 听不见声音，默认把每个文件当成不同的人（EER 恒为 0.5，工具会如实报告
+"无等错误率点"）。`dirname` 适用于一个说话人一个目录的语料（CN-Celeb 的
+`data/` 树），`filename` 适用于扁平目录里按说话人命名的文件。两者不能互相猜：
+前一种布局下文件名前缀是所有人共有的录制类型，后一种布局下父目录是所有人
+共有的，选错会把整个语料塌成一个人。对时间戳或 UUID 命名的文件两种都没有意义。
+
+两个阈值的含义不同：`AMBIGUOUS_THRESHOLD` 取在目标误接受率（`--max-far`，默认 1%）
+处，是"可以静默合并"的下限；`COSINE_THRESHOLD` 取在等错误率点，是"完全不合并"的
+下限。两者之间的分数会合并但标记 AMBIGUOUS 并在检索中降权。
+
+如果两个建议值相同，说明这批试验对完全可分、不存在模糊地带——在真实录音上出现
+这种结果通常意味着试验集不够有代表性（说话人太少，或片段太干净太长）。
+
 ## 6. 静态验证（不拉模型）
 
 ```bash

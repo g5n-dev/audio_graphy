@@ -211,7 +211,7 @@ def _segment_snapshot_hash(segments: list[Segment]) -> str:
     ).hexdigest()
 
 
-def _segment_customer_voiceprint_id(segment: Segment) -> str | None:
+def _segment_customer_hash_claim(segment: Segment) -> str | None:
     """Return only turn-scoped customer evidence.
 
     A recording-level content/customer hash is not turn evidence: copying it
@@ -221,7 +221,7 @@ def _segment_customer_voiceprint_id(segment: Segment) -> str | None:
     report that the signal is unavailable.
     """
 
-    for attribute in ("customer_voiceprint_id", "voiceprint_id"):
+    for attribute in ("customer_hash_claim", "voiceprint_id"):
         value = getattr(segment, attribute, None)
         if isinstance(value, str) and value.strip():
             return value.strip()
@@ -703,7 +703,7 @@ class ReceptionAutomationService:
                         started_at=recording.recorded_at,
                         ended_at=recording.recorded_at + timedelta(seconds=duration),
                         agent_id=recording.agent_name,
-                        customer_voiceprint_id=recording.customer_hash,
+                        customer_hash_claim=recording.customer_hash,
                     )
                 )
                 continue
@@ -721,7 +721,7 @@ class ReceptionAutomationService:
                         segment.transcript,
                     ),
                     speaker=segment.speaker,
-                    customer_voiceprint_id=_segment_customer_voiceprint_id(segment),
+                    customer_hash_claim=_segment_customer_hash_claim(segment),
                 )
                 for segment in recording_segments
             ]
@@ -1016,7 +1016,7 @@ class ReceptionAutomationService:
                         segment.transcript,
                     ),
                     speaker=segment.speaker,
-                    customer_voiceprint_id=_segment_customer_voiceprint_id(segment),
+                    customer_hash_claim=_segment_customer_hash_claim(segment),
                 )
                 for segment in segments
             ]
@@ -1507,7 +1507,7 @@ class ReceptionAutomationService:
                     started_at=recording.recorded_at,
                     ended_at=recording.recorded_at + timedelta(seconds=durations[recording.id]),
                     agent_id=recording.agent_name,
-                    customer_voiceprint_id=recording.customer_hash,
+                    customer_hash_claim=recording.customer_hash,
                 )
                 for recording in ordered
                 if recording.recorded_at is not None

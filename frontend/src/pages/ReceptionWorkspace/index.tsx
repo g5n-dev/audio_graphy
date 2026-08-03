@@ -1,4 +1,9 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  useMutation,
+  useQueries,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Link,
@@ -25,6 +30,7 @@ import {
   segmentReception,
   splitDialogueUnit,
 } from "@/api/services";
+import { getRecordingSpeakers } from "@/api/speakers";
 import { EvidenceAuditPanel } from "@/components/dialogue/EvidenceAuditPanel";
 import { formatClock, formatPercent } from "@/components/dialogue/format";
 import { MultiTrackTimeline } from "@/components/dialogue/MultiTrackTimeline";
@@ -46,6 +52,7 @@ import type {
   ReceptionMergeMode,
   ReceptionRecordingItem,
   ReceptionTagAssignment,
+  RecordingSpeakerRef,
   TagDefinition,
   TagJob,
 } from "@/types/api";
@@ -304,6 +311,46 @@ export default function ReceptionWorkspacePage() {
     retry: false,
   });
   const workspace = workspaceQuery.data;
+
+  // Resolve each recording's `spk_N` labels to canonical speakers, so the
+  // timeline can show who is speaking and how firm that attribution is.
+  // Fetched here rather than inside the timeline: the timeline is a
+  // presentational component and its tests render it without a query client.
+  const timelineRecordingIds = useMemo(
+    () => [
+      ...new Set(
+        (workspace?.recordings ?? [])
+          .map((recording) => Number(recording.recording_id))
+          .filter((id) => Number.isFinite(id) && id > 0),
+      ),
+    ],
+    [workspace?.recordings],
+  );
+  const recordingSpeakerQueries = useQueries({
+    queries: timelineRecordingIds.map((id) => ({
+      queryKey: ["recording-speakers", id],
+      queryFn: () => getRecordingSpeakers(id),
+      staleTime: 5 * 60_000,
+      retry: false,
+    })),
+  });
+  const recordingSpeakerStamp = recordingSpeakerQueries
+    .map((query) => query.dataUpdatedAt)
+    .join(",");
+  const speakerByLabel = useMemo(() => {
+    const map = new Map<string, RecordingSpeakerRef>();
+    for (const query of recordingSpeakerQueries) {
+      const payload = query.data;
+      if (!payload) continue;
+      for (const ref of payload.items) {
+        map.set(`${payload.recording_id}:${ref.source_speaker_label}`, ref);
+      }
+    }
+    return map;
+    // recordingSpeakerQueries is a fresh array each render; the stamp changes
+    // only when one of the queries actually resolves.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recordingSpeakerStamp]);
   const publishedSchemaVersions = useMemo(
     () =>
       (schemasQuery.data?.items ?? []).flatMap((schema) =>
@@ -1867,6 +1914,7 @@ export default function ReceptionWorkspacePage() {
             onSeek={seekTimeline}
             onToggleUnit={toggleUnit}
             onSelectTag={selectTagForEditing}
+            speakerByLabel={speakerByLabel}
           />
 
           {selectedTag && canEditTags && (

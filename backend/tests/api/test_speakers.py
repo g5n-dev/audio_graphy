@@ -6,7 +6,7 @@ Coverage:
     - GET /speakers list — role filter works.
     - GET /speakers list — ambiguity filter works.
     - GET /speakers list — agent role forbidden (403).
-    - GET /speakers list — viewer role forbidden (403).
+    - GET /speakers list — viewer role allowed (read-only).
     - GET /speakers list — unauthenticated forbidden (401).
     - GET /speakers/{id} — happy path.
     - GET /speakers/{id} — not found returns 404.
@@ -81,6 +81,7 @@ async def seed_speaker_link(
     strategy: str = "voiceprint",
     ambiguity_tag: str | None = None,
     cosine: float = 0.85,
+    source_speaker_label: str | None = "spk_0",
 ) -> int:
     """Seed a SpeakerLink row."""
     from audio_graphy.models.speaker_link import SpeakerLink
@@ -95,6 +96,7 @@ async def seed_speaker_link(
             merge_confidence=cosine,
             strategy=strategy,
             ambiguity_tag=ambiguity_tag,
+            source_speaker_label=source_speaker_label,
         )
         session.add(link)
         await session.commit()
@@ -243,15 +245,48 @@ class TestListSpeakers:
         )
         assert resp.status_code == 403
 
-    def test_viewer_role_forbidden(
+    def test_viewer_role_can_list(
         self,
         test_client: Any,
         auth_headers: Any,
     ) -> None:
-        """Viewer role cannot list speakers (403)."""
+        """Viewer can read the roster.
+
+        The response holds no biometric data, and the reconfirm queue has
+        always been viewer+ — gating the roster higher only let a viewer see
+        a merge decision without seeing the speaker it was about.
+        """
         resp = test_client.get(
             "/api/v1/speakers",
             headers=auth_headers["viewer_t1"],
+        )
+        assert resp.status_code == 200
+
+    def test_viewer_role_can_read_detail(
+        self,
+        test_client: Any,
+        auth_headers: Any,
+        db_session_factory: Any,
+    ) -> None:
+        speaker_id = _run_async(
+            seed_speaker_node(db_session_factory, tenant_id="chang_an")
+        )
+        resp = test_client.get(
+            f"/api/v1/speakers/{speaker_id}",
+            headers=auth_headers["viewer_t1"],
+        )
+        assert resp.status_code == 200
+
+    def test_viewer_still_cannot_write(
+        self,
+        test_client: Any,
+        auth_headers: Any,
+    ) -> None:
+        """Read access does not imply review authority."""
+        resp = test_client.post(
+            "/api/v1/speakers/1/reject-merge",
+            headers=auth_headers["viewer_t1"],
+            json={},
         )
         assert resp.status_code == 403
 
@@ -404,3 +439,264 @@ class TestSpeakerRouterSmoke:
         """``/api/v1/speakers/{id}`` route must exist."""
         resp = test_client.get("/api/v1/speakers/1")
         assert resp.status_code == 401
+
+
+class TestRecordingFilter:
+    """GET /speakers?recording_id=N — powers the ?focus=录音:N deep link."""
+
+    def test_filters_to_speakers_linked_to_that_recording(
+        self,
+        test_client: Any,
+        auth_headers: Any,
+        db_session_factory: Any,
+    ) -> None:
+        wanted = _run_async(
+            seed_speaker_node(
+                db_session_factory,
+                tenant_id="chang_an",
+                voiceprint_id="c" * 64,
+                display_name="speaker:vp_cccccccc",
+            )
+        )
+        other = _run_async(
+            seed_speaker_node(
+                db_session_factory,
+                tenant_id="chang_an",
+                voiceprint_id="d" * 64,
+                display_name="speaker:vp_dddddddd",
+            )
+        )
+        _run_async(
+            seed_speaker_link(
+                db_session_factory,
+                canonical_id=wanted,
+                source_id=wanted,
+                recording_id=8801,
+            )
+        )
+        _run_async(
+            seed_speaker_link(
+                db_session_factory,
+                canonical_id=other,
+                source_id=other,
+                recording_id=8802,
+            )
+        )
+
+        resp = test_client.get(
+            "/api/v1/speakers?recording_id=8801",
+            headers=auth_headers["inspector_t1"],
+        )
+        assert resp.status_code == 200, resp.text
+        assert [i["id"] for i in resp.json()["items"]] == [wanted]
+
+    def test_unknown_recording_returns_empty(
+        self,
+        test_client: Any,
+        auth_headers: Any,
+        db_session_factory: Any,
+    ) -> None:
+        _run_async(seed_speaker_node(db_session_factory, tenant_id="chang_an"))
+        resp = test_client.get(
+            "/api/v1/speakers?recording_id=999999",
+            headers=auth_headers["inspector_t1"],
+        )
+        assert resp.json()["items"] == []
+
+
+class TestRecordingRefScores:
+    """The per-link cosine was stored but never exposed."""
+
+    def test_detail_exposes_link_cosine_and_confidence(
+        self,
+        test_client: Any,
+        auth_headers: Any,
+        db_session_factory: Any,
+    ) -> None:
+        speaker_id = _run_async(
+            seed_speaker_node(db_session_factory, tenant_id="chang_an")
+        )
+        _run_async(
+            seed_speaker_link(
+                db_session_factory,
+                canonical_id=speaker_id,
+                source_id=speaker_id,
+                recording_id=8810,
+                cosine=0.62,
+            )
+        )
+        resp = test_client.get(
+            f"/api/v1/speakers/{speaker_id}",
+            headers=auth_headers["inspector_t1"],
+        )
+        assert resp.status_code == 200, resp.text
+        ref = resp.json()["related_recordings"][0]
+        assert ref["cosine_similarity"] == pytest.approx(0.62)
+        assert ref["merge_confidence"] == pytest.approx(0.62)
+
+
+class TestRecordingSpeakers:
+    """GET /recordings/{id}/speakers — resolves spk_N to a real speaker."""
+
+    def test_maps_diarization_labels_to_speakers(
+        self,
+        test_client: Any,
+        auth_headers: Any,
+        db_session_factory: Any,
+    ) -> None:
+        speaker_id = _run_async(
+            seed_speaker_node(
+                db_session_factory,
+                tenant_id="chang_an",
+                voiceprint_id="e" * 64,
+                display_name="speaker:vp_eeeeeeee",
+                speaker_role="customer",
+            )
+        )
+        _run_async(
+            seed_speaker_link(
+                db_session_factory,
+                canonical_id=speaker_id,
+                source_id=speaker_id,
+                recording_id=8820,
+                cosine=0.64,
+                ambiguity_tag="AMBIGUOUS",
+                source_speaker_label="spk_1",
+            )
+        )
+
+        resp = test_client.get(
+            "/api/v1/recordings/8820/speakers",
+            headers=auth_headers["viewer_t1"],
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["recording_id"] == 8820
+        assert len(body["items"]) == 1
+        item = body["items"][0]
+        assert item["source_speaker_label"] == "spk_1"
+        assert item["speaker_node_id"] == speaker_id
+        assert item["speaker_role"] == "customer"
+        assert item["ambiguity_tag"] == "AMBIGUOUS"
+        assert item["cosine_similarity"] == pytest.approx(0.64)
+
+    def test_links_without_a_label_are_omitted(
+        self,
+        test_client: Any,
+        auth_headers: Any,
+        db_session_factory: Any,
+    ) -> None:
+        """Pre-0035 links cannot be mapped; guessing would misattribute speech."""
+        speaker_id = _run_async(
+            seed_speaker_node(
+                db_session_factory,
+                tenant_id="chang_an",
+                voiceprint_id="f" * 64,
+            )
+        )
+        _run_async(
+            seed_speaker_link(
+                db_session_factory,
+                canonical_id=speaker_id,
+                source_id=speaker_id,
+                recording_id=8821,
+                source_speaker_label=None,
+            )
+        )
+        resp = test_client.get(
+            "/api/v1/recordings/8821/speakers",
+            headers=auth_headers["viewer_t1"],
+        )
+        assert resp.json()["items"] == []
+
+    def test_agent_role_forbidden(
+        self,
+        test_client: Any,
+        auth_headers: Any,
+    ) -> None:
+        resp = test_client.get(
+            "/api/v1/recordings/8820/speakers",
+            headers=auth_headers["agent_t1"],
+        )
+        assert resp.status_code == 403
+
+    def test_cross_tenant_returns_empty(
+        self,
+        test_client: Any,
+        auth_headers: Any,
+        db_session_factory: Any,
+    ) -> None:
+        speaker_id = _run_async(
+            seed_speaker_node(
+                db_session_factory,
+                tenant_id="chang_an",
+                voiceprint_id="9" * 64,
+            )
+        )
+        _run_async(
+            seed_speaker_link(
+                db_session_factory,
+                canonical_id=speaker_id,
+                source_id=speaker_id,
+                recording_id=8822,
+                source_speaker_label="spk_0",
+            )
+        )
+        resp = test_client.get(
+            "/api/v1/recordings/8822/speakers",
+            headers=auth_headers["viewer_t2"],
+        )
+        assert resp.json()["items"] == []
+
+    def test_conflicting_links_report_the_later_one(
+        self,
+        test_client: Any,
+        auth_headers: Any,
+        db_session_factory: Any,
+    ) -> None:
+        """A confirmed merge supersedes the machine guess for the same label."""
+        guessed = _run_async(
+            seed_speaker_node(
+                db_session_factory,
+                tenant_id="chang_an",
+                voiceprint_id="1" * 64,
+                display_name="speaker:vp_11111111",
+            )
+        )
+        confirmed = _run_async(
+            seed_speaker_node(
+                db_session_factory,
+                tenant_id="chang_an",
+                voiceprint_id="2" * 64,
+                display_name="speaker:vp_22222222",
+            )
+        )
+        _run_async(
+            seed_speaker_link(
+                db_session_factory,
+                canonical_id=guessed,
+                source_id=guessed,
+                recording_id=8830,
+                strategy="voiceprint",
+                source_speaker_label="spk_0",
+            )
+        )
+        _run_async(
+            seed_speaker_link(
+                db_session_factory,
+                canonical_id=confirmed,
+                source_id=confirmed,
+                recording_id=8830,
+                strategy="fuzzy",
+                source_speaker_label="spk_0",
+            )
+        )
+
+        resp = test_client.get(
+            "/api/v1/recordings/8830/speakers",
+            headers=auth_headers["inspector_t1"],
+        )
+        items = resp.json()["items"]
+        assert len(items) == 1
+        assert items[0]["speaker_node_id"] == confirmed
+        assert items[0]["strategy"] == "fuzzy"

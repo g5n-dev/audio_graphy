@@ -14,14 +14,23 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
+  Alert,
+  Badge,
+  Button,
   Card,
   Select,
   Table,
 } from "@arco-design/web-react";
-import { useNavigate } from "react-router-dom";
+import { IconSafe } from "@arco-design/web-react/icon";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import dayjs from "dayjs";
+import { parseFocusParam } from "@/utils/urlParams";
 import { listSpeakers } from "@/api/speakers";
+import { listSpeakerMergePending } from "@/api/advancedGraph";
+import { PanelState } from "@/components/PanelState";
 import { SpeakerBadge } from "@/components/SpeakerBadge";
+import { VoiceprintQualityDrawer } from "@/components/VoiceprintQualityDrawer";
+import { useVoiceprintPolicy } from "@/hooks/useVoiceprintPolicy";
 import type { SpeakerListItem } from "@/types/api";
 
 const ROLE_ALL_SENTINEL = "";
@@ -46,39 +55,85 @@ const ambiguityOptions: Array<{ label: string; value: string }> = [
   { label: "非模糊", value: "none" },
 ];
 
+/**
+ * Read the `?focus=<type>:<id>` parameter other pages link here with.
+ *
+ * Recording focus narrows the roster server-side. Entity focus (a customer
+ * or agent name from the graph) cannot: speaker display names are voiceprint
+ * hashes, not people's names — so it only preselects the role and says where
+ * the user came from, rather than silently returning everything.
+ */
+function useSpeakerFocus(): {
+  label: string;
+  recordingId?: number;
+  role?: "agent" | "customer";
+} | null {
+  const [searchParams] = useSearchParams();
+  const parsed = parseFocusParam(searchParams.get("focus"));
+  if (!parsed) return null;
+  if (parsed.type === "录音") {
+    const recordingId = Number(parsed.id);
+    if (!Number.isFinite(recordingId)) return null;
+    return { label: `录音 #${recordingId}`, recordingId };
+  }
+  if (parsed.type === "客户") {
+    return { label: `客户「${parsed.id}」`, role: "customer" };
+  }
+  if (parsed.type === "坐席") {
+    return { label: `坐席「${parsed.id}」`, role: "agent" };
+  }
+  return { label: `${parsed.type}「${parsed.id}」` };
+}
+
 export default function SpeakerProfileListPage(): JSX.Element {
   const navigate = useNavigate();
+  const focus = useSpeakerFocus();
   const [roleFilter, setRoleFilter] = useState<string>(ROLE_ALL_SENTINEL);
   const [ambiguityFilter, setAmbiguityFilter] = useState<string>(
     AMBIGUITY_ALL_SENTINEL,
   );
+  const [qualityDrawerVisible, setQualityDrawerVisible] = useState(false);
+
+  const policyQuery = useVoiceprintPolicy();
+  const ambiguousRange = policyQuery.data
+    ? {
+        low: policyQuery.data.layer1.cosine_threshold,
+        high: policyQuery.data.layer1.ambiguous_threshold,
+      }
+    : undefined;
+
+  const pendingCountQuery = useQuery({
+    queryKey: ["speaker-merge-pending", "global-count"],
+    queryFn: () => listSpeakerMergePending({ status: "pending", limit: 1 }),
+    refetchInterval: 30_000,
+  });
+  const pendingTotal = pendingCountQuery.data?.total ?? 0;
 
   /**
    * Translate UI state → backend query param.
    * Empty string → undefined (no filter).
    */
-  const roleParam:
-    | "agent"
-    | "customer"
-    | "unknown"
-    | undefined =
-    roleFilter === ROLE_ALL_SENTINEL
-      ? undefined
-      : (roleFilter as "agent" | "customer" | "unknown");
+  const roleParam: "agent" | "customer" | "unknown" | undefined =
+    roleFilter !== ROLE_ALL_SENTINEL
+      ? (roleFilter as "agent" | "customer" | "unknown")
+      : // An entity focus implies its role until the user picks otherwise.
+        focus?.role;
   const ambiguityParam: AmbiguityFilterValue | undefined =
     ambiguityFilter === AMBIGUITY_ALL_SENTINEL
       ? undefined
       : (ambiguityFilter as AmbiguityFilterValue);
 
-  const { data, isLoading } = useQuery({
-    queryKey: ["speakers", roleParam, ambiguityParam],
+  const speakersQuery = useQuery({
+    queryKey: ["speakers", roleParam, ambiguityParam, focus?.recordingId],
     queryFn: () =>
       listSpeakers({
         speaker_role: roleParam,
         ambiguity: ambiguityParam,
+        recording_id: focus?.recordingId,
         limit: 200,
       }),
   });
+  const { data, isLoading } = speakersQuery;
 
   return (
     <div>
@@ -88,9 +143,46 @@ export default function SpeakerProfileListPage(): JSX.Element {
           <h1>说话人管理</h1>
           <p>按角色与合并状态筛选说话人，查看声纹信息与跨录音关系。</p>
         </div>
+        <div className="ag-feature-header__actions">
+          <Badge count={pendingTotal} maxCount={99}>
+            <Button
+              icon={<IconSafe />}
+              onClick={() => setQualityDrawerVisible(true)}
+            >
+              声纹质量
+            </Button>
+          </Badge>
+        </div>
       </header>
 
+      <VoiceprintQualityDrawer
+        visible={qualityDrawerVisible}
+        onClose={() => setQualityDrawerVisible(false)}
+      />
+
       <div style={{ padding: 24 }}>
+      {focus ? (
+        <Alert
+          type="info"
+          style={{ marginBottom: 16 }}
+          closable
+          content={
+            focus.recordingId !== undefined ? (
+              <span>
+                仅显示 {focus.label} 中出现的说话人。
+                <Link to="/speakers" style={{ marginLeft: 8 }}>
+                  查看全部
+                </Link>
+              </span>
+            ) : (
+              <span>
+                来自 {focus.label}。说话人档案以声纹标识命名，无法按姓名精确匹配，
+                这里只按角色做了预筛选。
+              </span>
+            )
+          }
+        />
+      ) : null}
       <Card style={{ marginBottom: 16 }}>
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
           <Select
@@ -125,10 +217,20 @@ export default function SpeakerProfileListPage(): JSX.Element {
       </Card>
 
       <Card>
+        {/* A failed request must not render as an empty roster — PanelState
+            surfaces the backend message instead. */}
+        <PanelState
+          pending={isLoading}
+          error={speakersQuery.error}
+          empty={(data?.items ?? []).length === 0}
+          emptyTitle="暂无说话人"
+          emptyDescription="录音完成声纹链路处理后，这里会显示跨录音的说话人档案。"
+          onRetry={() => void speakersQuery.refetch()}
+          pendingLabel="正在加载说话人…"
+        >
         <Table
           data={data?.items ?? []}
           rowKey="id"
-          loading={isLoading}
           size="small"
           pagination={{
             pageSize: 20,
@@ -150,6 +252,7 @@ export default function SpeakerProfileListPage(): JSX.Element {
                     role={record.speaker_role}
                     ambiguity={record.ambiguity_tag}
                     size="small"
+                    ambiguousRange={ambiguousRange}
                   />
                 </span>
               ),
@@ -196,6 +299,7 @@ export default function SpeakerProfileListPage(): JSX.Element {
             },
           ]}
         />
+        </PanelState>
       </Card>
       </div>
     </div>

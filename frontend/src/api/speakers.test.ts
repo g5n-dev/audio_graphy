@@ -9,8 +9,12 @@
  */
 
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { listSpeakers, getSpeaker } from "./speakers";
-import type { SpeakerListResponse, SpeakerDetailResponse } from "@/types/api";
+import { listSpeakers, getSpeaker, getVoiceprintPolicy } from "./speakers";
+import type {
+  SpeakerDetailResponse,
+  SpeakerListResponse,
+  VoiceprintPolicyResponse,
+} from "@/types/api";
 
 // Mock the httpClient module
 vi.mock("./client", () => ({
@@ -83,5 +87,34 @@ describe("speakers API client", () => {
     const err = new Error("network");
     mockedGet.mockRejectedValueOnce(err);
     await expect(getSpeaker(99)).rejects.toThrow("network");
+  });
+
+  it("getVoiceprintPolicy calls /speakers/voiceprint-policy", async () => {
+    const mockPolicy: VoiceprintPolicyResponse = {
+      enable_voiceprint: false,
+      adapter_voiceprint_mode: "mock",
+      layer1: { cosine_threshold: 0.5, ambiguous_threshold: 0.7 },
+      layer2: {
+        enabled: true,
+        fuzzy_inferred_threshold: 0.6,
+        fuzzy_ambiguous_threshold: 0.85,
+        voiceprint_reconfirm_cosine: 0.7,
+      },
+      sampling: {
+        strategy: "weighted_mean",
+        min_segment_sec: 0.5,
+        min_total_sec: 3,
+        max_segments_per_speaker: 8,
+        diarization_min_segment_sec: 0.5,
+        max_speakers: 10,
+        embedding_dim: 192,
+      },
+      retention_cascade: true,
+    };
+    mockedGet.mockResolvedValueOnce({ data: mockPolicy });
+
+    const result = await getVoiceprintPolicy();
+    expect(mockedGet).toHaveBeenCalledWith("/speakers/voiceprint-policy");
+    expect(result).toEqual(mockPolicy);
   });
 });

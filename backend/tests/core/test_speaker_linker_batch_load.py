@@ -89,6 +89,8 @@ async def _seed_voiceprint(
     vector: tuple[float, ...],
     created_at: datetime,
     suffix: str,
+    duration_sec: float = 1.0,
+    attach_cosine: float = 1.0,
 ) -> VoiceprintVector:
     ciphertext, metadata = _encrypted_vector(
         crypto,
@@ -102,7 +104,8 @@ async def _seed_voiceprint(
         voiceprint_id=f"vp-{suffix}".ljust(64, "0"),
         vector_encrypted=ciphertext,
         encryption_meta=metadata,
-        duration_sec=1.0,
+        duration_sec=duration_sec,
+        attach_cosine=attach_cosine,
         created_at=created_at,
     )
     session.add(row)
@@ -268,8 +271,179 @@ async def test_load_existing_speakers_selects_latest_per_speaker_and_tenant(
     assert vars(nodes[0])["_runtime_vec"] == pytest.approx(tuple(expected_vector))
 
 
-def test_voiceprint_model_has_batch_latest_lookup_index() -> None:
-    """The ORM metadata must preserve the production lookup index."""
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_load_existing_speakers_prefers_longest_sample_as_template(
+    async_session_factory: async_sessionmaker[AsyncSession],
+    dev_crypto: AudioCrypto,
+) -> None:
+    """The representative template is the longest sample, not the newest.
+
+    Newest-wins let a short, low-confidence merge overwrite a speaker's
+    identity for every later comparison (ADR-0001).
+    """
+    now = datetime.now(UTC)
+    async with async_session_factory() as session:
+        recording = await _seed_recording(
+            session,
+            tenant_id="default",
+            suffix="longest-default",
+        )
+        node = await _seed_speaker(
+            session,
+            tenant_id="default",
+            suffix="longest-default",
+        )
+        expected = await _seed_voiceprint(
+            session,
+            dev_crypto,
+            tenant_id="default",
+            recording_id=recording.id,
+            speaker_entity_id=node.id,
+            vector=_vector(1.0),
+            created_at=now - timedelta(hours=1),
+            suffix="long-old",
+            duration_sec=60.0,
+        )
+        # Newer but far shorter — exactly the low-quality sample that used
+        # to hijack the template.
+        await _seed_voiceprint(
+            session,
+            dev_crypto,
+            tenant_id="default",
+            recording_id=recording.id,
+            speaker_entity_id=node.id,
+            vector=_vector(2.0),
+            created_at=now,
+            suffix="short-new",
+            duration_sec=1.5,
+        )
+        await session.commit()
+        expected_vector = expected.decrypted_vector(dev_crypto)
+
+    nodes = await SpeakerLinker(
+        async_session_factory,
+        dev_crypto,
+        tenant_id="default",
+    )._load_existing_speakers()
+
+    assert [n.id for n in nodes] == [node.id]
+    assert vars(nodes[0])["_runtime_vec"] == pytest.approx(tuple(expected_vector))
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_load_existing_speakers_ignores_tentatively_attached_vectors(
+    async_session_factory: async_sessionmaker[AsyncSession],
+    dev_crypto: AudioCrypto,
+) -> None:
+    """An AMBIGUOUS merge must not become the speaker's template.
+
+    Even when the tentative sample is longer and newer, one uncertain merge
+    may not redefine the speaker for every later comparison (ADR-0001).
+    """
+    now = datetime.now(UTC)
+    async with async_session_factory() as session:
+        recording = await _seed_recording(
+            session,
+            tenant_id="default",
+            suffix="attach-default",
+        )
+        node = await _seed_speaker(
+            session,
+            tenant_id="default",
+            suffix="attach-default",
+        )
+        expected = await _seed_voiceprint(
+            session,
+            dev_crypto,
+            tenant_id="default",
+            recording_id=recording.id,
+            speaker_entity_id=node.id,
+            vector=_vector(1.0),
+            created_at=now - timedelta(hours=1),
+            suffix="confident-short",
+            duration_sec=5.0,
+            attach_cosine=1.0,
+        )
+        # Longer AND newer, but attached on a 0.55 cosine — exactly the
+        # tentative sample that must not win.
+        await _seed_voiceprint(
+            session,
+            dev_crypto,
+            tenant_id="default",
+            recording_id=recording.id,
+            speaker_entity_id=node.id,
+            vector=_vector(2.0),
+            created_at=now,
+            suffix="ambiguous-long",
+            duration_sec=120.0,
+            attach_cosine=0.55,
+        )
+        await session.commit()
+        expected_vector = expected.decrypted_vector(dev_crypto)
+
+    nodes = await SpeakerLinker(
+        async_session_factory,
+        dev_crypto,
+        tenant_id="default",
+        ambiguity_threshold=0.7,
+    )._load_existing_speakers()
+
+    assert [n.id for n in nodes] == [node.id]
+    assert vars(nodes[0])["_runtime_vec"] == pytest.approx(tuple(expected_vector))
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_load_existing_speakers_falls_back_to_tentative_when_only_option(
+    async_session_factory: async_sessionmaker[AsyncSession],
+    dev_crypto: AudioCrypto,
+) -> None:
+    """A speaker with only tentative rows still gets a template.
+
+    Preferring confident rows must not leave such a node unmatchable — that
+    would silently split the speaker on every future recording.
+    """
+    now = datetime.now(UTC)
+    async with async_session_factory() as session:
+        recording = await _seed_recording(
+            session,
+            tenant_id="default",
+            suffix="tentative-only",
+        )
+        node = await _seed_speaker(
+            session,
+            tenant_id="default",
+            suffix="tentative-only",
+        )
+        expected = await _seed_voiceprint(
+            session,
+            dev_crypto,
+            tenant_id="default",
+            recording_id=recording.id,
+            speaker_entity_id=node.id,
+            vector=_vector(3.0),
+            created_at=now,
+            suffix="only-ambiguous",
+            duration_sec=9.0,
+            attach_cosine=0.55,
+        )
+        await session.commit()
+        expected_vector = expected.decrypted_vector(dev_crypto)
+
+    nodes = await SpeakerLinker(
+        async_session_factory,
+        dev_crypto,
+        tenant_id="default",
+        ambiguity_threshold=0.7,
+    )._load_existing_speakers()
+
+    assert vars(nodes[0])["_runtime_vec"] == pytest.approx(tuple(expected_vector))
+
+
+def test_voiceprint_model_has_batch_lookup_indexes() -> None:
+    """The ORM metadata must preserve the production lookup indexes."""
     indexes = {
         index.name: tuple(column.name for column in index.columns)
         for index in VoiceprintVector.__table__.indexes
@@ -278,4 +452,10 @@ def test_voiceprint_model_has_batch_latest_lookup_index() -> None:
         "tenant_id",
         "speaker_entity_id",
         "created_at",
+    )
+    # Leading sort key of the representative-template ranking (ADR-0001).
+    assert indexes["ix_vp_tenant_speaker_duration"] == (
+        "tenant_id",
+        "speaker_entity_id",
+        "duration_sec",
     )

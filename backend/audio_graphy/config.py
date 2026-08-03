@@ -8,7 +8,11 @@ adapters based on the four per-adapter mode fields (`ADAPTER_{ASR,VAD,LLM,EMBED}
 - All env vars documented in `.env.example`.
 - The legacy `ADAPTER_MODE` field is retained only for back-compat with M3 `.env`
   files; it no longer drives mode resolution. Set the 4 per-adapter fields instead.
-- ASR real mode is rejected by the validator (funASR lands in M5).
+- No validator gates ASR real mode. It was gated before M5; the gate is gone and
+  `ADAPTER_ASR_MODE=real` builds a FunASRAdapter (tests/config/test_settings.py
+  asserts this). Enabling any real adapter only warns about a placeholder
+  JWT_SECRET. Said here because the previous wording claimed a rejecting
+  validator that does not exist, and sent people looking for it.
 """
 
 from __future__ import annotations
@@ -269,7 +273,12 @@ class Settings(BaseSettings):
 
     # --- Feature flags ---
     enable_clap: bool = False
-    enable_voiceprint: bool = False
+    # Speaker linking is on by default now that the chain is wired end to end
+    # (ADR-0001). It still requires a voiceprint adapter and the at-rest key,
+    # so a deployment missing either stays off rather than writing
+    # unencrypted or unlinkable voiceprints. Set False to restore M3-M6
+    # behaviour exactly: no diarization, Segment.speaker stays None.
+    enable_voiceprint: bool = True
 
     # --- Startup strictness ---
     # Serve even when the database engine could not be created. Off by default:

@@ -2664,7 +2664,7 @@ class ReceptionService:
                     started_at=recording.recorded_at,
                     ended_at=(recording.recorded_at + timedelta(seconds=duration)),
                     agent_id=recording.agent_name,
-                    customer_voiceprint_id=recording.customer_hash,
+                    customer_hash_claim=recording.customer_hash,
                 )
             )
 

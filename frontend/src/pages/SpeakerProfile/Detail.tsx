@@ -15,14 +15,13 @@
  *     can confirm or reject inline.
  */
 
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import {
   Button,
   Card,
   Descriptions,
-  Message,
-  Popconfirm,
   Spin,
   Table,
   Tag,
@@ -32,12 +31,17 @@ import dayjs from "dayjs";
 import { IconArrowLeft } from "@arco-design/web-react/icon";
 import { getSpeaker } from "@/api/speakers";
 import {
-  confirmSpeakerMerge,
   listSpeakerMergePending,
-  rejectSpeakerMerge,
   type SpeakerMergePendingListItem,
 } from "@/api/advancedGraph";
 import { SpeakerBadge } from "@/components/SpeakerBadge";
+import {
+  SpeakerMergeReviewModal,
+  type MergeReviewMode,
+} from "@/components/SpeakerMergeReviewModal";
+import { useVoiceprintPolicy } from "@/hooks/useVoiceprintPolicy";
+import { useAuthStore } from "@/stores/auth";
+import { getErrorMessage } from "@/utils/errors";
 import { buildFocusParam } from "@/utils/urlParams";
 
 const { Title, Text } = Typography;
@@ -53,6 +57,14 @@ export default function SpeakerProfileDetailPage(): JSX.Element {
     enabled: !!speakerId && !Number.isNaN(speakerId),
   });
 
+  const policyQuery = useVoiceprintPolicy();
+  const ambiguousRange = policyQuery.data
+    ? {
+        low: policyQuery.data.layer1.cosine_threshold,
+        high: policyQuery.data.layer1.ambiguous_threshold,
+      }
+    : undefined;
+
   if (isLoading) {
     return (
       <div style={{ padding: 24, textAlign: "center" }}>
@@ -62,9 +74,15 @@ export default function SpeakerProfileDetailPage(): JSX.Element {
   }
 
   if (error || !data) {
+    // Show what the backend said rather than always claiming the speaker is
+    // missing: a permission or transport failure reads very differently from
+    // a deleted record, and the operator can only tell if we say which.
     return (
       <div style={{ padding: 24 }}>
         <Title heading={5}>说话人不存在或加载失败</Title>
+        <Text type="secondary" style={{ display: "block", margin: "8px 0 16px" }}>
+          {error ? getErrorMessage(error) : "未返回该说话人的数据。"}
+        </Text>
         <Button onClick={() => navigate("/speakers")}>返回列表</Button>
       </div>
     );
@@ -80,6 +98,7 @@ export default function SpeakerProfileDetailPage(): JSX.Element {
             <SpeakerBadge
               role={data.speaker_role}
               ambiguity={data.ambiguity_tag}
+              ambiguousRange={ambiguousRange}
             />
           </h1>
           <p>声纹、角色、合并策略与关联录音一览。SpeakerNode #{data.id} · tenant={data.tenant_id}</p>
@@ -167,6 +186,13 @@ export default function SpeakerProfileDetailPage(): JSX.Element {
               width: 140,
             },
             {
+              title: "声纹余弦",
+              dataIndex: "cosine_similarity",
+              width: 110,
+              render: (val: number | null) =>
+                val !== null && val !== undefined ? val.toFixed(3) : "—",
+            },
+            {
               title: "Ambiguity",
               dataIndex: "ambiguity_tag",
               render: (val: string | null) => val ?? "—",
@@ -192,45 +218,32 @@ export default function SpeakerProfileDetailPage(): JSX.Element {
  * PendingMergesCard — M9 R2 T15.
  *
  * Lists SpeakerMergePending rows whose ``matched_speaker_node_id``
- * equals this speaker. Inspector/admin can confirm or reject inline;
- * viewer sees the rows but the buttons are hidden.
+ * equals this speaker. Inspector/admin confirm or reject through
+ * SpeakerMergeReviewModal (notes + optional voiceprint_score);
+ * viewer sees the rows read-only.
  */
 function PendingMergesCard({ speakerId }: { speakerId: number }): JSX.Element {
-  const queryClient = useQueryClient();
+  const user = useAuthStore((s) => s.user);
+  const canReview = user?.role === "admin" || user?.role === "inspector";
   const { data, isLoading } = useQuery({
-    queryKey: ["speaker-merge-pending", speakerId],
+    queryKey: ["speaker-merge-pending", "by-speaker", speakerId],
     queryFn: () =>
-      listSpeakerMergePending({ status: "pending", limit: 50 }),
+      // Filtered server-side: a client-side filter over one capped page
+      // hides this speaker's older rows once the tenant queue grows.
+      listSpeakerMergePending({
+        status: "pending",
+        matched_speaker_node_id: speakerId,
+        limit: 50,
+      }),
     refetchInterval: 30_000,
   });
 
-  const rows = (data?.items ?? []).filter(
-    (item) => item.matched_speaker_node_id === speakerId,
-  );
+  const rows = data?.items ?? [];
 
-  async function onConfirm(pendingId: number) {
-    try {
-      await confirmSpeakerMerge(pendingId, speakerId, {});
-      Message.success("Merge confirmed");
-      void queryClient.invalidateQueries({
-        queryKey: ["speaker-merge-pending", speakerId],
-      });
-    } catch {
-      Message.error("Confirm failed");
-    }
-  }
-
-  async function onReject(pendingId: number) {
-    try {
-      await rejectSpeakerMerge(pendingId, {});
-      Message.success("Merge rejected");
-      void queryClient.invalidateQueries({
-        queryKey: ["speaker-merge-pending", speakerId],
-      });
-    } catch {
-      Message.error("Reject failed");
-    }
-  }
+  const [review, setReview] = useState<{
+    mode: MergeReviewMode;
+    row: SpeakerMergePendingListItem;
+  } | null>(null);
 
   return (
     <Card title="待确认的模糊合并 (L8 reconfirm queue)" style={{ marginTop: 16 }}>
@@ -257,39 +270,58 @@ function PendingMergesCard({ speakerId }: { speakerId: number }): JSX.Element {
                 ),
               },
               {
+                title: "Voiceprint",
+                dataIndex: "voiceprint_score",
+                width: 100,
+                render: (v: number | null) => (v !== null ? v.toFixed(3) : "—"),
+              },
+              {
                 title: "Recording",
                 dataIndex: "recording_id",
                 width: 110,
               },
-              {
-                title: "Action",
-                key: "action",
-                width: 220,
-                render: (_: unknown, row: SpeakerMergePendingListItem) => (
-                  <>
-                    <Popconfirm
-                      title="Confirm this merge?"
-                      onConfirm={() => onConfirm(row.id)}
-                    >
-                      <Button size="mini" type="primary" style={{ marginRight: 8 }}>
-                        Confirm
-                      </Button>
-                    </Popconfirm>
-                    <Popconfirm
-                      title="Reject this merge?"
-                      onConfirm={() => onReject(row.id)}
-                    >
-                      <Button size="mini" status="danger">
-                        Reject
-                      </Button>
-                    </Popconfirm>
-                  </>
-                ),
-              },
+              ...(canReview
+                ? [
+                    {
+                      title: "Action",
+                      key: "action",
+                      width: 180,
+                      render: (
+                        _: unknown,
+                        row: SpeakerMergePendingListItem,
+                      ) => (
+                        <>
+                          <Button
+                            size="mini"
+                            type="primary"
+                            style={{ marginRight: 8 }}
+                            onClick={() => setReview({ mode: "confirm", row })}
+                          >
+                            Confirm
+                          </Button>
+                          <Button
+                            size="mini"
+                            status="danger"
+                            onClick={() => setReview({ mode: "reject", row })}
+                          >
+                            Reject
+                          </Button>
+                        </>
+                      ),
+                    },
+                  ]
+                : []),
             ]}
           />
         )}
       </Spin>
+      <SpeakerMergeReviewModal
+        visible={review !== null}
+        mode={review?.mode ?? "confirm"}
+        row={review?.row ?? null}
+        targetSpeakerId={speakerId}
+        onClose={() => setReview(null)}
+      />
     </Card>
   );
 }

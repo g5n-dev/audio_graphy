@@ -19,15 +19,19 @@ Layer 3 — Admin manual confirm (M7 stub):
 
 Flow per ``run(recording_id)``::
 
-    1. Fetch all segments + their voiceprints for ``recording_id``.
-    2. For each new speaker (grouped by ``speaker_id`` from diarization):
-        a. Build candidate voiceprint from the longest segment.
-        b. Iterate all existing SpeakerNodes in the same tenant.
-        c. Apply Layer 1: pick the highest-cosine match above threshold.
-        d. If no Layer-1 match: create new SpeakerNode (strategy=single_recording).
+    1. Receive candidates from ``core.voiceprint_sampler.VoiceprintSampler``
+       (one per speaker that cleared the sampling quality gates).
+    2. For each candidate:
+        a. Iterate all existing SpeakerNodes in the same tenant.
+        b. Apply Layer 1: pick the highest-cosine match above threshold.
+        c. If no Layer-1 match: create new SpeakerNode (strategy=single_recording).
     3. Insert VoiceprintVector rows (encrypted via AudioCrypto).
     4. Insert SpeakerLink rows (audit trail).
     5. Return SpeakerLinkReport.
+
+How a candidate's vector is sampled — and why the representative template
+is a speaker's longest sample rather than their newest — is decided in
+``docs/adr/0001-voiceprint-sampling.md``.
 
 Deviation note (round 1):
     Architecture §8 mentions "EntityMerger fuzzy layer" reuse. In practice
@@ -48,7 +52,7 @@ import math
 import struct
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import func, select
@@ -98,7 +102,12 @@ class _NewSpeakerCandidate:
         voiceprint: 192-d L2-normalized vector (float tuple).
         voiceprint_id: sha256(voiceprint) hex.
         recording_id: Source recording.
-        speech_sec: Total speech seconds (for ``total_speech_sec`` accumulation).
+        speech_sec: Total speech seconds (for ``total_speech_sec`` accumulation) —
+            how much this person talked, including segments too short to sample.
+        sampled_sec: Seconds of audio that actually produced ``voiceprint``.
+            This, not ``speech_sec``, is the vector's quality signal: a caller
+            with 200s of short interjections but only 3s of usable speech must
+            not outrank a 120s monologue when picking a representative template.
         first_seen: Recording ``recorded_at`` (for ``SpeakerNode.first_seen``).
         role_hint: ``agent`` / ``customer`` / ``unknown`` from §17.9 heuristic.
         display_name: M9 R1 T12 — display name for Layer 2 fuzzy match.
@@ -113,6 +122,7 @@ class _NewSpeakerCandidate:
     first_seen: datetime | None
     role_hint: str
     display_name: str = ""
+    sampled_sec: float = 0.0
 
 
 class SpeakerLinker:
@@ -313,20 +323,22 @@ class SpeakerLinker:
         self,
         tenant_id: str,
     ) -> list[SpeakerLinkReport]:
-        """Batch-mode entry: scan all recordings and link any unlinked speakers.
+        """Removed — batch backfill lives in ``core.voiceprint_backfill``.
 
-        Stub implementation — M7 nightly cron calls this for tenant-wide
-        backfill, but the actual backfill needs a "speaker_links missing
-        for recording R" detector that is non-trivial. M7 ships ``run()``
-        for the on-demand path; ``link_speakers()`` returns an empty list
-        for now (no-op) and is wired into scheduler.py for M8 to flesh out.
+        This was an empty stub whose docstring claimed a nightly cron called
+        it and that scheduler.py wired it up; neither was ever true. Batch
+        work cannot live here anyway: recordings that predate the voiceprint
+        pipeline were never diarized, so backfilling them means re-running
+        diarization, and ``SpeakerLinker`` has no voiceprint adapter.
+
+        Raises:
+            NotImplementedError: always. Use ``VoiceprintBackfill``.
         """
-        del tenant_id  # unused in stub
-        logger.info(
-            "SpeakerLinker.link_speakers(): M7 stub, no batch work done. "
-            "On-demand run() is the active path."
+        raise NotImplementedError(
+            "SpeakerLinker.link_speakers() was a no-op stub and has been removed. "
+            "Use audio_graphy.core.voiceprint_backfill.VoiceprintBackfill "
+            f"(tenant_id={tenant_id!r}), or scripts/backfill_voiceprints.py."
         )
-        return []
 
     # ------------------------------------------------------------------
     # Layer 2 — fuzzy name matching (M9 R1 T12 / L8 ruling)
@@ -461,8 +473,7 @@ class SpeakerLinker:
                 )
             except Exception as exc:
                 logger.warning(
-                    "Speaker pending payload encryption failed "
-                    "(recording_id=%s, candidate=%s): %s",
+                    "Speaker pending payload encryption failed (recording_id=%s, candidate=%s): %s",
                     recording_id,
                     candidate_name,
                     exc,
@@ -475,8 +486,7 @@ class SpeakerLinker:
                     existing_stmt = select(SpeakerMergePending.id).where(
                         SpeakerMergePending.tenant_id == self._tenant_id,
                         SpeakerMergePending.recording_id == recording_id,
-                        SpeakerMergePending.candidate_speaker_id
-                        == candidate.speaker_id,
+                        SpeakerMergePending.candidate_speaker_id == candidate.speaker_id,
                         SpeakerMergePending.matched_speaker_node_id == matched_node.id,
                         SpeakerMergePending.status == "pending",
                     )
@@ -491,23 +501,18 @@ class SpeakerLinker:
                     status="pending",
                     voiceprint_score=voiceprint_score,
                     observation_state="PENDING_REVIEW",
-                    candidate_speaker_id=(
-                        candidate.speaker_id if candidate is not None else None
-                    ),
+                    candidate_speaker_id=(candidate.speaker_id if candidate is not None else None),
                     candidate_voiceprint_id=(
                         candidate.voiceprint_id if candidate is not None else None
                     ),
                     candidate_vector_encrypted=vector_encrypted,
                     candidate_encryption_meta=encryption_meta,
-                    candidate_speech_sec=(
-                        candidate.speech_sec if candidate is not None else None
+                    candidate_speech_sec=(candidate.speech_sec if candidate is not None else None),
+                    candidate_sampled_sec=(
+                        candidate.sampled_sec if candidate is not None else None
                     ),
-                    candidate_first_seen=(
-                        candidate.first_seen if candidate is not None else None
-                    ),
-                    candidate_role_hint=(
-                        candidate.role_hint if candidate is not None else None
-                    ),
+                    candidate_first_seen=(candidate.first_seen if candidate is not None else None),
+                    candidate_role_hint=(candidate.role_hint if candidate is not None else None),
                 )
                 session.add(row)
                 await session.commit()
@@ -587,6 +592,17 @@ class SpeakerLinker:
             if not nodes:
                 return []
 
+            # Representative template selection (ADR-0001), in priority order:
+            #   1. Confidently attached rows first. A tentative (AMBIGUOUS)
+            #      merge must never redefine the speaker it merged into.
+            #   2. Then the longest sample — embedding quality rises with
+            #      speech duration, so it is the most trustworthy template.
+            #      Newest-wins, the old rule, let one short low-confidence
+            #      merge hijack the speaker for every later comparison.
+            # Every row is still retained for audit/DSAR; only the choice of
+            # template changes. A node always has at least one confident row:
+            # the sample it was created from.
+            confidently_attached = VoiceprintVector.attach_cosine >= self._ambiguity_threshold
             ranked_voiceprints = (
                 select(
                     VoiceprintVector.id.label("voiceprint_row_id"),
@@ -594,6 +610,8 @@ class SpeakerLinker:
                     .over(
                         partition_by=VoiceprintVector.speaker_entity_id,
                         order_by=(
+                            confidently_attached.desc(),
+                            VoiceprintVector.duration_sec.desc(),
                             VoiceprintVector.created_at.desc(),
                             VoiceprintVector.id.desc(),
                         ),
@@ -648,8 +666,10 @@ class SpeakerLinker:
         recording_id: int,
     ) -> None:
         """Merge ``candidate`` into ``node``: persist voiceprint + link + update node."""
-        # Persist encrypted voiceprint row.
-        await self._persist_voiceprint(candidate, node.id)
+        # Persist encrypted voiceprint row, tagged with the cosine that
+        # justified the merge so a tentative match cannot later be picked as
+        # this speaker's representative template.
+        await self._persist_voiceprint(candidate, node.id, attach_cosine=cosine)
 
         # Update node aggregations.
         recordings_list = list(node.recordings_list or [])
@@ -663,9 +683,14 @@ class SpeakerLinker:
                 return
             db_node.recordings_list = recordings_list
             db_node.recordings_count = len(recordings_list)
-            db_node.total_speech_sec = float(node.total_speech_sec or 0.0) + candidate.speech_sec
+            # Accumulate onto the row just read in this transaction, not the
+            # snapshot loaded at run() start: diarization routinely splits one
+            # person into spk_0/spk_1, and both candidates can merge into the
+            # same node — a stale base silently discards the first one's speech.
+            db_node.total_speech_sec = float(db_node.total_speech_sec or 0.0) + candidate.speech_sec
             if db_node.first_seen is None or (
-                candidate.first_seen is not None and candidate.first_seen < db_node.first_seen
+                candidate.first_seen is not None
+                and _as_utc(candidate.first_seen) < _as_utc(db_node.first_seen)
             ):
                 db_node.first_seen = candidate.first_seen
             db_node.merge_confidence = max(float(db_node.merge_confidence or 0.0), cosine)
@@ -682,6 +707,7 @@ class SpeakerLinker:
             confidence=cosine,
             strategy="voiceprint",
             ambiguity_tag=ambiguity_tag,
+            source_speaker_label=candidate.speaker_id,
         )
 
     async def _create_new_speaker(
@@ -728,6 +754,7 @@ class SpeakerLinker:
             confidence=1.0,
             strategy="single_recording",
             ambiguity_tag=None,
+            source_speaker_label=candidate.speaker_id,
         )
 
         # Stash decrypted vec so subsequent candidates in this run can match.
@@ -738,8 +765,17 @@ class SpeakerLinker:
         self,
         candidate: _NewSpeakerCandidate,
         speaker_node_id: int,
+        *,
+        attach_cosine: float = 1.0,
     ) -> None:
-        """Encrypt + insert VoiceprintVector row."""
+        """Encrypt + insert VoiceprintVector row.
+
+        ``attach_cosine`` records how confidently this vector belongs to
+        ``speaker_node_id``: 1.0 when the vector defines the speaker, or the
+        matching cosine when it was merged in. Rows below the ambiguity
+        threshold are kept for audit but never chosen as the speaker's
+        representative template (ADR-0001).
+        """
         # Pack floats as little-endian float32 bytes (one 4-byte word per dim).
         # ``hash_voiceprint`` uses the same packing for the voiceprint_id hash,
         # so a re-decrypt + re-hash will match the candidate's voiceprint_id.
@@ -750,6 +786,25 @@ class SpeakerLinker:
             plaintext, context=f"voiceprint:{candidate.voiceprint_id}"
         )
         async with self._session_factory() as session:
+            # ``ux_vp_voiceprint_id`` is unique per (tenant, voiceprint_id),
+            # and sampling is deterministic — a partially-completed earlier
+            # run leaves rows that would make this insert raise and abort the
+            # remaining candidates. Treat an existing row as done.
+            duplicate = (
+                await session.execute(
+                    select(VoiceprintVector.id).where(
+                        VoiceprintVector.tenant_id == self._tenant_id,
+                        VoiceprintVector.voiceprint_id == candidate.voiceprint_id,
+                    )
+                )
+            ).scalar_one_or_none()
+            if duplicate is not None:
+                logger.info(
+                    "Voiceprint %s already stored for tenant %s; skipping insert",
+                    candidate.voiceprint_id[:12],
+                    self._tenant_id,
+                )
+                return
             row = VoiceprintVector(
                 tenant_id=self._tenant_id,
                 recording_id=candidate.recording_id,
@@ -758,7 +813,12 @@ class SpeakerLinker:
                 voiceprint_id=candidate.voiceprint_id,
                 vector_encrypted=ciphertext,
                 encryption_meta=meta,
-                duration_sec=candidate.speech_sec,
+                # The audio behind this vector, not the speaker's total
+                # speech — this column ranks template quality (ADR-0001).
+                # Legacy callers that never set sampled_sec fall back to
+                # speech_sec, which is what M7 stored.
+                duration_sec=(candidate.sampled_sec or candidate.speech_sec),
+                attach_cosine=attach_cosine,
             )
             session.add(row)
             await session.commit()
@@ -773,6 +833,7 @@ class SpeakerLinker:
         confidence: float,
         strategy: str,
         ambiguity_tag: str | None,
+        source_speaker_label: str | None = None,
     ) -> None:
         async with self._session_factory() as session:
             link = SpeakerLink(
@@ -784,6 +845,7 @@ class SpeakerLinker:
                 merge_confidence=confidence,
                 strategy=strategy,
                 ambiguity_tag=ambiguity_tag,
+                source_speaker_label=source_speaker_label,
             )
             session.add(link)
             await session.commit()
@@ -813,6 +875,17 @@ class SpeakerLinker:
 # ------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------
+def _as_utc(value: datetime) -> datetime:
+    """Make a timestamp comparable regardless of where it came from.
+
+    MySQL DATETIME columns come back naive even when the ORM declares
+    ``timezone=True``, while candidates carry tz-aware timestamps — comparing
+    them directly raises TypeError and aborts the merge. Everything we store
+    is UTC, so a naive value is read as UTC.
+    """
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
 def _cosine(a: tuple[float, ...], b: tuple[float, ...]) -> float:
     """Cosine similarity for equal-length L2-normalized vectors.
 

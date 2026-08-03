@@ -545,14 +545,18 @@ class TestSpeakerLinkerMultiCandidate:
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-class TestSpeakerLinkerLinkSpeakersStub:
-    async def test_link_speakers_returns_empty(
+class TestSpeakerLinkerLinkSpeakersRemoved:
+    async def test_link_speakers_points_at_the_backfill_job(
         self,
         linker: SpeakerLinker,
     ) -> None:
-        """Batch-mode stub returns [] in M7."""
-        result = await linker.link_speakers("default")
-        assert result == []
+        """The old no-op returned [] — indistinguishable from "nothing to do".
+
+        Callers must be sent to VoiceprintBackfill instead, which can
+        re-diarize recordings that predate the voiceprint pipeline.
+        """
+        with pytest.raises(NotImplementedError, match="VoiceprintBackfill"):
+            await linker.link_speakers("default")
 
 
 @pytest.mark.asyncio

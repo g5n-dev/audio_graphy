@@ -73,6 +73,31 @@ class EERResult:
     roc_curve: tuple[tuple[float, float, float], ...] = field(default_factory=tuple)
     skipped: bool = False
 
+    def threshold_at_far(self, max_far: float) -> float | None:
+        """Lowest threshold whose false-accept rate stays within ``max_far``.
+
+        Computed from the full-resolution sweep held in ``_far_by_threshold``,
+        not from ``roc_curve`` — that one is subsampled for reporting, so
+        reading it would skip most candidate thresholds and return a
+        systematically stricter answer than the EER threshold beside it.
+
+        ``None`` when no threshold meets the target, or when the answer falls
+        outside the [0, 1] range Settings accepts.
+        """
+        best: float | None = None
+        for threshold, far in self._far_by_threshold:
+            if far <= max_far:
+                best = threshold
+            else:
+                break
+        if best is None or not 0.0 <= best <= 1.0:
+            return None
+        return best
+
+    # Full-resolution (threshold, far) pairs, strictest first. Private: it is
+    # the input to threshold_at_far, not something to report.
+    _far_by_threshold: tuple[tuple[float, float], ...] = field(default_factory=tuple)
+
 
 def voiceprint_eer(
     same_speaker_cosines: Sequence[float],
@@ -127,6 +152,9 @@ def voiceprint_eer(
     # FRR  = #same rejected / n_same   (lower is better)
     # We compute FAR/FRR at each threshold by counting.
     best_eer = math.inf
+    # Real, observed cosines — as opposed to the ±inf sentinels the sweep
+    # adds to cover "accept everything" / "accept nothing".
+    observed_thresholds = {c for c in list(same) + list(diff) if math.isfinite(c)}
     best_threshold: float | None = None
     best_far = 0.0
     best_frr = 0.0
@@ -162,6 +190,16 @@ def voiceprint_eer(
         best_frr = tie_frr_sum / tie_count
         best_eer = (best_far + best_frr) / 2.0
 
+    # Keep the full-resolution FAR sweep for threshold_at_far, strictest
+    # threshold first, before the reporting curve is thinned out. The ±inf
+    # sentinels are excluded: the upper one trivially scores FAR=0 because it
+    # accepts nothing, which is arithmetic, not a usable threshold.
+    far_by_threshold = tuple(
+        (thr, far)
+        for thr, far, _frr in sorted(roc_points, key=lambda p: p[0], reverse=True)
+        if any(math.isclose(thr, c) for c in observed_thresholds)
+    )
+
     # Subsample ROC curve for reporting (≤ roc_samples points).
     if len(roc_points) > roc_samples:
         step = len(roc_points) / roc_samples
@@ -177,6 +215,7 @@ def voiceprint_eer(
         same_speaker_count=n_same,
         diff_speaker_count=n_diff,
         roc_curve=tuple(sampled),
+        _far_by_threshold=far_by_threshold,
         skipped=False,
     )
 

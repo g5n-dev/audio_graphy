@@ -180,4 +180,112 @@ describe("MultiTrackTimeline", () => {
       .querySelector<HTMLElement>(".ag-track__lane");
     expect(tagLane?.dataset.laneCount).toBe("2");
   });
+
+  it("labels speaker blocks with the resolved speaker and flags weak merges", () => {
+    // Segments only carry "spk_0"; without the resolved map the timeline can
+    // show neither who this is nor that the attribution is provisional.
+    const workspace = {
+      ...WORKSPACE,
+      transcript_items: [
+        {
+          id: 9001,
+          dialogue_unit_id: 501,
+          recording_id: 42,
+          start_sec: 631,
+          end_sec: 640,
+          speaker_label: "spk_0",
+          speaker_role: "unknown" as const,
+          text: "这个价格还是超预算。",
+        },
+        {
+          id: 9002,
+          dialogue_unit_id: 501,
+          recording_id: 42,
+          start_sec: 641,
+          end_sec: 650,
+          speaker_label: "spk_1",
+          speaker_role: "unknown" as const,
+          text: "我帮您算一下金融方案。",
+        },
+      ],
+    };
+    const speakerByLabel = new Map([
+      [
+        "42:spk_0",
+        {
+          source_speaker_label: "spk_0",
+          speaker_node_id: 11,
+          display_name: "客户A",
+          speaker_role: "customer" as const,
+          ambiguity_tag: "AMBIGUOUS" as const,
+          merge_confidence: 0.58,
+          cosine_similarity: 0.58,
+          strategy: "voiceprint",
+        },
+      ],
+      [
+        "42:spk_1",
+        {
+          source_speaker_label: "spk_1",
+          speaker_node_id: 12,
+          display_name: "坐席B",
+          speaker_role: "agent" as const,
+          ambiguity_tag: null,
+          merge_confidence: 0.93,
+          cosine_similarity: 0.93,
+          strategy: "voiceprint",
+        },
+      ],
+    ]);
+
+    render(
+      <MultiTrackTimeline
+        workspace={workspace}
+        currentTime={635}
+        selectedUnitIds={new Set()}
+        selectedTagId={null}
+        onSeek={vi.fn()}
+        onToggleUnit={vi.fn()}
+        onSelectTag={vi.fn()}
+        speakerByLabel={speakerByLabel}
+      />,
+    );
+
+    expect(screen.getByText("⚠ 客户A")).toBeInTheDocument();
+    expect(screen.getByText("坐席B")).toBeInTheDocument();
+    expect(screen.queryByText("spk_0")).not.toBeInTheDocument();
+  });
+
+  it("keeps the raw labels when voiceprint linking has not run", () => {
+    const workspace = {
+      ...WORKSPACE,
+      transcript_items: [
+        {
+          id: 9003,
+          dialogue_unit_id: 501,
+          recording_id: 42,
+          start_sec: 631,
+          end_sec: 640,
+          speaker_label: "spk_0",
+          speaker_role: "unknown" as const,
+          text: "这个价格还是超预算。",
+        },
+      ],
+    };
+
+    render(
+      <MultiTrackTimeline
+        workspace={workspace}
+        currentTime={635}
+        selectedUnitIds={new Set()}
+        selectedTagId={null}
+        onSeek={vi.fn()}
+        onToggleUnit={vi.fn()}
+        onSelectTag={vi.fn()}
+      />,
+    );
+
+    // Inventing an identity would be worse than showing the raw label.
+    expect(screen.getByText("spk_0")).toBeInTheDocument();
+  });
 });

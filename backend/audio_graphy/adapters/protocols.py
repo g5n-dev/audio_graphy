@@ -112,13 +112,18 @@ class DiarizationSegment:
         start_sec / end_sec: Time window (file-relative).
         speaker_id: Stable per-file speaker label (e.g. ``"spk_0"``).
             NOT cross-recording linked yet — ``SpeakerLinker`` does that.
-        confidence: Diarization confidence in [0.0, 1.0].
+        confidence: Diarization confidence in [0.0, 1.0], or ``None`` when
+            the backing model does not report one. funasr's ``sentence_info``
+            usually carries no confidence, so most real segments are ``None``
+            — defaulting them to 1.0 would let callers filter on a constant
+            and believe they had filtered on a signal. Judge segment quality
+            by embedding agreement instead (see ``core/voiceprint_sampler``).
     """
 
     start_sec: float
     end_sec: float
     speaker_id: str
-    confidence: float = 1.0
+    confidence: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,6 +259,15 @@ class AudioEmbedAdapter(Protocol):
     ) -> Sequence[AudioEmbeddingResult]: ...
 
 
+# Voiceprint sampling defaults — the single source of truth for every
+# adapter/service default AND for GET /speakers/voiceprint-policy, which
+# reports them to the quality drawer. Change them here, not per-adapter,
+# or the UI will describe a pipeline that no longer exists.
+VOICEPRINT_DIM = 192  # L2 locked (CAM++ zh-cn 16k)
+DEFAULT_MIN_SEGMENT_SEC = 0.5
+DEFAULT_MAX_SPEAKERS = 10
+
+
 @runtime_checkable
 class VoiceprintAdapter(Protocol):
     """Speaker voiceprint extraction + diarization (CAM++).
@@ -270,14 +284,14 @@ class VoiceprintAdapter(Protocol):
     """
 
     model: str
-    dim: int  # always 192 (L2 locked)
+    dim: int  # always VOICEPRINT_DIM (L2 locked)
 
     async def diarize(
         self,
         audio_path: str,
         *,
-        min_segment_sec: float = 0.5,
-        max_speakers: int = 10,
+        min_segment_sec: float = DEFAULT_MIN_SEGMENT_SEC,
+        max_speakers: int = DEFAULT_MAX_SPEAKERS,
     ) -> DiarizationResult: ...
 
     async def extract_voiceprint(

@@ -36,7 +36,7 @@ def _recording(
         started_at=started_at,
         ended_at=started_at + timedelta(minutes=duration_min),
         agent_id=agent,
-        customer_voiceprint_id=customer,
+        customer_hash_claim=customer,
         semantic_embedding=embedding,
         explicit_reception_id=reception_id,
         explicit_session_id=session_id,
@@ -348,7 +348,7 @@ class TestLongRecordingReceptionSplits:
                 end_sec=10,
                 transcript="感谢光临慢走",
                 speaker="agent",
-                customer_voiceprint_id="customer-a",
+                customer_hash_claim="customer-a",
             ),
             ReceptionTurn(
                 segment_id="s2",
@@ -356,7 +356,7 @@ class TestLongRecordingReceptionSplits:
                 end_sec=80,
                 transcript="您好，欢迎光临，今天想看什么",
                 speaker="agent",
-                customer_voiceprint_id="customer-b",
+                customer_hash_claim="customer-b",
             ),
         ]
 
@@ -378,7 +378,7 @@ class TestLongRecordingReceptionSplits:
                 end_sec=10,
                 transcript="我再介绍一下",
                 speaker="agent",
-                customer_voiceprint_id="customer-a",
+                customer_hash_claim="customer-a",
             ),
             ReceptionTurn(
                 segment_id="s2",
@@ -386,7 +386,7 @@ class TestLongRecordingReceptionSplits:
                 end_sec=18,
                 transcript="您好，我重新给您介绍这款",
                 speaker="agent",
-                customer_voiceprint_id="customer-a",
+                customer_hash_claim="customer-a",
             ),
         ]
 
@@ -400,7 +400,7 @@ class TestLongRecordingReceptionSplits:
                 end_sec=95,
                 transcript="您好欢迎光临",
                 speaker="agent",
-                customer_voiceprint_id="customer-b",
+                customer_hash_claim="customer-b",
             ),
             ReceptionTurn(
                 segment_id="earlier",
@@ -408,7 +408,7 @@ class TestLongRecordingReceptionSplits:
                 end_sec=5,
                 transcript="慢走",
                 speaker="agent",
-                customer_voiceprint_id="customer-a",
+                customer_hash_claim="customer-a",
             ),
         ]
 

@@ -115,3 +115,65 @@ def test_invalid_dim() -> None:
 def test_invalid_num_speakers() -> None:
     with pytest.raises(ValueError):
         MockVoiceprintAdapter(num_speakers=0)
+
+
+def _cos(a: tuple[float, ...], b: tuple[float, ...]) -> float:
+    return sum(x * y for x, y in zip(a, b, strict=True))
+
+
+class TestSpeakerIdentityFallback:
+    """How the mock guesses identity when scoring cannot supply one.
+
+    Speaker-verification scoring never passes ``speaker_id`` — identity is
+    what it measures — so without a fallback the mock makes every clip its
+    own speaker and the EER is pure noise.
+    """
+
+    async def test_off_by_default_every_file_is_its_own_speaker(self) -> None:
+        adapter = MockVoiceprintAdapter(latency_ms=0)
+        a = await adapter.extract_voiceprint("/data/id00042/one.flac")
+        b = await adapter.extract_voiceprint("/data/id00042/two.flac")
+        assert _cos(a.vector, b.vector) < 0.5
+
+    async def test_dirname_mode_groups_by_parent_directory(self) -> None:
+        """CN-Celeb's data/ tree: the directory is the speaker."""
+        adapter = MockVoiceprintAdapter(latency_ms=0, speaker_from_filename="dirname")
+        a = await adapter.extract_voiceprint("/data/id00042/interview-01.flac")
+        b = await adapter.extract_voiceprint("/data/id00042/interview-02.flac")
+        other = await adapter.extract_voiceprint("/data/id00099/interview-01.flac")
+        assert _cos(a.vector, b.vector) >= 0.6
+        assert _cos(a.vector, other.vector) <= 0.3
+
+    async def test_filename_mode_groups_by_stem_prefix(self) -> None:
+        """A flat directory whose files are named by speaker."""
+        adapter = MockVoiceprintAdapter(latency_ms=0, speaker_from_filename="filename")
+        a = await adapter.extract_voiceprint("/clips/alice_01.wav")
+        b = await adapter.extract_voiceprint("/clips/alice_02.wav")
+        other = await adapter.extract_voiceprint("/clips/bob_01.wav")
+        assert _cos(a.vector, b.vector) >= 0.6
+        assert _cos(a.vector, other.vector) <= 0.3
+
+    async def test_the_two_modes_disagree_on_the_same_corpus(self) -> None:
+        """Which part of the path holds the identity cannot be guessed.
+
+        Under one convention a filename prefix is a recording type shared by
+        everyone; under the other the parent directory is. Picking wrong
+        collapses the corpus into a single identity, which is why the caller
+        must say.
+        """
+        by_dir = MockVoiceprintAdapter(latency_ms=0, speaker_from_filename="dirname")
+        by_name = MockVoiceprintAdapter(latency_ms=0, speaker_from_filename="filename")
+        left = "/data/id00042/interview-01.flac"
+        right = "/data/id00099/interview-01.flac"
+
+        dir_cos = _cos(
+            (await by_dir.extract_voiceprint(left)).vector,
+            (await by_dir.extract_voiceprint(right)).vector,
+        )
+        name_cos = _cos(
+            (await by_name.extract_voiceprint(left)).vector,
+            (await by_name.extract_voiceprint(right)).vector,
+        )
+        # Two different speakers: correct by directory, collapsed by filename.
+        assert dir_cos <= 0.3
+        assert name_cos >= 0.6

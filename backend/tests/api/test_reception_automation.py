@@ -641,7 +641,7 @@ class TestAutomaticReceptionDiscovery:
             max_signals: int | None = None,
         ) -> Any:
             captured_texts.extend(turn.transcript for turn in turns)
-            captured_customer_voiceprints.extend(turn.customer_voiceprint_id for turn in turns)
+            captured_customer_voiceprints.extend(turn.customer_hash_claim for turn in turns)
             return original_detect(self, turns, max_signals=max_signals)
 
         monkeypatch.setattr(ReceptionMerger, "detect_recording_splits", capture_detect)

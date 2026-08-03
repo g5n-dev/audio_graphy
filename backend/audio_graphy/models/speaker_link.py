@@ -70,6 +70,11 @@ class SpeakerLink(TenantScopedBase):
         ForeignKey("recordings.id", ondelete="CASCADE"),
         nullable=False,
     )
+    # The diarization-local label ("spk_0") this link resolved. Segments store
+    # only that label, so without it nothing can map a transcript line to the
+    # canonical speaker — which is what any per-segment speaker display needs.
+    # Null for links written before the column existed.
+    source_speaker_label: Mapped[str | None] = mapped_column(String(64), nullable=True)
     cosine_similarity: Mapped[float | None] = mapped_column(Float, nullable=True)
     merge_confidence: Mapped[float] = mapped_column(Float, nullable=False)
     strategy: Mapped[str] = mapped_column(String(32), nullable=False)

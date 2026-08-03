@@ -22,6 +22,11 @@ export interface SpeakerBadgeProps {
   /** Optional display name shown before the role label. */
   displayName?: string;
   size?: "small" | "default";
+  /**
+   * AMBIGUOUS cosine range for the tooltip, from GET /speakers/voiceprint-policy.
+   * Falls back to the historical 0.5–0.7 wording when absent.
+   */
+  ambiguousRange?: { low: number; high: number };
 }
 
 const ROLE_LABEL: Record<SpeakerRole, string> = {
@@ -41,6 +46,7 @@ export function SpeakerBadge({
   ambiguity,
   displayName,
   size = "default",
+  ambiguousRange,
 }: SpeakerBadgeProps): JSX.Element {
   const ambiguityPrefix =
     ambiguity === "AMBIGUOUS"
@@ -56,9 +62,12 @@ export function SpeakerBadge({
         : ROLE_COLOR[role];
 
   const label = `${ambiguityPrefix}${displayName ? `${displayName} · ` : ""}${ROLE_LABEL[role]}`;
+  const rangeText = ambiguousRange
+    ? `${ambiguousRange.low}–${ambiguousRange.high}`
+    : "0.5–0.7";
   const tooltip =
     ambiguity === "AMBIGUOUS"
-      ? "该说话人合并置信度较低（0.5–0.7），检索已降权处理"
+      ? `该说话人合并置信度较低（${rangeText}），检索已降权处理`
       : ambiguity === "PENDING_REVIEW"
         ? "该说话人待人工复核，检索已隐藏"
         : undefined;

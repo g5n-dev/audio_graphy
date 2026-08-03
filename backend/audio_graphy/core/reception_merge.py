@@ -31,7 +31,12 @@ class RecordingCandidate:
     started_at: datetime
     ended_at: datetime
     agent_id: str | None = None
-    customer_voiceprint_id: str | None = None
+    # Caller-supplied customer identifier from ingest (Recording.customer_hash),
+    # NOT a voiceprint. It was named customer_voiceprint_id, which made it read
+    # like output of the CAM++ pipeline and invited treating an unverified
+    # client claim as a biometric match. Merge decisions weigh it accordingly:
+    # it is evidence of intent, not proof of identity.
+    customer_hash_claim: str | None = None
     semantic_embedding: tuple[float, ...] | None = None
     explicit_reception_id: str | None = None
     explicit_session_id: str | None = None
@@ -121,7 +126,7 @@ class ReceptionTurn:
     end_sec: float
     transcript: str
     speaker: str | None = None
-    customer_voiceprint_id: str | None = None
+    customer_hash_claim: str | None = None
 
     def __post_init__(self) -> None:
         if self.end_sec < self.start_sec:
@@ -300,7 +305,7 @@ class ReceptionMerger:
                 MergeFeatureReason(
                     "customer_voiceprint_conflict",
                     -1.0,
-                    (f"{first.customer_voiceprint_id}!={second.customer_voiceprint_id}"),
+                    (f"{first.customer_hash_claim}!={second.customer_hash_claim}"),
                     hard_constraint=True,
                 ),
             )
@@ -344,8 +349,7 @@ class ReceptionMerger:
         ]
         same_agent = bool(first.agent_id and first.agent_id == second.agent_id)
         same_customer = bool(
-            first.customer_voiceprint_id
-            and first.customer_voiceprint_id == second.customer_voiceprint_id
+            first.customer_hash_claim and first.customer_hash_claim == second.customer_hash_claim
         )
         if same_agent:
             reasons.append(
@@ -360,7 +364,7 @@ class ReceptionMerger:
                 MergeFeatureReason(
                     "same_customer_voiceprint",
                     0.50,
-                    f"voiceprint={first.customer_voiceprint_id}",
+                    f"voiceprint={first.customer_hash_claim}",
                 )
             )
 
@@ -443,9 +447,7 @@ class ReceptionMerger:
         parent = {item.recording_id: item.recording_id for item in ordered}
         component_members = {item.recording_id: {item.recording_id} for item in ordered}
         known_customers = {
-            item.recording_id: (
-                {item.customer_voiceprint_id} if item.customer_voiceprint_id else set()
-            )
+            item.recording_id: ({item.customer_hash_claim} if item.customer_hash_claim else set())
             for item in ordered
         }
         explicit_receptions = {
@@ -609,15 +611,15 @@ class ReceptionMerger:
                     )
                 )
             if (
-                previous.customer_voiceprint_id
-                and current.customer_voiceprint_id
-                and previous.customer_voiceprint_id != current.customer_voiceprint_id
+                previous.customer_hash_claim
+                and current.customer_hash_claim
+                and previous.customer_hash_claim != current.customer_hash_claim
             ):
                 reasons.append(
                     MergeFeatureReason(
                         "customer_change",
                         0.45,
-                        (f"{previous.customer_voiceprint_id}->{current.customer_voiceprint_id}"),
+                        (f"{previous.customer_hash_claim}->{current.customer_hash_claim}"),
                     )
                 )
 
@@ -696,9 +698,9 @@ class ReceptionMerger:
         second: RecordingCandidate,
     ) -> bool:
         return bool(
-            first.customer_voiceprint_id
-            and second.customer_voiceprint_id
-            and first.customer_voiceprint_id != second.customer_voiceprint_id
+            first.customer_hash_claim
+            and second.customer_hash_claim
+            and first.customer_hash_claim != second.customer_hash_claim
         )
 
     @staticmethod
@@ -720,15 +722,12 @@ class ReceptionMerger:
         reasons: list[MergeFeatureReason] = []
         if first.agent_id and first.agent_id == second.agent_id:
             reasons.append(MergeFeatureReason("same_agent", 0.15, f"agent={first.agent_id}"))
-        if (
-            first.customer_voiceprint_id
-            and first.customer_voiceprint_id == second.customer_voiceprint_id
-        ):
+        if first.customer_hash_claim and first.customer_hash_claim == second.customer_hash_claim:
             reasons.append(
                 MergeFeatureReason(
                     "same_customer_voiceprint",
                     0.50,
-                    f"voiceprint={first.customer_voiceprint_id}",
+                    f"voiceprint={first.customer_hash_claim}",
                 )
             )
         return tuple(reasons)

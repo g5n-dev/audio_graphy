@@ -2,10 +2,10 @@
 
 Targets the pure-Python helper functions which don't need funasr / librosa:
 - ``_save_tmp`` writes bytes to disk and returns the path.
-- ``_diarize_with_sv_only`` returns whole-file single-speaker timeline when
-  duration >= min_segment_sec; empty list otherwise.
-- ``_diarize_with_diarize_model`` parses funasr ``sentence_info`` payload
-  and skips too-short segments.
+- ``_diarize_with_pipeline`` parses funasr ``sentence_info`` into the wire
+  schema: milliseconds → seconds, ``spk`` → ``spk_N``, short segments dropped.
+- ``_transcribe_with_pipeline`` normalizes the same payload to the OpenAI shape.
+- ``_apply_max_speakers`` bounds the clusterer and tolerates its absence.
 - ``_crop_audio`` invokes librosa + soundfile to crop; stubbed via monkeypatch.
 """
 
@@ -106,86 +106,172 @@ def test_save_tmp_honors_suffix() -> None:
 
 
 # ============================================================
-# _diarize_with_sv_only
+# _diarize_with_pipeline
 # ============================================================
 
 
-def test_diarize_sv_only_short_audio_returns_empty() -> None:
-    """Audio shorter than min_segment_sec returns empty segment list."""
+def _install_duration_stub(seconds: float) -> None:
+    """Stub librosa.get_duration, which is how the service reads duration."""
+    _install_librosa_stub(lambda *a, **kw: None)
+    sys.modules["librosa"].get_duration = lambda **kw: seconds  # type: ignore[attr-defined]
 
-    def _fake_load(path: str, sr: int, mono: bool) -> tuple[list[int], int]:
-        return [0] * 100, 16_000  # 100 samples @ 16kHz → 6.25ms
 
-    _install_librosa_stub(_fake_load)
+def _pipeline(payload: Any) -> Any:
+    """A fake funasr AutoModel whose generate() returns ``payload``."""
+    return types.SimpleNamespace(generate=lambda **kw: payload)
 
-    segs, dur = svc._diarize_with_sv_only("/fake", min_segment_sec=0.5)
+
+def test_diarize_pipeline_empty_response_returns_empty() -> None:
+    _install_duration_stub(1.0)
+    segs, dur = svc._diarize_with_pipeline(_pipeline([]), "/fake", 0.5, 5)
     assert segs == []
-    assert dur > 0
+    assert dur == pytest.approx(1.0)
 
 
-def test_diarize_sv_only_long_audio_returns_single_segment() -> None:
-    """Audio >= min_segment_sec returns a single whole-file segment."""
-
-    def _fake_load(path: str, sr: int, mono: bool) -> tuple[list[int], int]:
-        return [0] * 48_000, 48_000  # 1.0s @ 48kHz
-
-    _install_librosa_stub(_fake_load)
-
-    segs, dur = svc._diarize_with_sv_only("/fake", min_segment_sec=0.5)
-    assert len(segs) == 1
-    assert segs[0]["speaker_id"] == "spk_0"
-    assert segs[0]["start_sec"] == 0.0
-    assert segs[0]["end_sec"] == dur
-    assert dur == pytest.approx(1.0, abs=1e-6)
-
-
-# ============================================================
-# _diarize_with_diarize_model
-# ============================================================
-
-
-def test_diarize_model_empty_response_returns_empty() -> None:
-    svc._DIARIZE_MODEL = types.SimpleNamespace(generate=lambda **kw: [])
-    segs, dur = svc._diarize_with_diarize_model("/fake", min_segment_sec=0.5, max_speakers=5)
-    assert segs == []
-    assert dur == 0.0
-
-
-def test_diarize_model_non_list_response_returns_empty() -> None:
-    svc._DIARIZE_MODEL = types.SimpleNamespace(generate=lambda **kw: "not-a-list")
-    segs, _ = svc._diarize_with_diarize_model("/fake", min_segment_sec=0.5, max_speakers=5)
+def test_diarize_pipeline_non_list_response_returns_empty() -> None:
+    _install_duration_stub(1.0)
+    segs, _ = svc._diarize_with_pipeline(_pipeline("not-a-list"), "/fake", 0.5, 5)
     assert segs == []
 
 
-def test_diarize_model_missing_sentence_info_returns_empty() -> None:
-    svc._DIARIZE_MODEL = types.SimpleNamespace(generate=lambda **kw: [{"no_sentence_info": True}])
-    segs, _ = svc._diarize_with_diarize_model("/fake", min_segment_sec=0.5, max_speakers=5)
+def test_diarize_pipeline_missing_sentence_info_returns_empty() -> None:
+    _install_duration_stub(1.0)
+    segs, _ = svc._diarize_with_pipeline(_pipeline([{"text": "hi"}]), "/fake", 0.5, 5)
     assert segs == []
 
 
-def test_diarize_model_parses_sentence_info_and_drops_short() -> None:
-    """Valid sentence_info is parsed; segments shorter than min are dropped."""
+def test_diarize_pipeline_converts_milliseconds_to_seconds() -> None:
+    """funasr reports ms; the wire schema is seconds. 1000x errors live here."""
+    _install_duration_stub(51.663)
 
-    def _fake_load(path: str, sr: int, mono: bool) -> tuple[list[int], int]:
-        return [0] * 48_000, 48_000  # 1.0s @ 48kHz
-
-    _install_librosa_stub(_fake_load)
-
+    # Verbatim shape from the real pipeline: integer ms, 0-based int spk.
     sentence_info = [
-        {"start": 0.0, "end": 0.8, "spk_label": 0},  # 0.8s ≥ 0.5 → kept
-        {"start": 0.8, "end": 0.9, "spk_label": 1},  # 0.1s < 0.5 → dropped
-        {"start": 0.9, "end": 1.0, "spk_label": 0},  # 0.1s < 0.5 → dropped
+        {"text": "嗯，", "start": 410, "end": 23430, "spk": 0},
+        {"text": "对。", "start": 24270, "end": 34690, "spk": 1},
     ]
-    svc._DIARIZE_MODEL = types.SimpleNamespace(
-        generate=lambda **kw: [{"sentence_info": sentence_info}]
+    segs, dur = svc._diarize_with_pipeline(
+        _pipeline([{"sentence_info": sentence_info}]), "/f", 0.5, 5
     )
 
-    segs, dur = svc._diarize_with_diarize_model("/fake", min_segment_sec=0.5, max_speakers=5)
-    assert dur == pytest.approx(1.0, abs=1e-6)
+    assert dur == pytest.approx(51.663)
+    assert [s["start_sec"] for s in segs] == [pytest.approx(0.410), pytest.approx(24.270)]
+    assert [s["end_sec"] for s in segs] == [pytest.approx(23.430), pytest.approx(34.690)]
+    assert [s["speaker_id"] for s in segs] == ["spk_0", "spk_1"]
+    # Never fabricated: funasr's clustering emits no per-segment posterior.
+    assert all(s["confidence"] is None for s in segs)
+    # Every boundary must be inside the recording — the tripwire for ms/sec drift.
+    assert all(s["end_sec"] <= dur for s in segs)
+
+
+def test_diarize_pipeline_drops_short_segments_and_sorts() -> None:
+    _install_duration_stub(1.0)
+    sentence_info = [
+        {"start": 900, "end": 1000, "spk": 0},  # 0.1s < 0.5 → dropped
+        {"start": 0, "end": 800, "spk": 1},  # 0.8s ≥ 0.5 → kept
+    ]
+    segs, _ = svc._diarize_with_pipeline(
+        _pipeline([{"sentence_info": sentence_info}]), "/f", 0.5, 5
+    )
     assert len(segs) == 1
-    assert segs[0]["speaker_id"] == "spk_0"
+    assert segs[0]["speaker_id"] == "spk_1"
     assert segs[0]["start_sec"] == 0.0
-    assert segs[0]["end_sec"] == 0.8
+
+
+def test_diarize_pipeline_raises_when_speaker_label_missing() -> None:
+    """A missing spk must fail loudly, not collapse to a fake single speaker."""
+    _install_duration_stub(2.0)
+    sentence_info = [{"start": 0, "end": 2000, "text": "hi"}]  # no "spk"
+    with pytest.raises(ValueError, match="spk"):
+        svc._diarize_with_pipeline(_pipeline([{"sentence_info": sentence_info}]), "/f", 0.5, 5)
+
+
+def test_diarize_pipeline_skips_unparsable_timestamps() -> None:
+    _install_duration_stub(2.0)
+    sentence_info = [
+        {"start": "x", "end": 2000, "spk": 0},
+        {"start": 0, "end": 2000, "spk": 1},
+    ]
+    segs, _ = svc._diarize_with_pipeline(
+        _pipeline([{"sentence_info": sentence_info}]), "/f", 0.5, 5
+    )
+    assert [s["speaker_id"] for s in segs] == ["spk_1"]
+
+
+# ============================================================
+# _apply_max_speakers
+# ============================================================
+
+
+def test_apply_max_speakers_bounds_the_clusterer() -> None:
+    """The cap lands on the attribute that actually bounds funasr's search."""
+    cluster = types.SimpleNamespace(max_num_spks=15)
+    model = types.SimpleNamespace(cb_model=types.SimpleNamespace(spectral_cluster=cluster))
+    svc._apply_max_speakers(model, 3)
+    assert cluster.max_num_spks == 3
+
+
+def test_apply_max_speakers_floors_at_one() -> None:
+    cluster = types.SimpleNamespace(max_num_spks=15)
+    model = types.SimpleNamespace(cb_model=types.SimpleNamespace(spectral_cluster=cluster))
+    svc._apply_max_speakers(model, 0)
+    assert cluster.max_num_spks == 1
+
+
+def test_apply_max_speakers_tolerates_missing_clusterer(caplog) -> None:
+    """A funasr version that moves the attribute must not break diarization."""
+    with caplog.at_level("WARNING", logger="audio_graphy.services.campplus_service"):
+        svc._apply_max_speakers(types.SimpleNamespace(), 4)
+    assert any("max_num_spks" in r.message for r in caplog.records)
+
+
+# ============================================================
+# _transcribe_with_pipeline / _join_cjk_spaces
+# ============================================================
+
+
+def test_join_cjk_spaces_removes_only_cjk_token_joins() -> None:
+    assert svc._join_cjk_spaces("今 天 天 气 不 错") == "今天天气不错"
+    assert svc._join_cjk_spaces("会 议 室 review 一 下") == "会议室 review 一下"
+
+
+def test_transcribe_pipeline_emits_openai_segments_in_seconds() -> None:
+    _install_duration_stub(10.0)
+    payload = [
+        {
+            "text": "今 天 好。 明 天 也 好。",
+            "sentence_info": [
+                {"text": "今 天 好。", "start": 410, "end": 5500, "spk": 0},
+                {"text": "  ", "start": 5500, "end": 5600, "spk": 0},  # blank → dropped
+                {"text": "明 天 也 好。", "start": 6000, "end": 9900, "spk": 1},
+            ],
+        }
+    ]
+    text, segments, duration = svc._transcribe_with_pipeline(_pipeline(payload), "/f")
+
+    assert text == "今天好。明天也好。"
+    assert duration == pytest.approx(10.0)
+    assert [s["id"] for s in segments] == [0, 2]  # index is the source position
+    assert segments[0]["start"] == pytest.approx(0.410)
+    assert segments[1]["end"] == pytest.approx(9.900)
+    # No fabricated confidence — the adapter applies its own declared fallback.
+    assert all("confidence" not in s for s in segments)
+
+
+def test_transcribe_pipeline_falls_back_to_whole_file_segment() -> None:
+    """Text without usable sentence timestamps still yields a real timeline."""
+    _install_duration_stub(4.0)
+    text, segments, duration = svc._transcribe_with_pipeline(_pipeline([{"text": "你 好"}]), "/f")
+    assert text == "你好"
+    assert segments == [{"id": 0, "start": 0.0, "end": 4.0, "text": "你好"}]
+    assert duration == pytest.approx(4.0)
+
+
+def test_transcribe_pipeline_empty_result_returns_blank() -> None:
+    _install_duration_stub(3.0)
+    text, segments, duration = svc._transcribe_with_pipeline(_pipeline([]), "/f")
+    assert text == ""
+    assert segments == []
+    assert duration == pytest.approx(3.0)
 
 
 # ============================================================

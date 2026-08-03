@@ -588,3 +588,40 @@ class TestVoiceprintEERFromTrials:
         result = await voiceprint_eer_from_trials(trials, _FailingAdapter())
         # All trials failed → both lists empty → skipped
         assert result.skipped is True
+
+
+class TestThresholdAtFar:
+    """The calibration script's second recommendation comes from here."""
+
+    def test_uses_full_resolution_not_the_reported_curve(self) -> None:
+        """roc_curve is subsampled for reporting; scanning it biases strict."""
+        same = [0.5 + i * 0.001 for i in range(300)]
+        diff = [0.1 + i * 0.001 for i in range(300)]
+        result = voiceprint_eer(same, diff, roc_samples=11)
+
+        picked = result.threshold_at_far(0.01)
+        assert picked is not None
+        assert len(result.roc_curve) <= 11
+        # Rescanning the thinned curve gives a stricter answer; the full
+        # sweep must not be limited to those few points.
+        coarse: float | None = None
+        for threshold, far, _frr in sorted(
+            result.roc_curve, key=lambda p: p[0], reverse=True
+        ):
+            if far <= 0.01:
+                coarse = threshold
+            else:
+                break
+        assert coarse is None or picked <= coarse
+
+    def test_returns_none_when_the_answer_is_out_of_range(self) -> None:
+        """Settings reject thresholds outside [0, 1]; never recommend one."""
+        same = [-0.3, -0.25, -0.2]
+        diff = [-0.9, -0.85, -0.8]
+        picked = voiceprint_eer(same, diff).threshold_at_far(0.01)
+        assert picked is None or 0.0 <= picked <= 1.0
+
+    def test_returns_none_when_no_threshold_meets_the_target(self) -> None:
+        """Fully overlapping distributions admit no safe silent-merge point."""
+        result = voiceprint_eer([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
+        assert result.threshold_at_far(0.0) is None

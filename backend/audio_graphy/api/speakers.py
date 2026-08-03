@@ -1,8 +1,8 @@
 """Speakers router — M7 WS-3 T12.
 
-Endpoints (tenant-scoped, inspector+ read access):
-    GET /speakers           — list speaker nodes for current tenant
-    GET /speakers/{id}      — single speaker detail (with related recordings)
+Endpoints (tenant-scoped):
+    GET /speakers           — list speaker nodes for current tenant (viewer+)
+    GET /speakers/{id}      — single speaker detail (viewer+)
 
 PIPL §14.3 compliance:
     - Never expose raw voiceprint vectors.
@@ -27,6 +27,11 @@ from fastapi import APIRouter, Depends, Query, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from audio_graphy.adapters.protocols import (
+    DEFAULT_MAX_SPEAKERS,
+    DEFAULT_MIN_SEGMENT_SEC,
+    VOICEPRINT_DIM,
+)
 from audio_graphy.api.deps import get_db
 from audio_graphy.api.schemas_m9 import (
     SpeakerConfirmMergeRequest,
@@ -50,15 +55,24 @@ from audio_graphy.models.speaker_merge_pending import SpeakerMergePending
 from audio_graphy.models.speaker_node import SpeakerNode
 from audio_graphy.models.voiceprint_vector import VoiceprintVector
 from audio_graphy.schemas.speakers import (
+    RecordingSpeakerListResponse,
+    RecordingSpeakerRef,
     SpeakerDetailResponse,
     SpeakerListItem,
     SpeakerListResponse,
     SpeakerRecordingRef,
+    VoiceprintPolicyLayer1,
+    VoiceprintPolicyLayer2,
+    VoiceprintPolicyResponse,
+    VoiceprintPolicySampling,
 )
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/speakers", tags=["speakers"])
+# Recording-scoped speaker lookup belongs under /recordings, not /speakers:
+# it answers "who spoke in this recording", not "tell me about this speaker".
+recordings_router = APIRouter(prefix="/recordings", tags=["speakers"])
 
 
 # ============================================================
@@ -115,14 +129,23 @@ async def list_speakers(
         description="Filter by ambiguity_tag (AMBIGUOUS / PENDING_REVIEW). "
         "Pass 'none' to filter to non-ambiguous speakers only.",
     ),
+    recording_id: int | None = Query(
+        default=None,
+        description="Only speakers linked to this recording.",
+    ),
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     db: AsyncSession = Depends(get_db),
-    _user: AuthUser = Depends(require_inspector_or_above()),
+    _user: AuthUser = Depends(require_role("admin", "inspector", "viewer")),
 ) -> SpeakerListResponse:
     """List all speaker nodes for the current tenant.
 
-    Role: inspector+ (per architecture §7.3 — tenant isolation enforced).
+    Role: viewer+. The response carries no biometric data — only the
+    truncated voiceprint hash (§17.1), which is already a fingerprint — and
+    the reconfirm queue and policy endpoints have always been viewer+, so
+    gating the roster higher only meant a viewer could see a merge decision
+    without being able to see the speaker it was about. Tenant isolation is
+    unchanged; write operations remain inspector+.
     """
     tenant_id = get_tenant_id(request)
     stmt = select(SpeakerNode).where(SpeakerNode.tenant_id == tenant_id)
@@ -133,6 +156,17 @@ async def list_speakers(
             stmt = stmt.where(SpeakerNode.ambiguity_tag.is_(None))
         else:
             stmt = stmt.where(SpeakerNode.ambiguity_tag == ambiguity)
+    if recording_id is not None:
+        # Via speaker_links rather than the recordings_list JSON column:
+        # the link table is indexed and is the audit trail of record.
+        stmt = stmt.where(
+            SpeakerNode.id.in_(
+                select(SpeakerLink.canonical_speaker_id).where(
+                    SpeakerLink.tenant_id == tenant_id,
+                    SpeakerLink.recording_id == recording_id,
+                )
+            )
+        )
     stmt = stmt.order_by(SpeakerNode.recordings_count.desc()).limit(limit).offset(offset)
 
     result = await db.execute(stmt)
@@ -150,10 +184,15 @@ async def list_speakers(
 )
 async def list_merge_pending(
     request: Request,
-    status_filter: str | None = Query(
+    status_filter: list[str] | None = Query(
         default=None,
         alias="status",
-        description="Filter by status: pending / resolved_inferred / resolved_rejected.",
+        description="Filter by status: pending / resolved_inferred / resolved_rejected. "
+        "Repeat the parameter to match any of several statuses.",
+    ),
+    matched_speaker_node_id: int | None = Query(
+        default=None,
+        description="Filter to rows whose merge target is this SpeakerNode.",
     ),
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
@@ -164,6 +203,11 @@ async def list_merge_pending(
 
     Registered BEFORE ``GET /{speaker_id}`` so the literal path wins
     over the parameterised one (FastAPI matches in registration order).
+
+    ``matched_speaker_node_id`` lets a speaker detail view fetch only its
+    own rows, and ``status`` may be repeated to fetch e.g. both resolved
+    states at once: filtering client-side after a capped page silently
+    drops older rows once the tenant queue exceeds ``limit``.
     """
     tenant_id = get_tenant_id(request)
     stmt = select(SpeakerMergePending).where(SpeakerMergePending.tenant_id == tenant_id)
@@ -172,9 +216,14 @@ async def list_merge_pending(
         .select_from(SpeakerMergePending)
         .where(SpeakerMergePending.tenant_id == tenant_id)
     )
-    if status_filter is not None:
-        stmt = stmt.where(SpeakerMergePending.status == status_filter)
-        count_stmt = count_stmt.where(SpeakerMergePending.status == status_filter)
+    if status_filter:
+        stmt = stmt.where(SpeakerMergePending.status.in_(status_filter))
+        count_stmt = count_stmt.where(SpeakerMergePending.status.in_(status_filter))
+    if matched_speaker_node_id is not None:
+        stmt = stmt.where(SpeakerMergePending.matched_speaker_node_id == matched_speaker_node_id)
+        count_stmt = count_stmt.where(
+            SpeakerMergePending.matched_speaker_node_id == matched_speaker_node_id
+        )
 
     total = (await db.execute(count_stmt)).scalar_one()
     stmt = stmt.order_by(SpeakerMergePending.id.desc()).limit(limit).offset(offset)
@@ -188,6 +237,137 @@ async def list_merge_pending(
 
 
 @router.get(
+    "/voiceprint-policy",
+    response_model=VoiceprintPolicyResponse,
+    summary="Read-only voiceprint sampling & merge policy (viewer+)",
+    dependencies=[Depends(require_role("admin", "inspector", "viewer"))],
+)
+async def get_voiceprint_policy(
+    request: Request,
+) -> VoiceprintPolicyResponse:
+    """Return the speaker-linking thresholds and sampling parameters.
+
+    Pure settings read — no DB access, no biometric data. Registered
+    BEFORE ``GET /{speaker_id}`` so the literal path wins (same as
+    ``/merge-pending``). Viewer+ so the quality drawer works read-only.
+
+    ``sampling.strategy`` reflects the design spec (candidate voiceprint
+    from the speaker's longest diarization segment — speaker_linker.py
+    module docstring); ``enable_voiceprint`` reports whether the pipeline
+    is live in this deployment.
+    """
+    settings = request.app.state.settings
+    return VoiceprintPolicyResponse(
+        enable_voiceprint=bool(settings.enable_voiceprint),
+        adapter_voiceprint_mode=str(settings.adapter_voiceprint_mode),
+        layer1=VoiceprintPolicyLayer1(
+            cosine_threshold=float(settings.voiceprint_cosine_threshold),
+            ambiguous_threshold=float(settings.voiceprint_ambiguous_threshold),
+        ),
+        layer2=VoiceprintPolicyLayer2(
+            enabled=bool(settings.enable_speaker_layer2_fuzzy),
+            fuzzy_inferred_threshold=float(settings.speaker_fuzzy_inferred_threshold),
+            fuzzy_ambiguous_threshold=float(settings.speaker_fuzzy_ambiguous_threshold),
+            voiceprint_reconfirm_cosine=float(settings.speaker_fuzzy_voiceprint_reconfirm_cosine),
+        ),
+        sampling=VoiceprintPolicySampling(
+            strategy=str(settings.voiceprint_sampling_strategy),
+            # The sampler's own floor, which is stricter than the diarization
+            # floor: a segment can survive diarization and still be too short
+            # to contribute a trustworthy embedding.
+            min_segment_sec=float(settings.voiceprint_sample_min_segment_sec),
+            min_total_sec=float(settings.voiceprint_sample_min_total_sec),
+            max_segments_per_speaker=int(settings.voiceprint_sample_max_segments),
+            # Shared with every VoiceprintAdapter so the drawer cannot drift
+            # away from the values the pipeline actually runs with.
+            diarization_min_segment_sec=DEFAULT_MIN_SEGMENT_SEC,
+            max_speakers=DEFAULT_MAX_SPEAKERS,
+            embedding_dim=VOICEPRINT_DIM,
+        ),
+        retention_cascade=bool(settings.voiceprint_retention_cascade),
+    )
+
+
+@recordings_router.get(
+    "/{recording_id}/speakers",
+    response_model=RecordingSpeakerListResponse,
+    summary="Resolve a recording's diarization labels to speakers (viewer+)",
+    dependencies=[Depends(require_role("admin", "inspector", "viewer"))],
+)
+async def list_recording_speakers(
+    recording_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> RecordingSpeakerListResponse:
+    """Map each ``spk_N`` label in this recording to its canonical speaker.
+
+    Transcript and timeline views only have the per-file label; without this
+    they can show neither who the speaker is nor how confident that
+    attribution was. Viewer+ because it carries no biometric data — just the
+    label, the display name, and the quality flags.
+
+    Links written before ``source_speaker_label`` existed are omitted: their
+    label cannot be reconstructed, and guessing would misattribute speech.
+    """
+    tenant_id = get_tenant_id(request)
+    stmt = (
+        select(SpeakerLink, SpeakerNode)
+        .join(SpeakerNode, SpeakerNode.id == SpeakerLink.canonical_speaker_id)
+        .where(
+            SpeakerLink.tenant_id == tenant_id,
+            SpeakerLink.recording_id == recording_id,
+            SpeakerLink.source_speaker_label.is_not(None),
+        )
+        .order_by(SpeakerLink.id)
+    )
+    rows = (await db.execute(stmt)).all()
+
+    # One entry per label; a later link supersedes an earlier one for the
+    # same label, which is what a human confirmation overriding a machine
+    # guess looks like. A label landing on two *different* speakers is only
+    # legitimate in that case, so log it — silently keeping the last one
+    # would hide a partial re-run or a genuine linking bug.
+    by_label: dict[str, RecordingSpeakerRef] = {}
+    for link, node in rows:
+        label = str(link.source_speaker_label)
+        previous = by_label.get(label)
+        if previous is not None and previous.speaker_node_id != int(node.id):
+            logger.warning(
+                "Recording %d label %s resolves to two speakers (%d via %s, "
+                "then %d via %s); reporting the later link",
+                recording_id,
+                label,
+                previous.speaker_node_id,
+                previous.strategy,
+                int(node.id),
+                link.strategy,
+            )
+        by_label[label] = RecordingSpeakerRef(
+            source_speaker_label=label,
+            speaker_node_id=int(node.id),
+            display_name=str(node.display_name),
+            speaker_role=str(node.speaker_role),
+            # This link's own tag, never the node's: the node carries whatever
+            # its most recent merge decided, which may have been about a
+            # completely different recording. Falling back to it would put a
+            # warning on speech whose attribution was never in doubt.
+            ambiguity_tag=link.ambiguity_tag,
+            merge_confidence=(
+                float(link.merge_confidence) if link.merge_confidence is not None else None
+            ),
+            cosine_similarity=(
+                float(link.cosine_similarity) if link.cosine_similarity is not None else None
+            ),
+            strategy=str(link.strategy),
+        )
+
+    return RecordingSpeakerListResponse(
+        recording_id=recording_id,
+        items=sorted(by_label.values(), key=lambda r: r.source_speaker_label),
+    )
+
+
+@router.get(
     "/{speaker_id}",
     response_model=SpeakerDetailResponse,
     summary="Get speaker detail with related recordings",
@@ -196,12 +376,13 @@ async def get_speaker(
     speaker_id: int,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    _user: AuthUser = Depends(require_inspector_or_above()),
+    _user: AuthUser = Depends(require_role("admin", "inspector", "viewer")),
 ) -> SpeakerDetailResponse:
     """Get a single speaker node + its related recording refs.
 
-    Role: inspector+. Returns 404 if the speaker does not exist in the
-    caller's tenant (cross-tenant isolation enforced).
+    Role: viewer+, matching the roster it is reached from. Returns 404 if
+    the speaker does not exist in the caller's tenant (cross-tenant
+    isolation enforced).
     """
     tenant_id = get_tenant_id(request)
     node = await db.get(SpeakerNode, speaker_id)
@@ -224,6 +405,12 @@ async def get_speaker(
                 duration_sec=0.0,  # not stored on speaker_link in M7
                 strategy=str(link.strategy),
                 ambiguity_tag=link.ambiguity_tag,
+                cosine_similarity=(
+                    float(link.cosine_similarity) if link.cosine_similarity is not None else None
+                ),
+                merge_confidence=(
+                    float(link.merge_confidence) if link.merge_confidence is not None else None
+                ),
             )
         )
 
@@ -379,7 +566,15 @@ async def confirm_merge(
                     voiceprint_id=str(pending.candidate_voiceprint_id),
                     vector_encrypted=pending.candidate_vector_encrypted,
                     encryption_meta=dict(pending.candidate_encryption_meta),
-                    duration_sec=float(pending.candidate_speech_sec or 0.0),
+                    # The audio behind the vector, not the speaker's total
+                    # speech: this column ranks representative templates.
+                    duration_sec=float(
+                        pending.candidate_sampled_sec or pending.candidate_speech_sec or 0.0
+                    ),
+                    # A human vouched for this attribution, so the vector is
+                    # eligible to represent the speaker regardless of the
+                    # machine scores that raised the review (ADR-0001).
+                    attach_cosine=1.0,
                 )
             )
 
@@ -411,6 +606,9 @@ async def confirm_merge(
                 ),
                 merge_confidence=confidence,
                 strategy="fuzzy",
+                # Carried from the staged candidate so a confirmed merge maps
+                # back to the transcript lines it covers, like Layer-1 links.
+                source_speaker_label=pending.candidate_speaker_id,
                 ambiguity_tag=None,
             )
         )
@@ -495,4 +693,4 @@ async def reject_merge(
     )
 
 
-__all__ = ["router"]
+__all__ = ["recordings_router", "router"]

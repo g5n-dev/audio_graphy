@@ -81,6 +81,11 @@ class SpeakerMergePending(TenantScopedBase):
         nullable=True,
     )
     candidate_speech_sec: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Audio that actually produced the staged vector, as opposed to how much
+    # the speaker talked. VoiceprintVector.duration_sec ranks representative
+    # templates (ADR-0001), so storing total speech here would let a confirmed
+    # merge claim a longer sample than it has.
+    candidate_sampled_sec: Mapped[float | None] = mapped_column(Float, nullable=True)
     candidate_first_seen: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,

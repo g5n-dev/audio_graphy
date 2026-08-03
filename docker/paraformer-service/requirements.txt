@@ -1,0 +1,12 @@
+# torch / torchaudio are deliberately NOT pinned here — the Dockerfile installs
+# them first from an index selected by the TORCH_INDEX_URL build arg (CPU-only
+# by default). Listing them here as well would let pip resolve them from PyPI
+# and drag in the full CUDA wheel set.
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
+funasr>=1.1.0
+librosa>=0.10
+soundfile>=0.12
+numpy>=1.24
+modelscope>=1.10

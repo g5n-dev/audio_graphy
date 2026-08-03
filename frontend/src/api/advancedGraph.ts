@@ -445,11 +445,18 @@ export async function compressionHistory(
 // ============================================================
 
 export async function listSpeakerMergePending(
-  params?: { status?: string; limit?: number; offset?: number },
+  params?: {
+    /** One status, or several — axios repeats the key for an array. */
+    status?: string | string[];
+    /** Restrict to rows whose merge target is this SpeakerNode. */
+    matched_speaker_node_id?: number;
+    limit?: number;
+    offset?: number;
+  },
 ): Promise<SpeakerMergePendingListResponse> {
   const { data } = await httpClient.get<SpeakerMergePendingListResponse>(
     "/speakers/merge-pending",
-    { params },
+    { params, paramsSerializer: { indexes: null } },
   );
   return data;
 }

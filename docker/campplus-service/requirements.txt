@@ -1,10 +1,20 @@
 fastapi>=0.115
 uvicorn[standard]>=0.30
 python-multipart>=0.0.9
-funasr>=1.1.0
+# Pinned, not floated. 1.4.0 is the version the combined ASR + speaker pipeline
+# was measured working on; `>=1.1.0` let a 6 GB image resolve to whatever was
+# newest at build time, which is not something this deployment can re-verify
+# quickly. funasr also pulls scipy / scikit-learn / umap-learn transitively,
+# which is where the speaker clustering backend comes from.
+funasr==1.4.0
 torch>=2.0
 torchaudio>=2.0
 librosa>=0.10
 soundfile>=0.12
 numpy>=1.24
 modelscope>=1.10
+# Only a transitive dependency (librosa, umap-learn), but the diarization path
+# imports `sklearn.cluster.HDBSCAN` at module load, which landed in 1.3. Pinned
+# here so a resolver that satisfies librosa's laxer `>=1.1.0` cannot break
+# speaker clustering at import time.
+scikit-learn>=1.3
