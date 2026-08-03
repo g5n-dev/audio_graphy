@@ -19,9 +19,8 @@ import { Link, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
   Alert,
+  AutoComplete,
   Card,
-  Input,
-  Select,
   InputNumber,
   Button,
   Typography,
@@ -105,6 +104,40 @@ const NODE_TYPE_RAMPS: Record<
 };
 
 // Node type ramps are the single source of truth for type → color mapping.
+// They also seed the type filter suggestions; the backend accepts any type
+// string, so the filter stays free-text with these as known shortcuts.
+
+interface GraphServiceStatus {
+  label: string;
+  dot: string;
+  halo: string;
+}
+
+/** Graph service status derived from the explore query — never a literal. */
+function describeGraphService(
+  hasError: boolean,
+  hasData: boolean,
+): GraphServiceStatus {
+  if (hasError) {
+    return {
+      label: "图谱服务连接失败",
+      dot: "#f53f3f",
+      halo: "rgba(245, 63, 63, 0.14)",
+    };
+  }
+  if (!hasData) {
+    return {
+      label: "图谱服务连接中…",
+      dot: "#ff7d00",
+      halo: "rgba(255, 125, 0, 0.14)",
+    };
+  }
+  return {
+    label: "图谱服务已连接",
+    dot: "#27a66f",
+    halo: "rgba(39, 166, 111, 0.11)",
+  };
+}
 
 function EntityRelationshipPanel() {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -154,6 +187,11 @@ function EntityRelationshipPanel() {
         edge_limit: MAX_RENDERED_GRAPH_EDGES,
       }),
   });
+
+  const serviceStatus = describeGraphService(
+    isGraphQueryError,
+    Boolean(graphData),
+  );
 
   // Fetch entity detail when selected
   const { data: entityDetail } = useQuery({
@@ -484,66 +522,80 @@ function EntityRelationshipPanel() {
   return (
     <div className="ag-entity-graph-panel">
       <Card style={{ marginBottom: 16 }}>
-        <Space size="medium">
-          <Input
-            aria-label="按节点类型关键词筛选"
-            placeholder="节点类型筛选"
-            value={nodeType}
-            onChange={setNodeType}
-            style={{ width: 150 }}
-            allowClear
-          />
-          <Select
-            aria-label="选择节点类型"
-            placeholder="节点类型"
-            value={nodeType || undefined}
-            onChange={(v) => setNodeType(v ?? "")}
-            style={{ width: 120 }}
-            allowClear
-          >
-            {Object.entries(NODE_TYPE_RAMPS).map(([type, ramp]) => (
-              <Select.Option key={type} value={type}>
-                <span
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: 6,
-                    color: ramp.text,
-                  }}
-                >
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 16,
+            flexWrap: "wrap",
+          }}
+        >
+          <Space size="medium">
+            {/* One control owns the node type filter: free text (the backend
+                accepts any type string) with the known types as suggestions. */}
+            <AutoComplete
+              placeholder="节点类型筛选"
+              inputProps={{ "aria-label": "节点类型筛选" }}
+              value={nodeType}
+              onChange={(value: string) => setNodeType(value ?? "")}
+              style={{ width: 200 }}
+              allowClear
+            >
+              {Object.entries(NODE_TYPE_RAMPS).map(([type, ramp]) => (
+                <AutoComplete.Option key={type} value={type}>
                   <span
                     style={{
-                      display: "inline-block",
-                      width: 10,
-                      height: 10,
-                      borderRadius: 3,
-                      background: ramp.fill,
-                      border: `1px solid ${ramp.stroke}`,
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 6,
+                      color: ramp.text,
                     }}
-                  />
-                  {ramp.label}
-                </span>
-              </Select.Option>
-            ))}
-          </Select>
-          <InputNumber
-            aria-label="最小节点度数"
-            placeholder="最小度数"
-            value={minDegree}
-            onChange={(v) => setMinDegree(Number(v ?? 0))}
-            min={0}
-            style={{ width: 120 }}
-          />
-          <InputNumber
-            aria-label="图谱节点上限"
-            placeholder="节点上限"
-            value={limit}
-            onChange={(v) => setLimit(Number(v ?? 200))}
-            min={1}
-            max={2000}
-            style={{ width: 120 }}
-          />
-        </Space>
+                  >
+                    <span
+                      style={{
+                        display: "inline-block",
+                        width: 10,
+                        height: 10,
+                        borderRadius: 3,
+                        background: ramp.fill,
+                        border: `1px solid ${ramp.stroke}`,
+                      }}
+                    />
+                    {ramp.label}
+                  </span>
+                </AutoComplete.Option>
+              ))}
+            </AutoComplete>
+            <InputNumber
+              aria-label="最小节点度数"
+              placeholder="最小度数"
+              value={minDegree}
+              onChange={(v) => setMinDegree(Number(v ?? 0))}
+              min={0}
+              style={{ width: 120 }}
+            />
+            <InputNumber
+              aria-label="图谱节点上限"
+              placeholder="节点上限"
+              value={limit}
+              onChange={(v) => setLimit(Number(v ?? 200))}
+              min={1}
+              max={2000}
+              style={{ width: 120 }}
+            />
+          </Space>
+          <span className="ag-global-graph-heading__status" role="status">
+            <span
+              aria-hidden="true"
+              style={{
+                background: serviceStatus.dot,
+                boxShadow: `0 0 0 4px ${serviceStatus.halo}`,
+              }}
+            />
+            {serviceStatus.label}
+          </span>
+        </div>
       </Card>
 
       {focusAlert && (
@@ -913,12 +965,8 @@ export default function GraphExplorerPage() {
           <h1>全域知识图谱</h1>
           <p>在同一工作区切换实体关系与主题社区，保持筛选语义清晰且资源互不叠加。</p>
         </div>
-        <div className="ag-feature-header__actions">
-          <span className="ag-global-graph-heading__status">
-            <span aria-hidden="true" />
-            图谱服务已连接
-          </span>
-        </div>
+        {/* The graph service status lives with the query that knows it — see
+            EntityRelationshipPanel — so it can never contradict the canvas. */}
       </header>
 
       <div

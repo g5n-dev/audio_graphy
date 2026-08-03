@@ -17,7 +17,7 @@
  *   /tag-governance — tag schema/evaluation/deployment governance
  *   /tag-review   — human review workbench
  *   /tag-runs/:id — tag extraction/recompute run detail
- *   /prompts      — prompt management
+ *   *             — not-found view (unknown paths are never silently redirected)
  */
 
 import {
@@ -26,6 +26,7 @@ import {
   Suspense,
   useEffect,
   useState,
+  type CSSProperties,
   type ReactNode,
 } from "react";
 import { Routes, Route, Navigate, useLocation, useNavigate } from "react-router-dom";
@@ -99,6 +100,30 @@ function RouteLoadingFallback() {
   );
 }
 
+// Shared shape for every full-page route message (crash, not found, forbidden)
+// so a blocked route reads as the same kind of deliberate state, not a glitch.
+const routeMessageStyle: CSSProperties = {
+  minHeight: 360,
+  display: "flex",
+  flexDirection: "column",
+  alignItems: "center",
+  justifyContent: "center",
+  padding: 32,
+  textAlign: "center",
+};
+
+const routeMessageTitleStyle: CSSProperties = {
+  margin: "0 0 12px",
+  color: "#1d2129",
+  fontSize: 24,
+};
+
+const routeMessageBodyStyle: CSSProperties = {
+  margin: "0 0 24px",
+  color: "#86909c",
+  maxWidth: 520,
+};
+
 interface RouteErrorBoundaryProps {
   children: ReactNode;
   routeKey: string;
@@ -141,23 +166,12 @@ class RouteErrorBoundary extends Component<
       <section
         role="alert"
         aria-labelledby="route-error-title"
-        style={{
-          minHeight: 360,
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          justifyContent: "center",
-          padding: 32,
-          textAlign: "center",
-        }}
+        style={routeMessageStyle}
       >
-        <h1
-          id="route-error-title"
-          style={{ margin: "0 0 12px", color: "#1d2129", fontSize: 24 }}
-        >
+        <h1 id="route-error-title" style={routeMessageTitleStyle}>
           页面加载失败
         </h1>
-        <p style={{ margin: "0 0 24px", color: "#86909c" }}>
+        <p style={routeMessageBodyStyle}>
           当前功能暂时无法显示，请重新加载或返回首页。
         </p>
         <Space>
@@ -169,6 +183,73 @@ class RouteErrorBoundary extends Component<
       </section>
     );
   }
+}
+
+/**
+ * Catch-all view for unknown paths.
+ *
+ * A mistyped URL or a stale deep link used to be redirected to the dashboard
+ * without a word, which reads as "the app moved me for no reason". Naming the
+ * path that failed keeps the shared-link case debuggable.
+ */
+function RouteNotFoundView() {
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  return (
+    <section
+      role="alert"
+      aria-labelledby="route-not-found-title"
+      style={routeMessageStyle}
+    >
+      <h1 id="route-not-found-title" style={routeMessageTitleStyle}>
+        页面不存在
+      </h1>
+      <p style={routeMessageBodyStyle}>
+        没有找到 <code>{location.pathname}</code> 对应的页面，链接可能已失效或地址有误。
+      </p>
+      <Space>
+        <Button type="primary" onClick={() => navigate("/", { replace: true })}>
+          返回首页
+        </Button>
+        <Button onClick={() => navigate(-1)}>返回上一页</Button>
+      </Space>
+    </section>
+  );
+}
+
+/**
+ * Permission boundary for the tag-governance routes.
+ *
+ * Every role can see the "进入标签治理中心" link on the tag-insights page, so a
+ * viewer will land here through a legitimate in-product link. Silently sending
+ * them to the dashboard made that link look broken; naming the roles that may
+ * enter makes it an explicit permissions boundary instead.
+ */
+function TagGovernanceForbiddenView({ role }: { role?: string }) {
+  const navigate = useNavigate();
+
+  return (
+    <section
+      role="alert"
+      aria-labelledby="route-forbidden-title"
+      style={routeMessageStyle}
+    >
+      <h1 id="route-forbidden-title" style={routeMessageTitleStyle}>
+        无标签治理权限
+      </h1>
+      <p style={routeMessageBodyStyle}>
+        标签治理、人工复核与治理任务详情仅对管理员（admin）与质检员（inspector）开放
+        {role ? `，当前账号角色为 ${role}` : ""}。如需进入，请联系管理员调整权限。
+      </p>
+      <Space>
+        <Button type="primary" onClick={() => navigate("/tag-insights")}>
+          查看标签洞察
+        </Button>
+        <Button onClick={() => navigate("/", { replace: true })}>返回首页</Button>
+      </Space>
+    </section>
+  );
 }
 
 const menuGroups = [
@@ -421,7 +502,7 @@ function AppLayout() {
                     canGovernTags ? (
                       <TagGovernancePage />
                     ) : (
-                      <Navigate to="/" replace />
+                      <TagGovernanceForbiddenView role={user?.role} />
                     )
                   }
                 />
@@ -431,7 +512,7 @@ function AppLayout() {
                     canGovernTags ? (
                       <TagReviewPage />
                     ) : (
-                      <Navigate to="/" replace />
+                      <TagGovernanceForbiddenView role={user?.role} />
                     )
                   }
                 />
@@ -441,11 +522,11 @@ function AppLayout() {
                     canGovernTags ? (
                       <TagRunDetailPage />
                     ) : (
-                      <Navigate to="/" replace />
+                      <TagGovernanceForbiddenView role={user?.role} />
                     )
                   }
                 />
-                <Route path="*" element={<Navigate to="/" replace />} />
+                <Route path="*" element={<RouteNotFoundView />} />
               </Routes>
             </Suspense>
           </RouteErrorBoundary>

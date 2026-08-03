@@ -151,7 +151,7 @@ const DISCOVERY: ReceptionDiscoveryResponse = {
   ],
 };
 
-function renderEntry() {
+function renderEntry(initialEntry = "/receptions") {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -160,7 +160,7 @@ function renderEntry() {
   });
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={["/receptions"]}>
+      <MemoryRouter initialEntries={[initialEntry]}>
         <Routes>
           <Route path="/receptions" element={<ReceptionEntryPage />} />
           <Route
@@ -246,6 +246,69 @@ describe("ReceptionEntryPage", () => {
         store_id: "store-2",
         status: "ready",
       });
+    });
+  });
+
+  it("applies a store drilldown from the focus URL param on first load", async () => {
+    const user = userEvent.setup();
+    renderEntry(
+      `/receptions?focus=${encodeURIComponent("门店")}%3Astore-9`,
+    );
+
+    // The very first request is already scoped — no unfiltered flash.
+    await waitFor(() => {
+      expect(mockedList).toHaveBeenCalledWith({
+        page: 1,
+        page_size: 20,
+        store_id: "store-9",
+        status: undefined,
+      });
+    });
+    expect(mockedList).toHaveBeenCalledTimes(1);
+    expect(
+      screen.getByText("已从图谱下钻：工作队列已按门店 store-9 过滤。"),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("门店筛选")).toHaveValue("store-9");
+
+    await user.click(screen.getByRole("button", { name: "清除门店筛选" }));
+
+    await waitFor(() => {
+      expect(mockedList).toHaveBeenLastCalledWith({
+        page: 1,
+        page_size: 20,
+        store_id: undefined,
+        status: undefined,
+      });
+    });
+    expect(
+      screen.queryByText(/已从图谱下钻/),
+    ).not.toBeInTheDocument();
+  });
+
+  it("explains a focus target the queue cannot filter by", async () => {
+    renderEntry(`/receptions?focus=${encodeURIComponent("录音")}%3A1024`);
+
+    expect(
+      await screen.findByText(/已从录音 1024 下钻/),
+    ).toBeInTheDocument();
+    expect(mockedList).toHaveBeenCalledWith({
+      page: 1,
+      page_size: 20,
+      store_id: undefined,
+      status: undefined,
+    });
+  });
+
+  it("ignores a malformed focus param instead of crashing the page", async () => {
+    renderEntry("/receptions?focus=%E9%97%A8%E5%BA%97:100%25");
+
+    expect(await screen.findByText("销售甲")).toBeInTheDocument();
+    expect(screen.queryByText(/下钻/)).not.toBeInTheDocument();
+    expect(mockedList).toHaveBeenCalledWith({
+      page: 1,
+      page_size: 20,
+      store_id: undefined,
+      status: undefined,
     });
   });
 

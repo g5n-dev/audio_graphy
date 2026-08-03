@@ -298,6 +298,112 @@ describe("TagReviewPage", () => {
     ).toBeInTheDocument();
   });
 
+  it("blocks correction instead of accepting a value the schema cannot validate", async () => {
+    const user = userEvent.setup();
+    const taskWithoutValues = {
+      ...QUEUE.items[0],
+      schema_version_id: 11,
+      allowed_values: undefined,
+    };
+    mockedList.mockResolvedValue({ items: [taskWithoutValues], total: 1 });
+    mockedClaim.mockResolvedValueOnce({
+      ...taskWithoutValues,
+      status: "claimed",
+      claimed_by: 9,
+    });
+    mockedSchemas.mockRejectedValue(new Error("标签体系服务不可用"));
+    renderPage();
+    await screen.findByText("今天合适的话就签约");
+
+    await user.click(screen.getByRole("button", { name: "领取任务" }));
+    await waitFor(() => expect(mockedClaim).toHaveBeenCalledWith(501));
+    await user.click(screen.getByRole("radio", { name: "纠正标签" }));
+
+    expect(
+      await screen.findByText(
+        "标签值域加载失败（标签体系服务不可用）：为避免写入值域外的标签值，暂不能纠正标签值。",
+      ),
+    ).toBeVisible();
+    expect(
+      screen.queryByRole("textbox", { name: "纠正后的标签值" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("combobox", { name: "纠正后的标签值" }),
+    ).not.toBeInTheDocument();
+
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "主要错误层" }),
+      "tag_reasoning",
+    );
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "复核置信度" }),
+      "0.9",
+    );
+    await user.click(screen.getByRole("button", { name: "提交复核" }));
+    expect(mockedDecide).not.toHaveBeenCalled();
+
+    mockedSchemas.mockResolvedValueOnce({
+      items: [
+        {
+          id: 3,
+          versions: [
+            {
+              id: 11,
+              definitions: [
+                {
+                  key: "intent",
+                  subject_types: ["dialogue_unit"],
+                  allowed_values: ["browse", "purchase"],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      total: 1,
+    });
+    await user.click(screen.getByRole("button", { name: "重新加载值域" }));
+
+    expect(
+      await screen.findByRole("combobox", { name: "纠正后的标签值" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("option", { name: "purchase" }),
+    ).toBeInTheDocument();
+  });
+
+  it("promises the 3 second sync only while the queue still has open work", async () => {
+    renderPage();
+    expect(await screen.findByText("队列每 3 秒自动同步")).toBeVisible();
+  });
+
+  it("says the sync is paused once no task can change on its own", async () => {
+    mockedList.mockResolvedValue({
+      items: [
+        {
+          ...QUEUE.items[0],
+          status: "resolved",
+          claimed_by: 9,
+          resolved_at: "2026-07-25T02:00:00Z",
+        },
+      ],
+      total: 1,
+    });
+    vi.useFakeTimers();
+    try {
+      renderPage();
+      await vi.waitFor(() =>
+        expect(
+          screen.getByText("队列无进行中任务，已暂停自动同步"),
+        ).toBeVisible(),
+      );
+      await vi.advanceTimersByTimeAsync(9_000);
+      expect(mockedList).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("does not preselect acceptance and requires an explicit conclusion", async () => {
     const user = userEvent.setup();
     renderPage();

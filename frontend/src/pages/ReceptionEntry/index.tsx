@@ -1,7 +1,7 @@
-import { type FormEvent, useMemo, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Button, Empty, Spin, Tag } from "@arco-design/web-react";
-import { Link, useNavigate } from "react-router-dom";
+import { Alert, Button, Empty, Spin, Tag } from "@arco-design/web-react";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import {
   acceptReceptionProposal,
   discoverReceptionProposals,
@@ -19,7 +19,10 @@ import type {
   ReceptionStatus,
 } from "@/types/api";
 import { getErrorMessage } from "@/utils/errors";
+import { parseFocusParam } from "@/utils/urlParams";
 
+/** Focus type this queue can actually turn into a filter. */
+const FOCUS_STORE_TYPE = "门店";
 const PAGE_SIZE = 20;
 const DISCOVERY_LIMIT = 200;
 const REQUEST_FAILURE_FALLBACK = "服务暂时不可用，请稍后重试。";
@@ -281,6 +284,14 @@ function ProposalCard({
 
 export default function ReceptionEntryPage() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  // GD-008: a ?focus= drilldown must never land on a silently unfiltered list.
+  const focusTarget = useMemo(
+    () => parseFocusParam(searchParams.get("focus")),
+    [searchParams],
+  );
+  const focusStoreId =
+    focusTarget?.type === FOCUS_STORE_TYPE ? focusTarget.id : "";
   const initialEnd = useMemo(() => new Date(), []);
   const initialStart = useMemo(
     () => new Date(initialEnd.getTime() - 24 * 60 * 60 * 1_000),
@@ -291,12 +302,15 @@ export default function ReceptionEntryPage() {
   const [directError, setDirectError] = useState<string | null>(null);
 
   const [page, setPage] = useState(1);
-  const [queueStoreDraft, setQueueStoreDraft] = useState("");
+  // The focused store seeds the filter on mount so the first request is
+  // already scoped — no unfiltered flash, no extra round trip.
+  const [queueStoreDraft, setQueueStoreDraft] = useState(focusStoreId);
   const [queueStatusDraft, setQueueStatusDraft] = useState<
     "" | ReceptionStatus
   >("");
-  const [queueStore, setQueueStore] = useState("");
+  const [queueStore, setQueueStore] = useState(focusStoreId);
   const [queueStatus, setQueueStatus] = useState<"" | ReceptionStatus>("");
+  const appliedFocusStoreRef = useRef(focusStoreId);
 
   const [scenario, setScenario] =
     useState<ReceptionScenario>("automotive");
@@ -316,6 +330,30 @@ export default function ReceptionEntryPage() {
     result: ReceptionDiscoveryResponse;
   } | null>(null);
   const [acceptingKey, setAcceptingKey] = useState<string | null>(null);
+
+  // Re-apply only when the drilldown target itself changes, so a user who
+  // edits or clears the store filter afterwards is not overruled.
+  useEffect(() => {
+    if (!focusStoreId || appliedFocusStoreRef.current === focusStoreId) return;
+    appliedFocusStoreRef.current = focusStoreId;
+    setPage(1);
+    setQueueStoreDraft(focusStoreId);
+    setQueueStore(focusStoreId);
+  }, [focusStoreId]);
+
+  const dismissFocus = () => {
+    const nextParams = new URLSearchParams(searchParams);
+    nextParams.delete("focus");
+    setSearchParams(nextParams, { replace: true });
+  };
+
+  const clearFocusFilter = () => {
+    appliedFocusStoreRef.current = "";
+    setPage(1);
+    setQueueStoreDraft("");
+    setQueueStore("");
+    dismissFocus();
+  };
 
   const queueQuery = useQuery({
     queryKey: ["receptions", page, PAGE_SIZE, queueStore, queueStatus],
@@ -465,6 +503,27 @@ export default function ReceptionEntryPage() {
           <Link to="/tag-insights">进入标签洞察</Link>
         </div>
       </header>
+
+      {focusTarget && (
+        <Alert
+          type={focusStoreId ? "info" : "warning"}
+          closable
+          onClose={dismissFocus}
+          style={{ marginBottom: 12 }}
+          content={
+            focusStoreId
+              ? `已从图谱下钻：工作队列已按门店 ${focusStoreId} 过滤。`
+              : `已从${focusTarget.type} ${focusTarget.id} 下钻：工作队列暂不支持按${focusTarget.type}筛选，请使用门店 / 状态筛选，或用接待 ID 直达。`
+          }
+          action={
+            focusStoreId ? (
+              <Button size="mini" onClick={clearFocusFilter}>
+                清除门店筛选
+              </Button>
+            ) : undefined
+          }
+        />
+      )}
 
       <main className="ag-reception-hub">
         <section

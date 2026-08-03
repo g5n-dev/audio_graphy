@@ -24,6 +24,7 @@ import {
   releaseTagReview,
 } from "@/api/services";
 import { useAuthStore } from "@/stores/auth";
+import { getErrorMessage } from "@/utils/errors";
 import type {
   DecideTagReviewRequest,
   TagFailureStage,
@@ -111,6 +112,18 @@ function reviewPurpose(task: TagReviewTask): string {
     } as Record<string, string>)[task.reason] ??
     "routine";
   return REVIEW_PURPOSE_LABELS[purpose] ?? task.reason;
+}
+
+/**
+ * Whether anything in the queue can still change on its own.
+ *
+ * Shared by the poll interval and the toolbar copy so the page never claims a
+ * refresh cadence it has already stopped running.
+ */
+function hasOpenReviewWork(items: TagReviewTask[] | undefined): boolean {
+  return Boolean(
+    items?.some((item) => !TERMINAL_REVIEW_STATUSES.has(item.status)),
+  );
 }
 
 function isBlindReview(task: TagReviewTask): boolean {
@@ -317,12 +330,16 @@ function DecisionPanel({
   pending,
   canSubmit,
   readOnlyMessage,
+  valueDomainNotice,
+  onReloadValueDomain,
 }: {
   task: TagReviewTask;
   onDecision: (body: DecideTagReviewRequest) => void;
   pending: boolean;
   canSubmit: boolean;
   readOnlyMessage: string | null;
+  valueDomainNotice: string | null;
+  onReloadValueDomain: () => void;
 }) {
   const blind = isBlindReview(task);
   const adjudication = isAdjudicationReview(task);
@@ -377,6 +394,10 @@ function DecisionPanel({
       action !== "reject"
     ) {
       setError("仲裁必须给出标签存在、不存在或不适用的最终结论。");
+      return;
+    }
+    if (action === "correct" && valueDomainNotice) {
+      setError(valueDomainNotice);
       return;
     }
     if (action === "correct" && !correctedValue.trim()) {
@@ -579,34 +600,45 @@ function DecisionPanel({
             </select>
           </label>
         )}
-        {action === "correct" && (
-          <label>
-            纠正后的标签值
-            {task.allowed_values?.length ? (
-              <select
-                aria-label="纠正后的标签值"
-                value={correctedValue}
-                onChange={(event) => setCorrectedValue(event.target.value)}
-              >
-                <option value="">从 Schema 值域选择</option>
-                {task.allowed_values.map((value) => {
-                  const displayValue = displayTagValue(value, "");
-                  return (
-                    <option value={displayValue} key={displayValue}>
-                      {displayValue}
-                    </option>
-                  );
-                })}
-              </select>
-            ) : (
-              <input
-                aria-label="纠正后的标签值"
-                value={correctedValue}
-                onChange={(event) => setCorrectedValue(event.target.value)}
-              />
-            )}
-          </label>
-        )}
+        {action === "correct" &&
+          (valueDomainNotice ? (
+            // Fail closed: a free-text field here would accept a value the
+            // Schema does not allow, and the reviewer would only find out
+            // downstream.
+            <div className="ag-review-readonly-notice" role="alert">
+              <span>{valueDomainNotice}</span>
+              <button type="button" onClick={onReloadValueDomain}>
+                重新加载值域
+              </button>
+            </div>
+          ) : (
+            <label>
+              纠正后的标签值
+              {task.allowed_values?.length ? (
+                <select
+                  aria-label="纠正后的标签值"
+                  value={correctedValue}
+                  onChange={(event) => setCorrectedValue(event.target.value)}
+                >
+                  <option value="">从 Schema 值域选择</option>
+                  {task.allowed_values.map((value) => {
+                    const displayValue = displayTagValue(value, "");
+                    return (
+                      <option value={displayValue} key={displayValue}>
+                        {displayValue}
+                      </option>
+                    );
+                  })}
+                </select>
+              ) : (
+                <input
+                  aria-label="纠正后的标签值"
+                  value={correctedValue}
+                  onChange={(event) => setCorrectedValue(event.target.value)}
+                />
+              )}
+            </label>
+          ))}
         <label>
           主要错误层
           <select
@@ -762,11 +794,7 @@ export default function TagReviewPage() {
     queryFn: () => listTagReviews({ status: statusFilter }),
     retry: false,
     refetchInterval: (currentQuery) =>
-      currentQuery.state.data?.items.some(
-        (item) => !TERMINAL_REVIEW_STATUSES.has(item.status),
-      )
-        ? 3_000
-        : false,
+      hasOpenReviewWork(currentQuery.state.data?.items) ? 3_000 : false,
   });
   const schemasQuery = useQuery({
     queryKey: ["tag-governance", "schemas", "review-values"],
@@ -813,6 +841,22 @@ export default function TagReviewPage() {
       allowed_values: definition.allowed_values,
     };
   }, [schemasQuery.data?.items, selectedTask]);
+
+  // A corrected value is only submittable when its value domain is known: it
+  // either travels with the task or comes from the published schema.  While the
+  // schema query has not settled — and above all when it failed — the domain is
+  // unknown, so correction is blocked instead of degrading into a free-text
+  // field that happily accepts a value outside the schema.  A loaded schema
+  // that simply carries no allowed values still means "free-form tag", and that
+  // case keeps its text input.
+  const valueDomainNotice =
+    reviewTask && !reviewTask.allowed_values?.length && !schemasQuery.isSuccess
+      ? schemasQuery.isError
+        ? `标签值域加载失败（${getErrorMessage(
+            schemasQuery.error,
+          )}）：为避免写入值域外的标签值，暂不能纠正标签值。`
+        : "正在加载标签值域，加载完成后才能纠正标签值。"
+      : null;
 
   const claimMutation = useMutation({
     mutationFn: (id: number) => claimTagReview(id),
@@ -908,7 +952,11 @@ export default function TagReviewPage() {
           </select>
         </label>
         <span aria-live="polite">
-          {query.isFetching ? "正在同步队列…" : "队列每 3 秒自动同步"}
+          {query.isFetching
+            ? "正在同步队列…"
+            : hasOpenReviewWork(query.data?.items)
+              ? "队列每 3 秒自动同步"
+              : "队列无进行中任务，已暂停自动同步"}
         </span>
       </section>
 
@@ -1095,6 +1143,8 @@ export default function TagReviewPage() {
                   }
                   canSubmit={canSubmitSelectedTask}
                   readOnlyMessage={reviewReadOnlyMessage}
+                  valueDomainNotice={valueDomainNotice}
+                  onReloadValueDomain={() => void schemasQuery.refetch()}
                   onDecision={(body) =>
                     decisionMutation.mutate({
                       id: reviewTask.id,

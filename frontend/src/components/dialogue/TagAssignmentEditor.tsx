@@ -3,7 +3,7 @@ import {
   IconClose,
   IconSound,
 } from "@arco-design/web-react/icon";
-import { type FormEvent, useEffect, useMemo, useState } from "react";
+import { type FormEvent, useMemo, useState } from "react";
 import type {
   DialogueEvidenceRef,
   ReceptionTagAssignment,
@@ -42,6 +42,57 @@ function factIdFromModelRun(modelRunId: string | null | undefined): number | nul
   return Number.isSafeInteger(value) && value > 0 ? value : null;
 }
 
+/**
+ * Why the save button is disabled, in form order.
+ *
+ * A disabled button that never says what is missing leaves the reviewer
+ * guessing between four independent conditions, so every unmet one is named.
+ */
+function submitBlockers({
+  labelValue,
+  definition,
+  evidenceCount,
+  retainedEvidenceCount,
+  reason,
+}: {
+  labelValue: string;
+  definition?: TagDefinition;
+  evidenceCount: number;
+  retainedEvidenceCount: number;
+  reason: string;
+}): string[] {
+  const allowedValues = definition?.allowed_values ?? [];
+  const blockers: string[] = [];
+  if (labelValue.trim().length === 0) {
+    blockers.push("标签值尚未填写");
+  } else if (
+    definition?.value_type === "number" &&
+    !Number.isFinite(Number(labelValue))
+  ) {
+    blockers.push("标签值需要填写数字");
+  } else if (
+    definition?.value_type === "boolean" &&
+    labelValue !== "true" &&
+    labelValue !== "false"
+  ) {
+    blockers.push("标签值需要选择 true 或 false");
+  } else if (
+    allowedValues.length > 0 &&
+    !allowedValues.some((value) => String(value) === labelValue)
+  ) {
+    blockers.push("标签值不在当前标签体系的允许值内");
+  }
+  if (evidenceCount === 0) {
+    blockers.push("该标签没有可验证证据，不能直接覆盖");
+  } else if (retainedEvidenceCount === 0) {
+    blockers.push("至少需要保留一条证据");
+  }
+  if (reason.trim().length === 0) {
+    blockers.push("标签编辑原因尚未填写");
+  }
+  return blockers;
+}
+
 export function TagAssignmentEditor({
   tag,
   definition,
@@ -61,28 +112,30 @@ export function TagAssignmentEditor({
   const [selectedEvidence, setSelectedEvidence] = useState<Set<string>>(
     () => new Set(evidence.map((item) => item.ref_id)),
   );
+  const [editedAssignmentId, setEditedAssignmentId] = useState(tag.id);
 
-  useEffect(() => {
+  // The draft belongs to one assignment, so it is discarded only when the
+  // editor is pointed at a different assignment.  Resetting on anything derived
+  // from the tag payload (the evidence array, the label value) threw the
+  // reviewer's typing away on every background refetch of the workspace query:
+  // a refetch rebuilds `tag.evidence_refs` with a fresh identity even when the
+  // assignment itself is unchanged.
+  if (editedAssignmentId !== tag.id) {
+    setEditedAssignmentId(tag.id);
     setLabelValue(tag.label_value);
     setReason("");
     setSelectedEvidence(new Set(evidence.map((item) => item.ref_id)));
-  }, [evidence, tag.id, tag.label_value]);
+  }
 
   const allowedValues = definition?.allowed_values ?? [];
-  const valueIsValid =
-    labelValue.trim().length > 0 &&
-    (definition?.value_type !== "number" ||
-      Number.isFinite(Number(labelValue))) &&
-    (definition?.value_type !== "boolean" ||
-      labelValue === "true" ||
-      labelValue === "false") &&
-    (allowedValues.length === 0 ||
-      allowedValues.some((value) => String(value) === labelValue));
-  const canSubmit =
-    !isSaving &&
-    valueIsValid &&
-    reason.trim().length > 0 &&
-    selectedEvidence.size > 0;
+  const blockers = submitBlockers({
+    labelValue,
+    definition,
+    evidenceCount: evidence.length,
+    retainedEvidenceCount: selectedEvidence.size,
+    reason,
+  });
+  const canSubmit = !isSaving && blockers.length === 0;
   const lineageFactId = factIdFromModelRun(tag.model_run_id);
   const isDirty =
     labelValue !== tag.label_value ||
@@ -235,6 +288,16 @@ export function TagAssignmentEditor({
           </p>
         )}
 
+        {!isSaving && blockers.length > 0 && (
+          <p
+            className="ag-inline-feedback"
+            id="tag-assignment-editor-blockers"
+            role="status"
+          >
+            暂不能保存：{blockers.join("；")}。
+          </p>
+        )}
+
         <footer>
           <button
             type="button"
@@ -243,7 +306,15 @@ export function TagAssignmentEditor({
           >
             取消
           </button>
-          <button type="submit" disabled={!canSubmit}>
+          <button
+            type="submit"
+            disabled={!canSubmit}
+            aria-describedby={
+              !isSaving && blockers.length > 0
+                ? "tag-assignment-editor-blockers"
+                : undefined
+            }
+          >
             {isSaving ? "正在保存…" : "保存人工更正"}
           </button>
         </footer>

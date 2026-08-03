@@ -157,6 +157,113 @@ describe("TagAssignmentEditor", () => {
     confirm.mockRestore();
   });
 
+  it("keeps the in-progress draft when a background refetch rebuilds the tag payload", async () => {
+    const user = userEvent.setup();
+    const props = {
+      definition: DEFINITION,
+      isSaving: false,
+      onCancel: vi.fn(),
+      onSeekEvidence: vi.fn(),
+      onSubmit: vi.fn(),
+    };
+    const view = render(<TagAssignmentEditor tag={TAG} {...props} />);
+
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "标签值" }),
+      "high",
+    );
+    await user.click(
+      screen.getByRole("checkbox", { name: /证据 segment:78/ }),
+    );
+    await user.type(
+      screen.getByRole("textbox", { name: "标签编辑原因" }),
+      "复核录音后确认异议强烈",
+    );
+
+    // A background refetch of the workspace query hands back an equal but not
+    // identical payload for the very same assignment.
+    view.rerender(
+      <TagAssignmentEditor
+        tag={{
+          ...TAG,
+          evidence_refs: TAG.evidence_refs.map((item) => ({ ...item })),
+        }}
+        {...props}
+      />,
+    );
+
+    expect(
+      screen.getByRole("textbox", { name: "标签编辑原因" }),
+    ).toHaveValue("复核录音后确认异议强烈");
+    expect(screen.getByRole("combobox", { name: "标签值" })).toHaveValue(
+      "high",
+    );
+    expect(
+      screen.getByRole("checkbox", { name: /证据 segment:78/ }),
+    ).not.toBeChecked();
+    expect(screen.getByRole("button", { name: "保存人工更正" })).toBeEnabled();
+
+    // Pointing the editor at another assignment is a genuine target change and
+    // still starts from a clean draft.
+    view.rerender(
+      <TagAssignmentEditor
+        tag={{ ...TAG, id: 702, label_value: "low" }}
+        {...props}
+      />,
+    );
+
+    expect(screen.getByRole("textbox", { name: "标签编辑原因" })).toHaveValue(
+      "",
+    );
+    expect(screen.getByRole("combobox", { name: "标签值" })).toHaveValue("low");
+    expect(
+      screen.getByRole("checkbox", { name: /证据 segment:78/ }),
+    ).toBeChecked();
+  });
+
+  it("names every condition that still blocks the save", async () => {
+    const user = userEvent.setup();
+    render(
+      <TagAssignmentEditor
+        tag={TAG}
+        definition={DEFINITION}
+        isSaving={false}
+        onCancel={vi.fn()}
+        onSeekEvidence={vi.fn()}
+        onSubmit={vi.fn()}
+      />,
+    );
+
+    const save = screen.getByRole("button", { name: "保存人工更正" });
+    expect(save).toBeDisabled();
+    expect(save).toHaveAttribute(
+      "aria-describedby",
+      "tag-assignment-editor-blockers",
+    );
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "暂不能保存：标签编辑原因尚未填写。",
+    );
+
+    await user.click(screen.getByRole("checkbox", { name: /证据 segment:77/ }));
+    await user.click(screen.getByRole("checkbox", { name: /证据 segment:78/ }));
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "暂不能保存：至少需要保留一条证据；标签编辑原因尚未填写。",
+    );
+
+    await user.type(
+      screen.getByRole("textbox", { name: "标签编辑原因" }),
+      "复核录音后确认异议强烈",
+    );
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "暂不能保存：至少需要保留一条证据。",
+    );
+
+    await user.click(screen.getByRole("checkbox", { name: /证据 segment:77/ }));
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(save).toBeEnabled();
+    expect(save).not.toHaveAttribute("aria-describedby");
+  });
+
   it("renders boolean values from the schema as a constrained selector", async () => {
     const user = userEvent.setup();
     render(

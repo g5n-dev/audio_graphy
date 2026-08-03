@@ -211,6 +211,81 @@ describe("GraphExplorerPage performance lifecycle", () => {
     expect(graphMocks.Graph).toHaveBeenCalledTimes(1);
   });
 
+  it("filters by an arbitrary node type through a single node type control", async () => {
+    renderPage();
+
+    await waitFor(() => expect(apiMocks.exploreGraph).toHaveBeenCalledTimes(1));
+    // A single control owns the node type filter — no second widget can
+    // overwrite it with a value the first one never offered.
+    expect(screen.getAllByLabelText("节点类型筛选")).toHaveLength(1);
+
+    const input = screen.getByLabelText("节点类型筛选");
+    // 车型 is a real backend type that has no colour ramp: free text must
+    // still reach the query, and the control must keep showing what was typed.
+    fireEvent.change(input, { target: { value: "车型" } });
+
+    await waitFor(
+      () => expect(apiMocks.exploreGraph).toHaveBeenCalledTimes(2),
+      { timeout: 700 },
+    );
+    expect(apiMocks.exploreGraph).toHaveBeenLastCalledWith({
+      node_type: "车型",
+      min_degree: 0,
+      limit: 200,
+      edge_limit: MAX_RENDERED_GRAPH_EDGES,
+    });
+    expect(input).toHaveValue("车型");
+  });
+
+  it("offers the known node types as suggestions of that same control", async () => {
+    renderPage();
+
+    await waitFor(() => expect(apiMocks.exploreGraph).toHaveBeenCalledTimes(1));
+    const input = screen.getByLabelText("节点类型筛选");
+    fireEvent.focus(input);
+
+    const options = await waitFor(() => {
+      const found = document.querySelectorAll(".arco-select-option");
+      expect(found.length).toBeGreaterThan(0);
+      return found;
+    });
+    const customerOption = [...options].find(
+      (option) => option.textContent === "客户",
+    );
+    expect(customerOption).toBeDefined();
+
+    fireEvent.click(customerOption as Element);
+
+    await waitFor(
+      () => expect(apiMocks.exploreGraph).toHaveBeenCalledTimes(2),
+      { timeout: 700 },
+    );
+    expect(apiMocks.exploreGraph).toHaveBeenLastCalledWith({
+      node_type: "客户",
+      min_degree: 0,
+      limit: 200,
+      edge_limit: MAX_RENDERED_GRAPH_EDGES,
+    });
+    expect(input).toHaveValue("客户");
+  });
+
+  it("reports the graph service status from the query state", async () => {
+    apiMocks.exploreGraph
+      .mockRejectedValueOnce(new Error("network unavailable"))
+      .mockResolvedValueOnce(EMPTY_GRAPH);
+    renderPage();
+
+    expect(await screen.findByText("图谱数据加载失败")).toBeInTheDocument();
+    // The status line must not claim a healthy service above a failed load.
+    expect(screen.getByText("图谱服务连接失败")).toBeInTheDocument();
+    expect(screen.queryByText("图谱服务已连接")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "重新加载" }));
+
+    expect(await screen.findByText("图谱服务已连接")).toBeInTheDocument();
+    expect(screen.queryByText("图谱服务连接失败")).not.toBeInTheDocument();
+  });
+
   it("mounts exactly one graph tab panel and supports keyboard switching", async () => {
     renderPage();
 

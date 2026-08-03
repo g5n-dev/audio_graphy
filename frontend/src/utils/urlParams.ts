@@ -11,6 +11,10 @@
  * The id portion is decoded via decodeURIComponent so that Chinese
  * characters and other special values survive the URL round-trip.
  *
+ * Parsing is total: a malformed parameter (bad percent-encoding such as a
+ * stray "%") yields `null` instead of throwing, because consumers call this
+ * from render effects where a throw blanks the whole page.
+ *
  * @returns `{ type, id }` when the parameter is well-formed, or `null`.
  */
 export function parseFocusParam(
@@ -20,7 +24,13 @@ export function parseFocusParam(
   const idx = raw.indexOf(":");
   if (idx <= 0) return null;
   const type = raw.slice(0, idx);
-  const id = decodeURIComponent(raw.slice(idx + 1));
+  let id: string;
+  try {
+    id = decodeURIComponent(raw.slice(idx + 1));
+  } catch {
+    // URIError — the value is not a usable focus target.
+    return null;
+  }
   if (!type || !id) return null;
   return { type, id };
 }

@@ -358,7 +358,7 @@ describe("App route loading", () => {
   });
 
   it.each(["/tag-governance", "/tag-review", "/tag-runs/42"])(
-    "blocks direct privileged route access for agents: %s",
+    "explains the permission boundary instead of silently redirecting agents: %s",
     async (path) => {
       useAuthStore.setState({
         token: "agent-token",
@@ -379,12 +379,85 @@ describe("App route loading", () => {
         </MemoryRouter>,
       );
 
-      expect(await screen.findByText("dashboard-route")).toBeInTheDocument();
+      const denied = await screen.findByRole("alert", {
+        name: "无标签治理权限",
+      });
+      expect(denied).toBeInTheDocument();
+      expect(
+        within(denied).getByText(/管理员（admin）与质检员（inspector）/),
+      ).toBeInTheDocument();
+      expect(within(denied).getByText(/当前账号角色为 agent/)).toBeInTheDocument();
+      expect(screen.queryByText("dashboard-route")).not.toBeInTheDocument();
       expect(screen.queryByText("tag-governance-route")).not.toBeInTheDocument();
       expect(screen.queryByText("tag-review-route")).not.toBeInTheDocument();
       expect(screen.queryByText("tag-run-detail-route")).not.toBeInTheDocument();
     },
   );
+
+  it("lets a blocked agent leave the permission boundary by keyboard", async () => {
+    useAuthStore.setState({
+      token: "agent-token",
+      refreshToken: "agent-refresh-token",
+      user: {
+        id: 2,
+        name: "Agent User",
+        email: "agent@example.com",
+        role: "agent",
+        tenant_id: "tenant-test",
+      },
+      isAuthenticated: true,
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/tag-governance"]}>
+        <App />
+      </MemoryRouter>,
+    );
+
+    const insightsButton = await screen.findByRole("button", {
+      name: "查看标签洞察",
+    });
+    insightsButton.focus();
+    expect(insightsButton).toHaveFocus();
+    fireEvent.click(insightsButton);
+
+    expect(await screen.findByText("tag-insights-route")).toBeInTheDocument();
+  });
+
+  it("shows a not-found view for an unknown path instead of redirecting home", async () => {
+    useAuthStore.setState({
+      token: "test-token",
+      refreshToken: "test-refresh-token",
+      user: {
+        id: 1,
+        name: "Test User",
+        email: "test@example.com",
+        role: "admin",
+        tenant_id: "tenant-test",
+      },
+      isAuthenticated: true,
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/prompts"]}>
+        <App />
+      </MemoryRouter>,
+    );
+
+    const notFound = await screen.findByRole("alert", { name: "页面不存在" });
+    expect(within(notFound).getByText("/prompts")).toBeInTheDocument();
+    expect(screen.queryByText("dashboard-route")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("navigation", { name: "平台功能导航" }),
+    ).toBeInTheDocument();
+
+    const homeButton = screen.getByRole("button", { name: "返回首页" });
+    homeButton.focus();
+    expect(homeButton).toHaveFocus();
+    fireEvent.click(homeButton);
+
+    expect(await screen.findByText("dashboard-route")).toBeInTheDocument();
+  });
 
   it("redirects the retired communities route to the graph workspace", async () => {
     useAuthStore.setState({

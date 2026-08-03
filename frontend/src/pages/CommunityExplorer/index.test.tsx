@@ -4,6 +4,7 @@ import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import CommunityExplorerPage, {
   TOPIC_CLUSTER_MEMBER_RENDER_LIMIT,
+  TOPIC_CLUSTER_PAGE_SIZE,
 } from ".";
 
 const apiMocks = vi.hoisted(() => ({
@@ -45,13 +46,13 @@ const SNAPSHOT = {
   generated_at: "2026-07-24T09:00:00Z",
 };
 
-function renderPage() {
+function renderPage({ initialEntry = "/graph?view=clusters" } = {}) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter>
+      <MemoryRouter initialEntries={[initialEntry]}>
         <CommunityExplorerPage />
       </MemoryRouter>
     </QueryClientProvider>,
@@ -110,16 +111,39 @@ describe("CommunityExplorer topic cluster panel", () => {
     );
   });
 
-  it("offers a recoverable error state", async () => {
+  it("offers a recoverable error state without unmounting the toolbar", async () => {
     apiMocks.getTopicClusters.mockRejectedValueOnce(new Error("offline"));
     renderPage();
 
+    expect(await screen.findByText("数据加载失败")).toBeInTheDocument();
+    expect(screen.getByText("offline")).toBeInTheDocument();
+    // The level selector must survive a failed level: it is the only control
+    // that can move the user off it, and the level lives in component state.
     expect(
-      await screen.findByText("主题聚类加载失败"),
+      screen.getByRole("button", { name: "层级 0" }),
     ).toBeInTheDocument();
+    expect(
+      screen.getByRole("textbox", { name: "搜索主题或成员" }),
+    ).toBeInTheDocument();
+
     fireEvent.click(screen.getByRole("button", { name: "重新加载" }));
 
     expect((await screen.findAllByText("成交阻力")).length).toBeGreaterThan(0);
+  });
+
+  it("recovers from a failed level by switching level from the toolbar", async () => {
+    apiMocks.getTopicClusters.mockRejectedValueOnce(new Error("offline"));
+    renderPage();
+
+    await screen.findByText("数据加载失败");
+    fireEvent.click(screen.getByRole("button", { name: "层级 1" }));
+
+    expect((await screen.findAllByText("成交阻力")).length).toBeGreaterThan(0);
+    expect(apiMocks.getTopicClusters).toHaveBeenCalledWith({
+      job_id: undefined,
+      level: 1,
+      query: undefined,
+    });
   });
 
   it("distinguishes a job-bound summary that is still being generated", async () => {
@@ -167,13 +191,81 @@ describe("CommunityExplorer topic cluster panel", () => {
     expect(screen.queryByText("成员-49")).not.toBeInTheDocument();
   });
 
-  // GD-005: Community → Graph jump button
-  it("renders a jump-to-graph button in the community detail panel", async () => {
+  // GD-005: the jump target resolved back to this very panel, so the control
+  // was removed rather than kept as a link that appears to do nothing.
+  it("does not offer a jump that resolves back to this panel", async () => {
     renderPage();
 
     await screen.findByText("Leiden #901");
+    expect(screen.queryByText("在图谱中查看此社区 →")).not.toBeInTheDocument();
+  });
+
+  it("pages through every cluster the KPI counts", async () => {
+    const clusters = Array.from(
+      { length: TOPIC_CLUSTER_PAGE_SIZE + 2 },
+      (_, index) => ({
+        community_id: index + 1,
+        level: 0,
+        title: `社区-${index + 1}`,
+        summary: `摘要-${index + 1}`,
+        member_count: 1,
+        member_node_ids: [`成员-${index + 1}`],
+      }),
+    );
+    apiMocks.getTopicClusters.mockResolvedValue({
+      ...SNAPSHOT,
+      clusters,
+      total_clusters: clusters.length,
+      total_members: clusters.length,
+    });
+    renderPage();
+
+    const canvas = await screen.findByTestId("topic-cluster-canvas");
+    expect(canvas).toHaveTextContent("社区-1");
+    expect(canvas).not.toHaveTextContent("社区-10");
     expect(
-      screen.getByText("在图谱中查看此社区 →"),
+      screen.getByText(/已展示第 1–8 个社区 · 共 10 个/),
     ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("2"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("topic-cluster-canvas")).toHaveTextContent(
+        "社区-10",
+      ),
+    );
+    expect(screen.getByTestId("topic-cluster-canvas")).not.toHaveTextContent(
+      "社区-8",
+    );
+    expect(
+      screen.getByText(/已展示第 9–10 个社区 · 共 10 个/),
+    ).toBeInTheDocument();
+  });
+
+  it("pages to a community arriving through focus_community", async () => {
+    const clusters = Array.from(
+      { length: TOPIC_CLUSTER_PAGE_SIZE + 2 },
+      (_, index) => ({
+        community_id: index + 1,
+        level: 0,
+        title: `社区-${index + 1}`,
+        summary: `摘要-${index + 1}`,
+        member_count: 1,
+        member_node_ids: [`成员-${index + 1}`],
+      }),
+    );
+    apiMocks.getTopicClusters.mockResolvedValue({
+      ...SNAPSHOT,
+      clusters,
+      total_clusters: clusters.length,
+      total_members: clusters.length,
+    });
+    renderPage({ initialEntry: "/graph?view=clusters&focus_community=10" });
+
+    await waitFor(() =>
+      expect(screen.getByTestId("topic-cluster-canvas")).toHaveTextContent(
+        "社区-10",
+      ),
+    );
   });
 });
