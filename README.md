@@ -255,17 +255,20 @@ docker exec $(docker compose ps -q ollama) ollama pull qwen2.5:7b
 | **LLM 抽取与问答** | ❌ 固定模板 | ✅ **Qwen2.5-7B** | `ollama` 容器；GPU 下换 vLLM |
 | **文本 Embedding** | ❌ 伪随机向量 | ✅ **BGE-M3** | `bge-m3-cpu` 容器 |
 | **声纹与说话人合并** | ❌ 关闭 | ✅ **CAM++** | `campplus-service` 容器 |
-| VAD 语音端点检测 | ❌ 按文件大小推算 | ⚠️ **仍是 mock** | 见下方说明——这是唯一没有自带容器的环节 |
+| **VAD 语音端点检测** | ❌ 按文件大小推算 | ✅ **Silero VAD** | `silero-vad-service` 容器；需自备 2 MB 模型文件，见下 |
 | CLAP 音频嵌入 | ❌ 关闭 | ❌ 需 GPU | CLAP 服务强制 CUDA，CPU profile 不含 |
 | 流式实时转写 | ❌ 路由不注册 | ❌ 路由不注册 | 需 `ENABLE_STREAMING=true` |
 | Leiden 聚类、双时态边 | ❌ 不激活 | ❌ 不激活 | 需 `ENABLE_ADVANCED_GRAPH=true` |
 
 > [!IMPORTANT]
-> **VAD 是唯一一个 compose 没有自带服务的环节。** `SileroVADAdapter` 走 HTTP，
-> 指向社区镜像 `jetresearch/silero-vad-server`，本仓库不打包、不代为审计它——
-> 要用请自行部署并设 `SILERO_VAD_URL` 与 `ADAPTER_VAD_MODE=real`。
-> 保持 mock 时，切分点按文件大小推算，转写内容仍然是 funASR 的真实结果，
-> 但**段落边界与语音停顿无关**，会影响对话单元的切分质量。
+> VAD 容器不打包模型权重。Silero 的 ONNX 只有 2 MB 且是 MIT，但本仓库不代为
+> 分发、也不为一个自己不构建的模型二进制背书——和流式那条用的是同一个文件：
+> ```bash
+> mkdir -p models && curl -Lo models/silero_vad.onnx \
+>   https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx
+> ```
+> 放好后设 `ADAPTER_VAD_MODE=real`。文件缺失时容器会报 unhealthy 并在
+> `/health` 里说明原因，而不是静默退化。
 
 一句话记住：**`models-cpu` 只有 ASR / Embedding / 声纹，不含 LLM**，所以两个 profile 要一起开，问答页才不是固定文案。完整的部署矩阵与显存规划见 [部署指南](./docs/deployment.md)。
 

@@ -152,7 +152,7 @@ services:
       ADAPTER_EMBED_MODE: ${ADAPTER_EMBED_MODE:-mock}
       # Batch VAD has no bundled third-party container: provide an audited
       # compatible endpoint before setting ADAPTER_VAD_MODE=real.
-      SILERO_VAD_URL: ${SILERO_VAD_URL:-http://silero-vad.invalid:8000}
+      SILERO_VAD_URL: ${SILERO_VAD_URL:-http://silero-vad-service:8008}
       # Compose service DNS uses container ports, never host-published ports.
       BGE_M3_URL: ${BGE_M3_URL:-http://bge-m3:80}
       OPENAI_BASE_URL_STRONG: ${OPENAI_BASE_URL_STRONG:-http://vllm-strong:8000/v1}
@@ -249,7 +249,7 @@ services:
       ADAPTER_VAD_MODE: ${ADAPTER_VAD_MODE:-mock}
       ADAPTER_LLM_MODE: ${ADAPTER_LLM_MODE:-mock}
       ADAPTER_EMBED_MODE: ${ADAPTER_EMBED_MODE:-mock}
-      SILERO_VAD_URL: ${SILERO_VAD_URL:-http://silero-vad.invalid:8000}
+      SILERO_VAD_URL: ${SILERO_VAD_URL:-http://silero-vad-service:8008}
       BGE_M3_URL: ${BGE_M3_URL:-http://bge-m3:80}
       OPENAI_BASE_URL_STRONG: ${OPENAI_BASE_URL_STRONG:-http://vllm-strong:8000/v1}
       OPENAI_BASE_URL_WEAK: ${OPENAI_BASE_URL_WEAK:-http://vllm-weak:8000/v1}
@@ -644,6 +644,46 @@ services:
   # punctuation, which is arm64-native. It serves the same OpenAI-compatible
   # /v1/audio/transcriptions contract, so FUNASR_URL and the ASR adapter are
   # unchanged.
+  # Batch VAD. The last stage that had no container -- without it `models-cpu`
+  # still segmented with the mock adapter, which derives cut points from file
+  # size and has nothing to do with speech.
+  #
+  # The ONNX weights are operator-supplied, exactly like the streaming overlay:
+  # ~2 MB, freely redistributable, but this repository does not ship or vouch
+  # for a model binary it does not build. See SILERO_VAD_MODEL_FILE.
+  silero-vad-service:
+    <<: *model-security
+    build:
+      context: ./backend
+      dockerfile: ../docker/silero-vad-service/Dockerfile
+      additional_contexts:
+        model_files: ./docker
+    container_name: ${COMPOSE_RESOURCE_PREFIX:-audiography}-silero-vad
+    profiles: ["models-cpu", "models-single-gpu", "models-multi-gpu"]
+    restart: unless-stopped
+    environment:
+      SILERO_VAD_MODEL_PATH: /models/silero_vad.onnx
+      SILERO_VAD_ONNX_THREADS: ${SILERO_VAD_ONNX_THREADS:-1}
+      SILERO_VAD_MAX_CONCURRENCY: ${SILERO_VAD_MAX_CONCURRENCY:-1}
+      # Must stay below the caller's read timeout (SileroVADAdapter uses 30s):
+      # a server that runs past it holds the single concurrency slot for a
+      # client that has already given up.
+      SILERO_VAD_INFER_TIMEOUT_SEC: ${SILERO_VAD_INFER_TIMEOUT_SEC:-25}
+    volumes:
+      - type: bind
+        source: ${SILERO_VAD_MODEL_FILE:-./models/silero_vad.onnx}
+        target: /models/silero_vad.onnx
+        read_only: true
+    read_only: true
+    tmpfs:
+      # ffmpeg decodes the upload here before inference. 512m covers an hour of
+      # 16 kHz mono PCM (~115 MB) with room for the source container alongside.
+      - /tmp:rw,noexec,nosuid,size=512m
+    ports:
+      - "${COMPOSE_PRIVATE_BIND_HOST:-127.0.0.1}:${SILERO_VAD_HOST_PORT:-18008}:8008"
+    networks:
+      - audiography_net
+
   funasr:
     <<: *model-security
     build:

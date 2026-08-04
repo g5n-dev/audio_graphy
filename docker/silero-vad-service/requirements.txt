@@ -1,0 +1,12 @@
+# Batch Silero VAD service. Deliberately tiny: this container runs one small
+# ONNX graph and shells out to ffmpeg for decoding. No torch, no modelscope —
+# the whole image is under 400 MB, versus ~4 GB for its model siblings.
+#
+# Pinned for the same reason funasr and campplus are: unpinned, every rebuild
+# silently upgrades the one dependency sitting under a contractually verified
+# endpoint.
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+onnxruntime==1.20.1
+numpy==2.2.1
