@@ -61,9 +61,7 @@ class TestFromDirectory:
         assert len(positives) == 8  # 4 speakers x 2
         assert len(negatives) == 24  # 8 positives x 3
 
-    def test_positive_pairs_share_a_speaker_and_negatives_do_not(
-        self, tmp_path: Path
-    ) -> None:
+    def test_positive_pairs_share_a_speaker_and_negatives_do_not(self, tmp_path: Path) -> None:
         """The labels are the ground truth the EER is computed against."""
         out = tmp_path / "trials.txt"
         main(["--from-dir", str(_corpus(tmp_path / "corpus")), "--out", str(out)])
@@ -86,9 +84,7 @@ class TestFromDirectory:
         main(["--from-dir", str(corpus), "--out", str(second), "--seed", "2"])
         assert first.read_text() != second.read_text()
 
-    def test_single_clip_speaker_contributes_only_negatives(
-        self, tmp_path: Path
-    ) -> None:
+    def test_single_clip_speaker_contributes_only_negatives(self, tmp_path: Path) -> None:
         """One clip cannot form a same-speaker pair, and must not be faked."""
         corpus = _corpus(tmp_path / "corpus", speakers=2)
         lone = corpus / "id09999"
@@ -98,9 +94,7 @@ class TestFromDirectory:
         out = tmp_path / "trials.txt"
         main(["--from-dir", str(corpus), "--out", str(out)])
         rows = _read(out)
-        assert not any(
-            r[2] == "1" and "id09999" in r[0] and "id09999" in r[1] for r in rows
-        )
+        assert not any(r[2] == "1" and "id09999" in r[0] and "id09999" in r[1] for r in rows)
 
     def test_rejects_a_corpus_with_one_speaker(self, tmp_path: Path) -> None:
         """A negative pair needs two speakers; better to refuse than emit junk."""
@@ -138,9 +132,7 @@ class TestFromCnCelebTrials:
         # CN-Celeb enrolls from several utterances; only the first is usable
         # here because extract_voiceprint takes one file.
         enroll = tmp_path / "enroll.lst"
-        enroll.write_text(
-            "id00800-enroll id00800/a.flac,id00800/second.flac\n", encoding="utf-8"
-        )
+        enroll.write_text("id00800-enroll id00800/a.flac,id00800/second.flac\n", encoding="utf-8")
         trials = tmp_path / "trials.lst"
         trials.write_text("id00800-enroll id00800/b.flac 1\n", encoding="utf-8")
 
@@ -167,9 +159,7 @@ class TestFromCnCelebTrials:
     def test_requires_its_companion_arguments(self, tmp_path: Path) -> None:
         trials = tmp_path / "trials.lst"
         trials.write_text("x y 1\n", encoding="utf-8")
-        code = main(
-            ["--from-cnceleb-trials", str(trials), "--out", str(tmp_path / "o.txt")]
-        )
+        code = main(["--from-cnceleb-trials", str(trials), "--out", str(tmp_path / "o.txt")])
         assert code == 2
 
 

@@ -268,9 +268,7 @@ class TestListSpeakers:
         auth_headers: Any,
         db_session_factory: Any,
     ) -> None:
-        speaker_id = _run_async(
-            seed_speaker_node(db_session_factory, tenant_id="chang_an")
-        )
+        speaker_id = _run_async(seed_speaker_node(db_session_factory, tenant_id="chang_an"))
         resp = test_client.get(
             f"/api/v1/speakers/{speaker_id}",
             headers=auth_headers["viewer_t1"],
@@ -513,9 +511,7 @@ class TestRecordingRefScores:
         auth_headers: Any,
         db_session_factory: Any,
     ) -> None:
-        speaker_id = _run_async(
-            seed_speaker_node(db_session_factory, tenant_id="chang_an")
-        )
+        speaker_id = _run_async(seed_speaker_node(db_session_factory, tenant_id="chang_an"))
         _run_async(
             seed_speaker_link(
                 db_session_factory,

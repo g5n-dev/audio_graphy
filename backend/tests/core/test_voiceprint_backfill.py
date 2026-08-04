@@ -202,9 +202,7 @@ class TestBackfill:
         assert report.skipped[4] == "audio file missing"
         assert adapter.diarized == []
 
-    async def test_one_failure_does_not_end_the_batch(
-        self, tmp_path: Any, make_job: Any
-    ) -> None:
+    async def test_one_failure_does_not_end_the_batch(self, tmp_path: Any, make_job: Any) -> None:
         good = _audio(tmp_path, "good.wav")
         bad = _audio(tmp_path, "bad.wav")
         state = _FakeState(pending=[(1, bad, None), (2, good, None)])
@@ -249,9 +247,7 @@ class TestBackfill:
         assert "quality gates" in report.skipped[1]
         assert linker.calls == []
 
-    async def test_empty_diarization_is_reported(
-        self, tmp_path: Any, make_job: Any
-    ) -> None:
+    async def test_empty_diarization_is_reported(self, tmp_path: Any, make_job: Any) -> None:
         audio = _audio(tmp_path, "a.wav")
         state = _FakeState(pending=[(1, audio, None)])
         adapter = _FakeVoiceprint(segments=())
@@ -261,12 +257,8 @@ class TestBackfill:
 
         assert report.skipped[1] == "diarization produced no speaker windows"
 
-    async def test_limit_bounds_the_pass(
-        self, tmp_path: Any, make_job: Any
-    ) -> None:
-        state = _FakeState(
-            pending=[(i, _audio(tmp_path, f"{i}.wav"), None) for i in range(1, 6)]
-        )
+    async def test_limit_bounds_the_pass(self, tmp_path: Any, make_job: Any) -> None:
+        state = _FakeState(pending=[(i, _audio(tmp_path, f"{i}.wav"), None) for i in range(1, 6)])
         adapter = _FakeVoiceprint()
         job = make_job(state, adapter, _FakeLinker())
 
@@ -275,9 +267,7 @@ class TestBackfill:
         assert report.scanned == 2
         assert len(adapter.diarized) == 2
 
-    async def test_rejects_a_non_positive_limit(
-        self, tmp_path: Any, make_job: Any
-    ) -> None:
+    async def test_rejects_a_non_positive_limit(self, tmp_path: Any, make_job: Any) -> None:
         job = make_job(_FakeState(), _FakeVoiceprint(), _FakeLinker())
         with pytest.raises(ValueError, match="limit must be"):
             await job.run(limit=0)

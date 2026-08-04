@@ -27,8 +27,7 @@ async def _is_free(
 ) -> int:
     async with session_factory() as session:
         return int(
-            (await session.execute(text("SELECT IS_FREE_LOCK(:n)"), {"n": name})).scalar()
-            or 0
+            (await session.execute(text("SELECT IS_FREE_LOCK(:n)"), {"n": name})).scalar() or 0
         )
 
 

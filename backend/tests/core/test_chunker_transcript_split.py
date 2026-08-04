@@ -182,9 +182,9 @@ class TestMockASRCharacterLayout:
         words = MockASRAdapter._lay_out_chars("一二三四五六", list(_SEGS))
         assert words
         for _ch, start, end in words:
-            assert any(
-                seg.start_sec <= start and end <= seg.end_sec + 1e-6 for seg in _SEGS
-            ), f"({start}, {end}) fell outside every VAD segment"
+            assert any(seg.start_sec <= start and end <= seg.end_sec + 1e-6 for seg in _SEGS), (
+                f"({start}, {end}) fell outside every VAD segment"
+            )
 
     def test_every_character_is_kept(self) -> None:
         text = "一二三四五六七八九十"

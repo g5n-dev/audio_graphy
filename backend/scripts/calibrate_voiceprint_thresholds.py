@@ -110,9 +110,7 @@ async def _run(args: argparse.Namespace) -> int:
         # silently merges unrelated people.
         from audio_graphy.adapters.mock_voiceprint import MockVoiceprintAdapter
 
-        voiceprint = MockVoiceprintAdapter(
-            speaker_from_filename=args.mock_speaker_from
-        )
+        voiceprint = MockVoiceprintAdapter(speaker_from_filename=args.mock_speaker_from)
 
     trials = parse_trial_file(args.trials)
     if not trials:
@@ -147,11 +145,7 @@ async def _run(args: argparse.Namespace) -> int:
     # the equal-error point. Clamp the merge floor to the stricter value and
     # say so, rather than printing a pair that makes the service refuse to
     # start.
-    inverted = (
-        eer_threshold is not None
-        and unambiguous is not None
-        and eer_threshold > unambiguous
-    )
+    inverted = eer_threshold is not None and unambiguous is not None and eer_threshold > unambiguous
     if inverted:
         assert eer_threshold is not None and unambiguous is not None
         eer_threshold = unambiguous
@@ -172,8 +166,7 @@ async def _run(args: argparse.Namespace) -> int:
         lines.append("  ! mock adapter — this verifies the workflow, not your audio.")
         if args.mock_speaker_from:
             lines.append(
-                f"  ! speaker identity was taken from the {args.mock_speaker_from}, "
-                "not from audio."
+                f"  ! speaker identity was taken from the {args.mock_speaker_from}, not from audio."
             )
     lines += [
         f"trials scored     : {len(trials)}",

@@ -143,8 +143,7 @@ def _pairs_from_dir(
     }
     if len(by_speaker) < 2:
         raise ValueError(
-            f"need at least 2 speaker directories under {root}, found "
-            f"{len(by_speaker)}"
+            f"need at least 2 speaker directories under {root}, found {len(by_speaker)}"
         )
 
     # Seeded and reproducible on purpose — two runs must produce the same
@@ -250,9 +249,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.from_cnceleb_trials is not None:
         if args.enroll_list is None or args.audio_root is None:
-            logger.error(
-                "--from-cnceleb-trials needs --enroll-list and --audio-root."
-            )
+            logger.error("--from-cnceleb-trials needs --enroll-list and --audio-root.")
             return 2
         for path in (args.from_cnceleb_trials, args.enroll_list):
             if not path.is_file():
@@ -288,8 +285,7 @@ def main(argv: list[str] | None = None) -> int:
     logger.info("wrote %s: %s", args.out, written)
     if written["written"] == 0:
         logger.error(
-            "Every pair referenced audio that does not exist — check the "
-            "paths in the source lists."
+            "Every pair referenced audio that does not exist — check the paths in the source lists."
         )
         return 1
     if written["negatives"] < 100:

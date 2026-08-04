@@ -132,9 +132,7 @@ async def _counts(session_factory: Any) -> tuple[int, int, int]:
     async with session_factory() as session:
         nodes = (
             await session.execute(
-                select(func.count())
-                .select_from(SpeakerNode)
-                .where(SpeakerNode.tenant_id == TENANT)
+                select(func.count()).select_from(SpeakerNode).where(SpeakerNode.tenant_id == TENANT)
             )
         ).scalar_one()
         vectors = (
@@ -146,9 +144,7 @@ async def _counts(session_factory: Any) -> tuple[int, int, int]:
         ).scalar_one()
         links = (
             await session.execute(
-                select(func.count())
-                .select_from(SpeakerLink)
-                .where(SpeakerLink.tenant_id == TENANT)
+                select(func.count()).select_from(SpeakerLink).where(SpeakerLink.tenant_id == TENANT)
             )
         ).scalar_one()
     return int(nodes), int(vectors), int(links)
@@ -283,12 +279,14 @@ class TestVoiceprintChainWithMocks:
 
         async with async_session_factory() as session:
             row = (
-                await session.execute(
-                    select(VoiceprintVector).where(
-                        VoiceprintVector.tenant_id == TENANT
+                (
+                    await session.execute(
+                        select(VoiceprintVector).where(VoiceprintVector.tenant_id == TENANT)
                     )
                 )
-            ).scalars().first()
+                .scalars()
+                .first()
+            )
             assert row is not None
             # Ciphertext, not the raw vector.
             assert b"\x00" in row.vector_encrypted or len(row.vector_encrypted) > 0

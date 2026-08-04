@@ -605,9 +605,7 @@ class TestThresholdAtFar:
         # Rescanning the thinned curve gives a stricter answer; the full
         # sweep must not be limited to those few points.
         coarse: float | None = None
-        for threshold, far, _frr in sorted(
-            result.roc_curve, key=lambda p: p[0], reverse=True
-        ):
+        for threshold, far, _frr in sorted(result.roc_curve, key=lambda p: p[0], reverse=True):
             if far <= 0.01:
                 coarse = threshold
             else:

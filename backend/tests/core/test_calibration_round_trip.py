@@ -55,11 +55,7 @@ async def _calibrate(trials_path: Path) -> tuple[float | None, float | None, flo
     unambiguous = result.threshold_at_far(0.01)
     # The script's clamp: Settings reject cosine > ambiguous, and good
     # separation naturally produces that ordering.
-    if (
-        eer_threshold is not None
-        and unambiguous is not None
-        and eer_threshold > unambiguous
-    ):
+    if eer_threshold is not None and unambiguous is not None and eer_threshold > unambiguous:
         eer_threshold = unambiguous
     return eer_threshold, unambiguous, result.eer
 
@@ -77,9 +73,7 @@ class TestCalibrationRoundTrip:
         """
         trials = tmp_path / "trials.txt"
         assert (
-            build_trials(
-                ["--from-dir", str(_corpus(tmp_path / "corpus")), "--out", str(trials)]
-            )
+            build_trials(["--from-dir", str(_corpus(tmp_path / "corpus")), "--out", str(trials)])
             == 0
         )
 
@@ -93,9 +87,7 @@ class TestCalibrationRoundTrip:
             voiceprint_cosine_threshold=round(cosine, 2),
             voiceprint_ambiguous_threshold=round(ambiguous, 2),
         )
-        assert settings.voiceprint_cosine_threshold <= (
-            settings.voiceprint_ambiguous_threshold
-        )
+        assert settings.voiceprint_cosine_threshold <= (settings.voiceprint_ambiguous_threshold)
 
     async def test_calibrated_thresholds_separate_the_speakers_they_came_from(
         self,
@@ -184,9 +176,7 @@ class TestCalibrationRoundTrip:
                 "4",
             ]
         )
-        written = [
-            line for line in trials.read_text(encoding="utf-8").splitlines() if line
-        ]
+        written = [line for line in trials.read_text(encoding="utf-8").splitlines() if line]
         parsed = parse_trial_file(trials)
         assert len(parsed) == len(written)
         assert sum(1 for t in parsed if t.same_speaker) == _SPEAKERS * 3
@@ -216,9 +206,7 @@ class TestCalibratorAndLinkerAgree:
         clip.write_bytes(b"audio" * 16)
 
         adapter = MockVoiceprintAdapter(latency_ms=0)
-        raw = (
-            await adapter.extract_voiceprint(str(clip), speaker_id="spk_0")
-        ).vector
+        raw = (await adapter.extract_voiceprint(str(clip), speaker_id="spk_0")).vector
 
         class _Seg:
             def __init__(self, start: float, end: float) -> None:

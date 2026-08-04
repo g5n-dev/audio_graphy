@@ -112,9 +112,7 @@ class _FakeSession:
             return _FakeResult(1)
         # The linked-labels query: report every label as done when the test
         # says this recording was already handled.
-        return _FakeResult(
-            ["spk_0", "spk_1"] if self._already_linked else []
-        )
+        return _FakeResult(["spk_0", "spk_1"] if self._already_linked else [])
 
 
 def _session_factory(*, already_linked: bool = False) -> Any:
