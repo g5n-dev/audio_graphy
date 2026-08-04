@@ -100,8 +100,12 @@ GET  /api/v1/speakers?recording_id=          -> speakers appearing in a recordin
 GET  /api/v1/recordings/{id}/speakers        -> spk_N label -> canonical speaker
 ```
 
-* RBAC: `voiceprint-policy` and `recordings/{id}/speakers` are viewer+ and
-  carry no biometric data; `GET /speakers` stays inspector+.
+* RBAC: every read endpoint here is viewer+; none carries biometric data, only
+  the truncated voiceprint hash (§17.1), which is already a fingerprint. Gating
+  the roster higher than the reconfirm queue only meant a viewer could see a
+  merge decision without seeing the speaker it was about. Writes stay
+  inspector+. `recordings/{id}/speakers` additionally names `agent`, which
+  `require_role` matches by name rather than by level.
 * `recordings/{id}/speakers` is what lets a transcript or timeline show who
   is speaking: segments store only the diarization-local label, so without
   this mapping every line reads `spk_0` with no identity and no confidence.

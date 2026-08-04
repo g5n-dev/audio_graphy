@@ -831,19 +831,12 @@ class IndexingService:
             )
             return
 
-        from audio_graphy.core.speaker_linker import SpeakerLinker, derive_role_hint
-        from audio_graphy.core.voiceprint_sampler import VoiceprintSampler
+        from audio_graphy.core.recording_speaker_link import build_linker, build_sampler
+        from audio_graphy.core.speaker_linker import derive_role_hint
 
         settings = self._settings
         try:
-            sampler = VoiceprintSampler(
-                voiceprint_adapter,
-                strategy=settings.voiceprint_sampling_strategy,
-                min_segment_sec=settings.voiceprint_sample_min_segment_sec,
-                min_total_sec=settings.voiceprint_sample_min_total_sec,
-                max_segments=settings.voiceprint_sample_max_segments,
-                outlier_cosine=settings.voiceprint_sample_outlier_cosine,
-            )
+            sampler = build_sampler(voiceprint_adapter, settings)
             role_hints = derive_role_hint(
                 [(str(seg.speaker), seg.end_sec - seg.start_sec) for seg in labelled]
             )
@@ -869,13 +862,14 @@ class IndexingService:
             # (``link_speakers`` is still a stub). Serialize per tenant.
             # Sampling stays outside the lock — it is the slow part and needs
             # no cross-recording state.
-            linker = SpeakerLinker(
+            # build_linker, not a second hand-rolled construction: it exists so
+            # every entry point merges identically, and the copy here had already
+            # drifted -- it omitted the Layer-2 fuzzy thresholds entirely.
+            linker = build_linker(
                 self._session_factory,
                 self._audio_crypto,
-                tenant_id=str(recording.tenant_id),
-                voiceprint_threshold=settings.voiceprint_cosine_threshold,
-                ambiguity_threshold=settings.voiceprint_ambiguous_threshold,
-                enable_layer2_fuzzy=settings.enable_speaker_layer2_fuzzy,
+                settings,
+                str(recording.tenant_id),
             )
             async with tenant_advisory_lock(
                 self._session_factory,

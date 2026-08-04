@@ -104,6 +104,37 @@ async def seed_speaker_link(
         return int(link.id)
 
 
+async def seed_voiceprint_vector(
+    factory: Any,
+    *,
+    speaker_id: int,
+    recording_id: int,
+    voiceprint_id: str,
+    tenant_id: str = "chang_an",
+    duration_sec: float = 12.5,
+) -> None:
+    """Seed the per-recording voiceprint row a detail row reports from.
+
+    The ciphertext is a placeholder: nothing under test decrypts it, and the
+    endpoint reads only the hash and the duration.
+    """
+    from audio_graphy.models.voiceprint_vector import VoiceprintVector
+
+    async with factory() as session:
+        session.add(
+            VoiceprintVector(
+                tenant_id=tenant_id,
+                recording_id=recording_id,
+                speaker_entity_id=speaker_id,
+                voiceprint_id=voiceprint_id,
+                vector_encrypted=b"\x00" * 32,
+                encryption_meta={"alg": "test"},
+                duration_sec=duration_sec,
+            )
+        )
+        await session.commit()
+
+
 # ============================================================
 # GET /speakers list
 # ============================================================
@@ -147,6 +178,35 @@ class TestListSpeakers:
         assert item["display_name"] == "speaker:vp_a1b2c3d4"
         assert item["voiceprint_hash"] == "vp_a1b2c3d4"
         assert item["speaker_role"] == "agent"
+
+    def test_total_counts_the_tenant_not_the_page(
+        self,
+        test_client: Any,
+        auth_headers: Any,
+        db_session_factory: Any,
+    ) -> None:
+        """``total`` must survive paging, or the roster ends where the page does.
+
+        It was ``len(nodes)`` after limit/offset, so a client asking for one row
+        was told the tenant has one speaker. The UI derives its pager from this
+        number, which is how 300 speakers became unreachable with nothing on
+        screen saying so.
+        """
+        for index in range(3):
+            _run_async(
+                seed_speaker_node(
+                    db_session_factory,
+                    tenant_id="chang_an",
+                    voiceprint_id=f"{index}" * 64,
+                    display_name=f"speaker:page{index}",
+                )
+            )
+        body = test_client.get(
+            "/api/v1/speakers?limit=1",
+            headers=auth_headers["inspector_t1"],
+        ).json()
+        assert len(body["items"]) == 1
+        assert body["total"] >= 3
 
     def test_voiceprint_hash_truncated_to_8_chars(
         self,
@@ -418,6 +478,118 @@ class TestGetSpeaker:
         # Strategy should match what we seeded.
         assert ref["strategy"] == "voiceprint"
 
+    def test_voiceprint_is_per_recording_not_the_node_hash(
+        self,
+        test_client: Any,
+        auth_headers: Any,
+        db_session_factory: Any,
+    ) -> None:
+        """Each row reports the voiceprint that recording contributed, or none.
+
+        This used to print the canonical node's hash on every row, so a speaker
+        assembled from one voiceprint link and two fuzzy links showed three
+        identical hashes under a column headed "Voiceprint" — beside a cosine
+        column that correctly read "—" for the fuzzy rows. The two columns
+        contradicted each other and the hash was the one asserting evidence that
+        did not exist.
+        """
+        speaker_id = _run_async(
+            seed_speaker_node(
+                db_session_factory,
+                tenant_id="chang_an",
+                voiceprint_id="n" * 64,
+                recordings_list=[301, 302],
+                recordings_count=2,
+            )
+        )
+        _run_async(
+            seed_speaker_link(
+                db_session_factory,
+                canonical_id=speaker_id,
+                source_id=speaker_id,
+                recording_id=301,
+                tenant_id="chang_an",
+            )
+        )
+        _run_async(
+            seed_speaker_link(
+                db_session_factory,
+                canonical_id=speaker_id,
+                source_id=speaker_id,
+                recording_id=302,
+                tenant_id="chang_an",
+                strategy="fuzzy",
+            )
+        )
+        # Only recording 301 contributed a voiceprint.
+        _run_async(
+            seed_voiceprint_vector(
+                db_session_factory,
+                speaker_id=speaker_id,
+                recording_id=301,
+                voiceprint_id="c0ffee" + "0" * 58,
+                duration_sec=42.0,
+            )
+        )
+
+        body = test_client.get(
+            f"/api/v1/speakers/{speaker_id}",
+            headers=auth_headers["inspector_t1"],
+        ).json()
+        refs = {ref["recording_id"]: ref for ref in body["related_recordings"]}
+
+        assert refs[301]["voiceprint_id"] == "vp_c0ffee00"
+        assert refs[301]["duration_sec"] == 42.0
+        # Not the node hash ("n"*64 -> vp_nnnnnnnn), and not the sibling's.
+        assert refs[302]["voiceprint_id"] is None
+        assert refs[302]["duration_sec"] == 0.0
+
+    def test_related_links_are_tenant_scoped(
+        self,
+        test_client: Any,
+        auth_headers: Any,
+        db_session_factory: Any,
+    ) -> None:
+        """A link whose tenant disagrees with its speaker is not rendered.
+
+        The query relied on SpeakerNode ids being globally unique rather than
+        carrying the predicate every other SpeakerLink query in the module
+        carries. No in-application writer can produce such a row today; a
+        restored dump or a hand-written repair can.
+        """
+        speaker_id = _run_async(
+            seed_speaker_node(
+                db_session_factory,
+                tenant_id="chang_an",
+                voiceprint_id="t" * 64,
+                recordings_list=[401],
+            )
+        )
+        _run_async(
+            seed_speaker_link(
+                db_session_factory,
+                canonical_id=speaker_id,
+                source_id=speaker_id,
+                recording_id=401,
+                tenant_id="chang_an",
+            )
+        )
+        _run_async(
+            seed_speaker_link(
+                db_session_factory,
+                canonical_id=speaker_id,
+                source_id=speaker_id,
+                recording_id=999,
+                tenant_id="byd",
+            )
+        )
+
+        body = test_client.get(
+            f"/api/v1/speakers/{speaker_id}",
+            headers=auth_headers["inspector_t1"],
+        ).json()
+        assert [ref["recording_id"] for ref in body["related_recordings"]] == [401]
+
 
 # ============================================================
 # Router registration smoke
@@ -605,16 +777,25 @@ class TestRecordingSpeakers:
         )
         assert resp.json()["items"] == []
 
-    def test_agent_role_forbidden(
+    def test_agent_role_allowed(
         self,
         test_client: Any,
         auth_headers: Any,
     ) -> None:
+        """Agents are the role this endpoint exists for.
+
+        ``require_role`` matches names, not levels, so agent (level 2) was being
+        refused while viewer (level 1) was admitted. Agents create the streaming
+        recordings and the reception workspace is open to them; without this
+        every timeline line renders a raw ``spk_N`` for the people who recorded
+        it. The roster endpoints stay closed to agent — they carry no
+        agent-ownership filter — which is asserted separately above.
+        """
         resp = test_client.get(
             "/api/v1/recordings/8820/speakers",
             headers=auth_headers["agent_t1"],
         )
-        assert resp.status_code == 403
+        assert resp.status_code == 200
 
     def test_cross_tenant_returns_empty(
         self,

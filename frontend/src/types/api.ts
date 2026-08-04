@@ -306,7 +306,8 @@ export interface SpeakerListResponse {
 
 export interface SpeakerRecordingRef {
   recording_id: number;
-  voiceprint_id: string;
+  /** Null when this recording holds no voiceprint for the speaker (fuzzy/manual link). */
+  voiceprint_id: string | null;
   duration_sec: number;
   strategy: string;
   ambiguity_tag: "AMBIGUOUS" | "PENDING_REVIEW" | null;

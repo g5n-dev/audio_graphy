@@ -72,6 +72,12 @@ class _Settings:
     voiceprint_cosine_threshold = 0.5
     voiceprint_ambiguous_threshold = 0.7
     enable_speaker_layer2_fuzzy = False
+    # Read by build_linker even with Layer 2 off: the matcher is constructed
+    # unconditionally so the thresholds the policy endpoint reports are the ones
+    # in force. Values mirror config.py's defaults.
+    speaker_fuzzy_inferred_threshold = 0.6
+    speaker_fuzzy_ambiguous_threshold = 0.85
+    speaker_fuzzy_voiceprint_reconfirm_cosine = 0.7
 
 
 class _Bundle:

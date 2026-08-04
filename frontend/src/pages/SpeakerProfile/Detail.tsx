@@ -177,9 +177,15 @@ export default function SpeakerProfileDetailPage(): JSX.Element {
               title: "Voiceprint",
               dataIndex: "voiceprint_id",
               width: 140,
-              render: (val: string) => (
-                <code style={{ fontSize: 14, color: "#86909c" }}>{val}</code>
-              ),
+              // "—" rather than a hash: a fuzzy or manual link contributed no
+              // voiceprint, and printing one here would contradict the 声纹余弦
+              // cell beside it, which correctly reads "—" for the same row.
+              render: (val: string | null) =>
+                val ? (
+                  <code style={{ fontSize: 14, color: "#86909c" }}>{val}</code>
+                ) : (
+                  "—"
+                ),
             },
             {
               title: "链接策略",

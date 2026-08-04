@@ -191,6 +191,13 @@ def build_linker(
     tenant_id: str,
 ) -> SpeakerLinker:
     """Linker configured from settings, so every path merges identically."""
+    from audio_graphy.core.speaker_fuzzy_matcher import SpeakerFuzzyMatcher
+
+    # Built here rather than left to SpeakerLinker's argument-less default: the
+    # three Layer-2 thresholds are operator settings, and GET
+    # /speakers/voiceprint-policy reports them as the rules in force. Without
+    # this the matcher runs its own L8 constants and the policy endpoint is
+    # reporting numbers nothing consults.
     return SpeakerLinker(
         session_factory,
         crypto,
@@ -198,6 +205,11 @@ def build_linker(
         voiceprint_threshold=settings.voiceprint_cosine_threshold,
         ambiguity_threshold=settings.voiceprint_ambiguous_threshold,
         enable_layer2_fuzzy=settings.enable_speaker_layer2_fuzzy,
+        fuzzy_matcher=SpeakerFuzzyMatcher(
+            inferred_threshold=settings.speaker_fuzzy_inferred_threshold,
+            ambiguous_threshold=settings.speaker_fuzzy_ambiguous_threshold,
+            reconfirm_cosine=settings.speaker_fuzzy_voiceprint_reconfirm_cosine,
+        ),
     )
 
 

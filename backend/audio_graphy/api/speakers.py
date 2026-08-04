@@ -148,18 +148,22 @@ async def list_speakers(
     unchanged; write operations remain inspector+.
     """
     tenant_id = get_tenant_id(request)
-    stmt = select(SpeakerNode).where(SpeakerNode.tenant_id == tenant_id)
+    # Built once and applied to both the page and the count: a total derived from
+    # len(page) is capped by ``limit``, which tells a paging client the roster ends
+    # exactly where its own window does. list_merge_pending below counts properly;
+    # this endpoint is the outlier, not the convention.
+    filters = [SpeakerNode.tenant_id == tenant_id]
     if speaker_role is not None:
-        stmt = stmt.where(SpeakerNode.speaker_role == speaker_role)
+        filters.append(SpeakerNode.speaker_role == speaker_role)
     if ambiguity is not None:
         if ambiguity.lower() == "none":
-            stmt = stmt.where(SpeakerNode.ambiguity_tag.is_(None))
+            filters.append(SpeakerNode.ambiguity_tag.is_(None))
         else:
-            stmt = stmt.where(SpeakerNode.ambiguity_tag == ambiguity)
+            filters.append(SpeakerNode.ambiguity_tag == ambiguity)
     if recording_id is not None:
         # Via speaker_links rather than the recordings_list JSON column:
         # the link table is indexed and is the audit trail of record.
-        stmt = stmt.where(
+        filters.append(
             SpeakerNode.id.in_(
                 select(SpeakerLink.canonical_speaker_id).where(
                     SpeakerLink.tenant_id == tenant_id,
@@ -167,13 +171,23 @@ async def list_speakers(
                 )
             )
         )
-    stmt = stmt.order_by(SpeakerNode.recordings_count.desc()).limit(limit).offset(offset)
+
+    total = (
+        await db.execute(select(func.count()).select_from(SpeakerNode).where(*filters))
+    ).scalar_one()
+    stmt = (
+        select(SpeakerNode)
+        .where(*filters)
+        .order_by(SpeakerNode.recordings_count.desc())
+        .limit(limit)
+        .offset(offset)
+    )
 
     result = await db.execute(stmt)
     nodes = list(result.scalars().all())
     return SpeakerListResponse(
         items=[_node_to_list_item(n) for n in nodes],
-        total=len(nodes),
+        total=int(total),
     )
 
 
@@ -292,7 +306,7 @@ async def get_voiceprint_policy(
     "/{recording_id}/speakers",
     response_model=RecordingSpeakerListResponse,
     summary="Resolve a recording's diarization labels to speakers (viewer+)",
-    dependencies=[Depends(require_role("admin", "inspector", "viewer"))],
+    dependencies=[Depends(require_role("admin", "inspector", "viewer", "agent"))],
 )
 async def list_recording_speakers(
     recording_id: int,
@@ -305,6 +319,13 @@ async def list_recording_speakers(
     they can show neither who the speaker is nor how confident that
     attribution was. Viewer+ because it carries no biometric data — just the
     label, the display name, and the quality flags.
+
+    ``agent`` is named explicitly even though it outranks viewer: ``require_role``
+    matches names, not levels. Agents are the role that creates streaming
+    recordings and the reception workspace is open to them, so excluding them
+    here left every timeline line showing a raw ``spk_N`` for exactly the people
+    who recorded it. The roster endpoints stay viewer/inspector-only on purpose —
+    unlike recordings, they carry no agent-ownership filter.
 
     Links written before ``source_speaker_label`` existed are omitted: their
     label cannot be reconstructed, and guessing would misattribute speech.
@@ -392,17 +413,42 @@ async def get_speaker(
     # Load related speaker_links (joined via canonical_speaker_id).
     link_stmt = (
         select(SpeakerLink)
-        .where(SpeakerLink.canonical_speaker_id == speaker_id)
+        .where(
+            SpeakerLink.tenant_id == tenant_id,
+            SpeakerLink.canonical_speaker_id == speaker_id,
+        )
         .order_by(SpeakerLink.recording_id.desc())
     )
     link_result = await db.execute(link_stmt)
+    # The per-recording voiceprint, keyed the way it was written. Reporting the
+    # node's own hash on every row instead — as this did — asserts voiceprint
+    # evidence for fuzzy and manual links that never had any, directly beside a
+    # cosine column that correctly reads "—" for them.
+    vector_rows = (
+        await db.execute(
+            select(
+                VoiceprintVector.recording_id,
+                VoiceprintVector.voiceprint_id,
+                VoiceprintVector.duration_sec,
+            ).where(
+                VoiceprintVector.tenant_id == tenant_id,
+                VoiceprintVector.speaker_entity_id == speaker_id,
+            )
+        )
+    ).all()
+    vectors = {int(row.recording_id): row for row in vector_rows}
     related: list[SpeakerRecordingRef] = []
     for link in link_result.scalars():
+        vector = vectors.get(int(link.recording_id))
         related.append(
             SpeakerRecordingRef(
                 recording_id=int(link.recording_id),
-                voiceprint_id=_voiceprint_short_hash(str(getattr(node, "voiceprint_id", ""))),
-                duration_sec=0.0,  # not stored on speaker_link in M7
+                voiceprint_id=(
+                    _voiceprint_short_hash(str(vector.voiceprint_id))
+                    if vector is not None
+                    else None
+                ),
+                duration_sec=float(vector.duration_sec) if vector is not None else 0.0,
                 strategy=str(link.strategy),
                 ambiguity_tag=link.ambiguity_tag,
                 cosine_similarity=(

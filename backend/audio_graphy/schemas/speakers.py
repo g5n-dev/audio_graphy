@@ -45,8 +45,17 @@ class SpeakerRecordingRef(BaseModel):
     """One recording in a speaker's recording list."""
 
     recording_id: int
-    voiceprint_id: str = Field(..., description="Voiceprint hash for this recording")
-    duration_sec: float
+    voiceprint_id: str | None = Field(
+        default=None,
+        description="Truncated hash of the voiceprint this recording contributed. "
+        "None when the recording holds no voiceprint for this speaker — a fuzzy "
+        "or manual link, or a tenant with voiceprints disabled.",
+    )
+    duration_sec: float = Field(
+        default=0.0,
+        description="Speech seconds the voiceprint was computed from. 0.0 when "
+        "there is no voiceprint row for this recording.",
+    )
     strategy: str = Field(..., description="How this recording was linked to the speaker")
     ambiguity_tag: str | None = None
     cosine_similarity: float | None = Field(
