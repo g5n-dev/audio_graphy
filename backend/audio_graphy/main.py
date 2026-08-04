@@ -26,6 +26,7 @@ from audio_graphy.api.dsar import router as dsar_router
 from audio_graphy.api.eval import router as eval_router
 from audio_graphy.api.graph import router as graph_router
 from audio_graphy.api.health import router as health_router
+from audio_graphy.api.prompt_lab import router as prompt_lab_router
 from audio_graphy.api.prompts import router as prompts_router
 from audio_graphy.api.query import router as query_router
 from audio_graphy.api.reception_pipeline import router as reception_pipeline_router
@@ -741,6 +742,7 @@ def create_app() -> FastAPI:
     app.include_router(tags_router, prefix=API_PREFIX)
     app.include_router(tag_insights_router, prefix=API_PREFIX)
     app.include_router(tag_governance_router, prefix=API_PREFIX)
+    app.include_router(prompt_lab_router, prefix=API_PREFIX)
     app.include_router(prompts_router, prefix=API_PREFIX)
     app.include_router(stats_router, prefix=API_PREFIX)
     app.include_router(dsar_router, prefix=API_PREFIX)

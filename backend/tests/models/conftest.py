@@ -25,6 +25,7 @@ from sqlalchemy.schema import AddConstraint
 # Import all models to ensure they register on Base.metadata
 import audio_graphy.models  # noqa: F401
 from audio_graphy.models.base import Base
+from tests.dbreset import drop_every_table, ensure_database, suite_database
 
 # MySQL connection parameters for the existing docker-compose container.
 # NOTE: The higher-level tests/conftest.py sets MYSQL_PORT=3306 via setdefault,
@@ -35,7 +36,14 @@ MYSQL_HOST = os.environ.get("MODEL_TEST_MYSQL_HOST", "127.0.0.1")
 MYSQL_PORT = os.environ.get("MODEL_TEST_MYSQL_PORT", "3307")
 MYSQL_USER = os.environ.get("MODEL_TEST_MYSQL_USER", "audiography")
 MYSQL_PASSWORD = os.environ.get("MODEL_TEST_MYSQL_PASSWORD", "change-me")
-MYSQL_DB = os.environ.get("MODEL_TEST_MYSQL_DB", "audiography_test")
+MYSQL_DB = suite_database("models")
+ensure_database(
+    host=MYSQL_HOST,
+    port=MYSQL_PORT,
+    user=MYSQL_USER,
+    password=MYSQL_PASSWORD,
+    name=MYSQL_DB,
+)
 
 
 @pytest.fixture(scope="session")
@@ -67,16 +75,10 @@ def mysql_container() -> Iterator[Any]:
 
 @pytest.fixture(scope="session")
 def db_engine(mysql_container: Any) -> Iterator[Engine]:
-    """Create a SQLAlchemy engine and initialize all 13 tables.
+    """Create a SQLAlchemy engine and build the schema from the current models."""
 
-    Handles the known source bug where ux_tag_stats_dim index exceeds
-    MySQL 8's 3072-byte key limit. Tables are created individually so
-    that one index failure does not block all tests.
-    """
     url: str = mysql_container.get_connection_url()
 
-    # Use QueuePool with pool_reset_on_return to ensure connections are
-    # properly reset after a failed operation (e.g., tag_stats index creation).
     engine = create_engine(
         url,
         echo=False,
@@ -85,12 +87,12 @@ def db_engine(mysql_container: Any) -> Iterator[Engine]:
         pool_reset_on_return="rollback",
     )
 
-    # Clean slate: drop all existing tables first
-    Base.metadata.drop_all(engine)
+    # Introspect and drop rather than metadata.drop_all: a schema left behind by
+    # older models would otherwise wedge the fixture that exists to reset it.
+    drop_every_table(engine)
 
-    # Create tables individually so one failure doesn't block everything.
-    # The ux_tag_stats_dim index on tag_stats is too long for MySQL 8 utf8mb4
-    # (3572 bytes > 3072 byte limit) — this is a known source code bug.
+    # Created per table so a single failure is reported with its table name instead
+    # of aborting the whole schema.
     failed_tables: list[str] = []
     for table in Base.metadata.sorted_tables:
         try:
@@ -102,9 +104,8 @@ def db_engine(mysql_container: Any) -> Iterator[Engine]:
         except OperationalError as e:
             failed_tables.append(f"{table.name}: {e}")
 
-    # ``Table.create()`` intentionally skips use_alter foreign keys. Add those
-    # after every table exists so the fixture mirrors metadata.create_all()
-    # while retaining its per-table recovery for unrelated oversized indexes.
+    # ``Table.create()`` intentionally skips use_alter foreign keys, so add them once
+    # every table exists. This is what makes the fixture equivalent to create_all().
     for table in Base.metadata.tables.values():
         for constraint in table.foreign_key_constraints:
             if not constraint.use_alter:
@@ -117,17 +118,17 @@ def db_engine(mysql_container: Any) -> Iterator[Engine]:
                 failed_tables.append(f"{table.name}.{constraint.name}: {e}")
 
     if failed_tables:
-        # Log table/index creation failures but don't fail — tests that depend
-        # on the missing index will fail individually with clear assertions.
-        print(
-            "\nWARNING: Some table/index creation failures (source code bugs):\n"
+        # Fail loudly. A half-built schema used to be tolerated here, which is how the
+        # test database silently drifted from the models: every later run inherited the
+        # gap, and the downstream errors pointed anywhere but at the missing table.
+        raise RuntimeError(
+            "the test schema could not be built from the current models:\n"
             + "\n".join(failed_tables)
-            + "\n"
         )
 
     yield engine
 
-    Base.metadata.drop_all(engine)
+    drop_every_table(engine)
     engine.dispose()
 
 

@@ -19,13 +19,21 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 # Import all models to register on Base.metadata
 import audio_graphy.models  # noqa: F401
 from audio_graphy.models.base import Base
+from tests.dbreset import drop_every_table_async, ensure_database, suite_database
 
 # MySQL connection — uses docker-compose MySQL (host port 3307 → container 3306)
 MYSQL_HOST = os.environ.get("MODEL_TEST_MYSQL_HOST", "127.0.0.1")
 MYSQL_PORT = os.environ.get("MODEL_TEST_MYSQL_PORT", "3307")
 MYSQL_USER = os.environ.get("MODEL_TEST_MYSQL_USER", "audiography")
 MYSQL_PASSWORD = os.environ.get("MODEL_TEST_MYSQL_PASSWORD", "change-me")
-MYSQL_DB = os.environ.get("MODEL_TEST_MYSQL_DB", "audiography_test")
+MYSQL_DB = suite_database("storage")
+ensure_database(
+    host=MYSQL_HOST,
+    port=MYSQL_PORT,
+    user=MYSQL_USER,
+    password=MYSQL_PASSWORD,
+    name=MYSQL_DB,
+)
 
 ASYNC_DSN = (
     f"mysql+aiomysql://{MYSQL_USER}:{MYSQL_PASSWORD}"
@@ -38,15 +46,15 @@ async def async_engine() -> AsyncIterator[Any]:
     """Create an async SQLAlchemy engine and initialise all tables (function-scoped)."""
     engine = create_async_engine(ASYNC_DSN, echo=False, pool_size=5)
 
-    # Drop all existing tables, then create fresh
+    # Drop whatever is there, then create fresh. Introspecting rather than trusting
+    # metadata means a schema left over from older models cannot wedge the fixture.
+    await drop_every_table_async(engine)
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
 
     yield engine
 
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
+    await drop_every_table_async(engine)
     await engine.dispose()
 
 

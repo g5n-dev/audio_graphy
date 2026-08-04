@@ -52,6 +52,17 @@ logger = logging.getLogger(__name__)
 EvaluationProcessor = Callable[[TagExtractionJob], Awaitable[None]]
 OptimizationProcessor = Callable[[TagExtractionJob], Awaitable[None]]
 
+# The job types this worker knows how to execute. Anything else belongs to another
+# worker; claiming it here would burn an attempt and eventually fail the job.
+TAG_WORKER_JOB_TYPES: tuple[str, ...] = (
+    "extract",
+    "recompute",
+    "review_batch",
+    "evaluate",
+    "remediate",
+    "optimize",
+)
+
 
 @dataclass(frozen=True, slots=True)
 class _ProviderUsage:
@@ -838,9 +849,7 @@ class TagJobWorker:
                             item_kind=item_kind,
                             item_id=int(item),
                             budget_policy=(
-                                reservation.as_policy()
-                                if reservation is not None
-                                else None
+                                reservation.as_policy() if reservation is not None else None
                             ),
                         )
                         if reservation is not None or not hard_budget_job:
@@ -859,18 +868,16 @@ class TagJobWorker:
                         if reservation is not None:
                             try:
                                 async with lock:
-                                    revision[0] = (
-                                        await self._service.settle_job_budget(
-                                            tenant_id=str(job.tenant_id),
-                                            job_id=job.id,
-                                            worker_id=self._worker_id,
-                                            expected_revision=revision[0],
-                                            provider_tokens=0,
-                                            provider_calls=0,
-                                            cost_microunits=0,
-                                            now=datetime.now(UTC),
-                                            consume_reserved=True,
-                                        )
+                                    revision[0] = await self._service.settle_job_budget(
+                                        tenant_id=str(job.tenant_id),
+                                        job_id=job.id,
+                                        worker_id=self._worker_id,
+                                        expected_revision=revision[0],
+                                        provider_tokens=0,
+                                        provider_calls=0,
+                                        cost_microunits=0,
+                                        now=datetime.now(UTC),
+                                        consume_reserved=True,
                                     )
                             except TagJobBudgetExhaustedError as settlement_error:
                                 if settlement_error.revision is not None:
@@ -886,18 +893,16 @@ class TagJobWorker:
                         if reservation is not None or not hard_budget_job:
                             try:
                                 async with lock:
-                                    revision[0] = (
-                                        await self._service.settle_job_budget(
-                                            tenant_id=str(job.tenant_id),
-                                            job_id=job.id,
-                                            worker_id=self._worker_id,
-                                            expected_revision=revision[0],
-                                            provider_tokens=0,
-                                            provider_calls=0,
-                                            cost_microunits=0,
-                                            now=datetime.now(UTC),
-                                            consume_reserved=reservation is not None,
-                                        )
+                                    revision[0] = await self._service.settle_job_budget(
+                                        tenant_id=str(job.tenant_id),
+                                        job_id=job.id,
+                                        worker_id=self._worker_id,
+                                        expected_revision=revision[0],
+                                        provider_tokens=0,
+                                        provider_calls=0,
+                                        cost_microunits=0,
+                                        now=datetime.now(UTC),
+                                        consume_reserved=reservation is not None,
                                     )
                             except TagJobBudgetExhaustedError as settlement_error:
                                 if settlement_error.revision is not None:
@@ -921,15 +926,13 @@ class TagJobWorker:
                         revision[0] = next_revision
                 if hard_budget_job and all_items_succeeded:
                     async with lock:
-                        revision[0] = (
-                            await self._service.publish_budgeted_job_current(
-                                tenant_id=str(job.tenant_id),
-                                job_id=job.id,
-                                worker_id=self._worker_id,
-                                expected_revision=revision[0],
-                                actor_user_id=self._actor_user_id,
-                                now=datetime.now(UTC),
-                            )
+                        revision[0] = await self._service.publish_budgeted_job_current(
+                            tenant_id=str(job.tenant_id),
+                            job_id=job.id,
+                            worker_id=self._worker_id,
+                            expected_revision=revision[0],
+                            actor_user_id=self._actor_user_id,
+                            now=datetime.now(UTC),
                         )
             else:
                 raise GovernanceError(f"unsupported tag job type: {job.job_type}")
@@ -954,6 +957,7 @@ class TagJobWorker:
             worker_id=self._worker_id,
             now=claimed_at,
             lease_for=self._lease_ttl,
+            job_types=TAG_WORKER_JOB_TYPES,
         )
         if job is None:
             return False

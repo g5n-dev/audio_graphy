@@ -131,6 +131,9 @@ class TaggerVersion(TenantScopedBase):
     # Intentionally not a physical FK: optimization runs can create candidate
     # taggers, so enforcing both directions would make online migration brittle.
     optimization_run_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # Also intentionally not a physical FK: an artifact records the candidate version
+    # it produced, so a declared FK in both directions would be circular.
+    prompt_artifact_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     change_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     config_checksum: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(String(24), nullable=False, default="draft")
@@ -147,10 +150,11 @@ class TaggerVersion(TenantScopedBase):
             name="ck_tagger_versions_status",
         ),
         CheckConstraint(
-            "origin IN ('manual', 'optimizer', 'bootstrap', 'migration')",
+            "origin IN ('manual', 'optimizer', 'bootstrap', 'migration', 'prompt_lab')",
             name="ck_tagger_versions_origin",
         ),
         Index("ux_tagger_versions_tenant_version", "tenant_id", "version", unique=True),
+        Index("ix_tagger_versions_prompt_artifact", "tenant_id", "prompt_artifact_id"),
         Index(
             "ux_tagger_versions_tenant_checksum",
             "tenant_id",
@@ -289,7 +293,8 @@ class TagExtractionJob(TenantScopedBase):
     __table_args__ = (
         CheckConstraint(
             "job_type IN "
-            "('extract', 'recompute', 'review_batch', 'evaluate', 'remediate', 'optimize')",
+            "('extract', 'recompute', 'review_batch', 'evaluate', 'remediate', "
+            "'optimize', 'prompt_compile')",
             name="ck_tag_extraction_jobs_type",
         ),
         CheckConstraint(

@@ -39,6 +39,12 @@ from audio_graphy.models.llm_cache import (
 from audio_graphy.models.llm_call_log import LLMCallLog
 from audio_graphy.models.pipeline import ProjectionOutbox, RecordingPipelineRun
 from audio_graphy.models.prompt import Prompt
+from audio_graphy.models.prompt_lab import (
+    TagPromptArtifact,
+    TagPromptDemoSource,
+    TagPromptGradient,
+    TagSilverLabel,
+)
 from audio_graphy.models.reception import (
     DialogueStateTransition,
     DialogueTagAssignment,
@@ -173,10 +179,14 @@ __all__ = [
     "TagHarnessStageTrace",
     "TagOptimizationRun",
     "TagOptimizationTrial",
+    "TagPromptArtifact",
+    "TagPromptDemoSource",
+    "TagPromptGradient",
     "TagReviewDecision",
     "TagReviewTask",
     "TagSchema",
     "TagSchemaVersion",
+    "TagSilverLabel",
     "TagSource",
     "TagStat",
     "TaggerVersion",

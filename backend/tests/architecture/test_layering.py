@@ -44,12 +44,13 @@ Outstanding debt — real upward runtime dependencies that should be inverted:
 * ``adapters`` ↔ ``core.chunker`` is a genuine cycle (``core.chunker`` imports
   ``adapters.bundle`` and ``adapters.protocols`` at module scope), already papered over
   with ``TYPE_CHECKING`` and lazy imports in the three adapter modules on the other side.
-* ``services`` ↔ ``optimizers`` is a second genuine cycle: ``optimizers.artifacts``
-  imports ``services.tag_governance`` and ``services.tag_harness_runtime``, while
-  ``services.prompt_lab`` imports ``optimizers.artifacts``. Both packages sit on the same
-  layer below, so the ratchet does not flag it — that placement is a description of the
-  current state, not an endorsement. Whoever owns the prompt-lab work should decide which
-  direction the dependency runs and split the shared helpers out accordingly.
+The ``services`` ↔ ``optimizers`` cycle recorded here previously is gone: the two
+helpers the compiler needed from ``services`` -- ``canonical_checksum`` and
+``estimate_prompt_tokens`` -- moved to ``core.canonical``, with the original modules
+re-exporting them. ``optimizers`` now sits below ``services`` and the dependency runs
+one way. Sharing the implementation rather than copying it also matters on its own:
+a checksum the compiler computes has to equal the one a search manifest records, and
+a token estimate made at compile time has to equal the one the extractor enforces.
 
 Fixing any entry means deleting it here: ``test_known_violations_still_exist`` fails on
 a stale allowlist, so this list cannot rot into permanent permission.
@@ -76,15 +77,12 @@ LAYERS: tuple[tuple[str, ...], ...] = (
     # while it lived under services/ those five imports pointed upward.
     ("storage", "llm"),
     ("core", "auth"),
-    # `optimizers` is placed alongside `services` rather than below it because
-    # the two are currently mutually dependent, not because that is where it
-    # belongs: `optimizers.artifacts` imports `services.tag_governance` and
-    # `services.tag_harness_runtime`, while `services.prompt_lab` imports
-    # `optimizers.artifacts` — a package-level cycle of the same shape as the
-    # api<->core one that was untangled earlier. Same-layer edges are legal
-    # here, so this classification keeps the ratchet honest about everything
-    # else without silently blessing the cycle; see the note in the docstring.
-    ("services", "tags", "eval", "analytics", "optimizers"),
+    # `optimizers` sits below `services` because the dependency now runs one way:
+    # the prompt compiler reads `core.canonical` for checksums and token estimates,
+    # and `services.prompt_lab` drives the compiler. The cycle that previously
+    # forced same-layer placement is gone.
+    ("optimizers",),
+    ("services", "tags", "eval", "analytics"),
     ("api",),
 )
 ROOT_LAYER = len(LAYERS)
@@ -108,6 +106,7 @@ KNOWN_VIOLATIONS: frozenset[tuple[str, str]] = frozenset(
         ("audio_graphy.api.graph", "audio_graphy.config"),
         ("audio_graphy.api.graph", "audio_graphy.errors"),
         ("audio_graphy.api.leiden_admin", "audio_graphy.errors"),
+        ("audio_graphy.api.prompt_lab", "audio_graphy.errors"),
         ("audio_graphy.api.prompts", "audio_graphy.errors"),
         ("audio_graphy.api.reception_state_insights", "audio_graphy.errors"),
         ("audio_graphy.api.reception_tags", "audio_graphy.errors"),

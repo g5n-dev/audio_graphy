@@ -6,6 +6,8 @@ from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from typing import Any, Literal
 
+from audio_graphy.core.canonical import estimate_prompt_tokens as _estimate_prompt_tokens
+
 
 class HarnessSpecError(ValueError):
     """Raised when a Harness asks for an unregistered or unsafe action."""
@@ -424,17 +426,16 @@ def output_token_budget(
 
 
 def estimate_prompt_tokens(value: str) -> int:
-    """Conservative, tokenizer-independent proxy suitable for a hard preflight."""
+    """Conservative, tokenizer-independent proxy suitable for a hard preflight.
 
-    if not isinstance(value, str):
-        raise HarnessSpecError("prompt content must be a string")
-    if not value:
-        return 0
-    ascii_count = sum(character.isascii() for character in value)
-    non_ascii_count = len(value) - ascii_count
-    character_proxy = non_ascii_count + ((ascii_count + 3) // 4)
-    byte_proxy = (len(value.encode("utf-8")) + 3) // 4
-    return max(character_proxy, byte_proxy)
+    Delegates to :mod:`audio_graphy.core.canonical` so the compile-time estimate and
+    the serve-time budget check cannot diverge; only the error type is local.
+    """
+
+    try:
+        return _estimate_prompt_tokens(value)
+    except TypeError as exc:
+        raise HarnessSpecError("prompt content must be a string") from exc
 
 
 def _normalized_replacement_template(

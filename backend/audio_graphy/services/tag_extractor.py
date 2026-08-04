@@ -71,6 +71,10 @@ _MAX_P95_LATENCY_REGRESSION = 0.05
 _MAX_REVIEW_RATE_INCREASE = 0.01
 _EFFICIENCY_BOOTSTRAP_ITERATIONS = 2_000
 _MAX_REPORTED_FLIPS = 200
+# Share of max_input_tokens the transport may occupy. The preflight report and the
+# real batcher must read this from the same place or the preflight proves nothing.
+_INPUT_BUDGET_UTILIZATION = 0.90
+_DEFAULT_MAX_INPUT_TOKENS = 12_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,6 +122,85 @@ EFFICIENCY_ENVELOPES: dict[str, EfficiencyEnvelope] = {
     TOKEN_REDUCTION_V1.key: TOKEN_REDUCTION_V1,
     QUALITY_UPLIFT_V1.key: QUALITY_UPLIFT_V1,
 }
+
+
+def _usable_input_tokens(max_input_tokens: int) -> int:
+    """Tokens the transport may spend on one call, prompt and schema included."""
+
+    return max(1, math.floor(max_input_tokens * _INPUT_BUDGET_UTILIZATION))
+
+
+@dataclass(frozen=True, slots=True)
+class PromptInputBudgetReport:
+    """What a candidate prompt costs before a single transcript segment is added.
+
+    A compiled prompt can fail in two ways that a quality metric never sees: it can
+    overflow the per-call input budget outright, or it can merely shrink the headroom
+    enough that long subjects start splitting into extra provider calls -- which the
+    efficiency envelope refuses regardless of how good the prompt is.
+    """
+
+    prompt_tokens: int
+    schema_tokens: int
+    fixed_tokens: int
+    usable_tokens: int
+    headroom_tokens: int
+    fits: bool
+    baseline_fixed_tokens: int
+    baseline_headroom_tokens: int
+    headroom_delta: int
+
+    @property
+    def headroom_shrink_ratio(self) -> float:
+        """Fraction of the baseline's segment headroom this candidate gives up."""
+
+        if self.baseline_headroom_tokens <= 0:
+            return 0.0
+        return -self.headroom_delta / self.baseline_headroom_tokens
+
+
+def prompt_input_budget_report(
+    candidate: Mapping[str, Any],
+    *,
+    baseline: Mapping[str, Any],
+    definitions: Mapping[str, Mapping[str, Any]],
+) -> PromptInputBudgetReport:
+    """Measure a candidate prompt against the same budget the batcher enforces."""
+
+    def fixed_cost(config: Mapping[str, Any]) -> tuple[int, int, int]:
+        generation = config.get("generation")
+        section: Mapping[str, Any] = generation if isinstance(generation, Mapping) else {}
+        prompt_content = section.get("prompt_template", "")
+        if not isinstance(prompt_content, str):
+            raise AssignmentValidationError("generation.prompt_template must be a string")
+        raw_budget = section.get("max_input_tokens", _DEFAULT_MAX_INPUT_TOKENS)
+        if isinstance(raw_budget, bool) or not isinstance(raw_budget, int) or raw_budget <= 0:
+            raise AssignmentValidationError("generation.max_input_tokens must be a positive int")
+        total = TagExtractor._estimated_transport_input_tokens(
+            prompt_content=prompt_content,
+            definitions=definitions,
+            segment_texts=(),
+        )
+        prompt_tokens = estimate_prompt_tokens(TagExtractor._system_prompt(prompt_content))
+        return total, prompt_tokens, _usable_input_tokens(raw_budget)
+
+    candidate_fixed, candidate_prompt_tokens, usable_tokens = fixed_cost(candidate)
+    baseline_fixed, _baseline_prompt_tokens, baseline_usable = fixed_cost(baseline)
+    headroom = usable_tokens - candidate_fixed
+    baseline_headroom = baseline_usable - baseline_fixed
+    return PromptInputBudgetReport(
+        prompt_tokens=candidate_prompt_tokens,
+        schema_tokens=candidate_fixed - candidate_prompt_tokens,
+        fixed_tokens=candidate_fixed,
+        usable_tokens=usable_tokens,
+        headroom_tokens=headroom,
+        # Mirrors the guard in _segment_batches_for_input_budget: anything above the
+        # usable budget raises before a single segment is packed.
+        fits=candidate_fixed <= usable_tokens,
+        baseline_fixed_tokens=baseline_fixed,
+        baseline_headroom_tokens=baseline_headroom,
+        headroom_delta=headroom - baseline_headroom,
+    )
 
 
 class _TagOutputFormatError(AssignmentValidationError):
@@ -227,9 +310,7 @@ class PreparedDialogueInput:
     input_hash: str
     input_snapshot: dict[str, Any]
     definitions: dict[str, dict[str, Any]]
-    llm_segment_texts: tuple[
-        tuple[Segment | _SnapshotSegment, str], ...
-    ] | None = None
+    llm_segment_texts: tuple[tuple[Segment | _SnapshotSegment, str], ...] | None = None
 
 
 class TagExtractor:
@@ -594,7 +675,7 @@ class TagExtractor:
     ) -> list[list[tuple[Segment | _SnapshotSegment, str]]]:
         """Split against the final messages plus strict response Schema."""
 
-        usable_tokens = max(1, math.floor(max_input_tokens * 0.90))
+        usable_tokens = _usable_input_tokens(max_input_tokens)
         if (
             cls._estimated_transport_input_tokens(
                 prompt_content=prompt_content,
@@ -722,9 +803,7 @@ class TagExtractor:
             output_tokens=output_tokens,
         )
         if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-            raise AssignmentValidationError(
-                "LLM price estimator returned an invalid cost"
-            )
+            raise AssignmentValidationError("LLM price estimator returned an invalid cost")
         return value * cls._provider_attempt_bound(adapter)
 
     @classmethod
@@ -831,9 +910,7 @@ class TagExtractor:
                     "type": "string",
                     "const": tag_key,
                 },
-                "tag_value": cls._tag_value_response_schema(
-                    {tag_key: definition}
-                ),
+                "tag_value": cls._tag_value_response_schema({tag_key: definition}),
                 "confidence": {
                     "type": "number",
                     "minimum": 0,
@@ -854,8 +931,7 @@ class TagExtractor:
         by_transport, transport_by_segment = cls._transport_segment_ids(segment_texts)
         user_payload: dict[str, Any] = {
             "schema": [
-                cls._transport_definition(definition)
-                for definition in definitions.values()
+                cls._transport_definition(definition) for definition in definitions.values()
             ],
             "segments": [
                 {
@@ -963,9 +1039,7 @@ class TagExtractor:
             weak_candidates=weak_candidates,
         )
         return (
-            estimate_prompt_tokens(
-                TagExtractor._system_prompt(prompt_content)
-            )
+            estimate_prompt_tokens(TagExtractor._system_prompt(prompt_content))
             + estimate_prompt_tokens(
                 json.dumps(
                     payload,
@@ -1038,21 +1112,15 @@ class TagExtractor:
             if not isinstance(raw_evidence_ids, list) or any(
                 not isinstance(transport_id, str) for transport_id in raw_evidence_ids
             ):
-                raise _TagEvidenceOutputError(
-                    "evidence_segment_ids must be compact string[]"
-                )
+                raise _TagEvidenceOutputError("evidence_segment_ids must be compact string[]")
             if len(raw_evidence_ids) != len(set(raw_evidence_ids)):
-                raise _TagEvidenceOutputError(
-                    "evidence_segment_ids must not contain duplicates"
-                )
+                raise _TagEvidenceOutputError("evidence_segment_ids must not contain duplicates")
             if len(raw_evidence_ids) > _MAX_EVIDENCE_SEGMENTS_PER_ASSIGNMENT:
                 raise _TagEvidenceOutputError(
                     "evidence_segment_ids exceeds the bounded evidence limit"
                 )
             if any(transport_id not in by_transport for transport_id in raw_evidence_ids):
-                raise _TagEvidenceOutputError(
-                    "LLM assignment references unknown segment evidence"
-                )
+                raise _TagEvidenceOutputError("LLM assignment references unknown segment evidence")
 
             raw_confidence = raw["confidence"]
             if isinstance(raw_confidence, bool) or not isinstance(raw_confidence, (int, float)):
@@ -1150,12 +1218,8 @@ class TagExtractor:
                     if not isinstance(raw_unit, Mapping):
                         continue
                     dialogue_unit_id = raw_unit.get("dialogue_unit_id")
-                    if isinstance(dialogue_unit_id, int) and not isinstance(
-                        dialogue_unit_id, bool
-                    ):
-                        provenance.append(
-                            LLMProvenance("dialogue_unit", str(dialogue_unit_id))
-                        )
+                    if isinstance(dialogue_unit_id, int) and not isinstance(dialogue_unit_id, bool):
+                        provenance.append(LLMProvenance("dialogue_unit", str(dialogue_unit_id)))
                     raw_facts = raw_unit.get("facts")
                     if not isinstance(raw_facts, list):
                         continue
@@ -1352,9 +1416,7 @@ class TagExtractor:
             provider_calls=provider_calls,
             cache_hits=cache_hits,
             cost_microunits=cost_microunits,
-            counterfactual_saved_cost_microunits=(
-                counterfactual_saved_cost_microunits
-            ),
+            counterfactual_saved_cost_microunits=(counterfactual_saved_cost_microunits),
             unknown_billed_tokens=unknown_billed_tokens,
         )
 
@@ -1646,11 +1708,7 @@ class TagExtractor:
             raise AssignmentValidationError(
                 f"target_tag_keys contains unknown schema keys: {', '.join(unknown)}"
             )
-        selected = {
-            key: definition
-            for key, definition in applicable.items()
-            if key in normalized
-        }
+        selected = {key: definition for key, definition in applicable.items() if key in normalized}
         return selected, tuple(sorted(selected))
 
     @staticmethod
@@ -1691,13 +1749,10 @@ class TagExtractor:
             reference = refs_by_segment.get(int(segment.id), {})
             timeline_start = reference.get("timeline_start_sec")
             timeline_end = reference.get("timeline_end_sec")
-            if isinstance(timeline_start, int | float) and isinstance(
-                timeline_end, int | float
-            ):
-                overlaps = (
-                    float(timeline_start) < float(unit.end_sec)
-                    and float(timeline_end) > float(unit.start_sec)
-                )
+            if isinstance(timeline_start, int | float) and isinstance(timeline_end, int | float):
+                overlaps = float(timeline_start) < float(unit.end_sec) and float(
+                    timeline_end
+                ) > float(unit.start_sec)
             else:
                 overlaps = (
                     unit.source_recording_id == segment.recording_id
@@ -1822,8 +1877,7 @@ class TagExtractor:
                             TagAssignmentCurrent.subject_id.in_(unit_ids),
                             TagAssignmentFact.tenant_id == tenant_id,
                             TagAssignmentFact.subject_type == "dialogue_unit",
-                            TagAssignmentFact.subject_id
-                            == TagAssignmentCurrent.subject_id,
+                            TagAssignmentFact.subject_id == TagAssignmentCurrent.subject_id,
                             TagAssignmentFact.schema_version_id == schema.id,
                             TagAssignmentFact.tombstone.is_(False),
                         )
@@ -1970,10 +2024,7 @@ class TagExtractor:
             for segment_id in [*preferred_evidence_ids, *fallback_ids]:
                 if segment_id not in selected_evidence_ids:
                     selected_evidence_ids.append(segment_id)
-                if (
-                    len(selected_evidence_ids)
-                    >= _RECEPTION_FACT_EVIDENCE_SEGMENTS_PER_UNIT
-                ):
+                if len(selected_evidence_ids) >= _RECEPTION_FACT_EVIDENCE_SEGMENTS_PER_UNIT:
                     break
             if not selected_evidence_ids:
                 continue
@@ -2000,9 +2051,7 @@ class TagExtractor:
                 )
             )
             for segment_id in selected_evidence_ids[1:]:
-                contexts_by_segment.setdefault(segment_id, []).append(
-                    f"dialogue_unit_id={unit.id}"
-                )
+                contexts_by_segment.setdefault(segment_id, []).append(f"dialogue_unit_id={unit.id}")
             lineage.append(
                 {
                     "dialogue_unit_id": int(unit.id),
@@ -2010,11 +2059,7 @@ class TagExtractor:
                     "transport_evidence_segment_ids": selected_evidence_ids,
                     "facts": [
                         {
-                            **{
-                                key: value
-                                for key, value in fact.items()
-                                if key != "evidence_refs"
-                            },
+                            **{key: value for key, value in fact.items() if key != "evidence_refs"},
                             "source": origin,
                         }
                         for fact, origin in facts
@@ -2030,9 +2075,7 @@ class TagExtractor:
             if not contexts:
                 continue
             compact_text = (
-                "\n".join(contexts)
-                + "\nraw_evidence="
-                + text[:_RECEPTION_FACT_EVIDENCE_TEXT_CHARS]
+                "\n".join(contexts) + "\nraw_evidence=" + text[:_RECEPTION_FACT_EVIDENCE_TEXT_CHARS]
             )
             compact_segments.append((segment, compact_text))
             transport_snapshot.append(
@@ -2528,24 +2571,17 @@ class TagExtractor:
             "model_version": tagger.model_version,
             "target_tag_keys": list(effective_target_keys),
         }
-        llm_segment_texts: tuple[
-            tuple[Segment | _SnapshotSegment, str], ...
-        ] | None = None
+        llm_segment_texts: tuple[tuple[Segment | _SnapshotSegment, str], ...] | None = None
         raw_aggregation = snapshot.get("transport_aggregation")
         if subject_type == "reception" and raw_aggregation is not None:
             raw_aggregation_without_checksum = (
-                {
-                    key: value
-                    for key, value in raw_aggregation.items()
-                    if key != "checksum"
-                }
+                {key: value for key, value in raw_aggregation.items() if key != "checksum"}
                 if isinstance(raw_aggregation, dict)
                 else {}
             )
             if (
                 not isinstance(raw_aggregation, dict)
-                or raw_aggregation.get("version")
-                != _RECEPTION_FACT_TRANSPORT_VERSION
+                or raw_aggregation.get("version") != _RECEPTION_FACT_TRANSPORT_VERSION
                 or raw_aggregation.get("source_reception_input_hash") != input_hash
                 or raw_aggregation.get("checksum")
                 != canonical_checksum(raw_aggregation_without_checksum)
@@ -2554,18 +2590,12 @@ class TagExtractor:
                 raise AssignmentValidationError(
                     "frozen reception transport aggregation lineage is invalid"
                 )
-            segment_by_id = {
-                int(segment.id): segment for segment, _text in segment_texts
-            }
-            frozen_transport: list[
-                tuple[Segment | _SnapshotSegment, str]
-            ] = []
+            segment_by_id = {int(segment.id): segment for segment, _text in segment_texts}
+            frozen_transport: list[tuple[Segment | _SnapshotSegment, str]] = []
             seen_transport_ids: set[int] = set()
             for raw_transport in raw_aggregation["segments"]:
                 if not isinstance(raw_transport, dict):
-                    raise AssignmentValidationError(
-                        "frozen reception transport segment is invalid"
-                    )
+                    raise AssignmentValidationError("frozen reception transport segment is invalid")
                 segment_id = raw_transport.get("segment_id")
                 text = raw_transport.get("text")
                 if (
@@ -2575,15 +2605,11 @@ class TagExtractor:
                     or segment_id not in segment_by_id
                     or not isinstance(text, str)
                 ):
-                    raise AssignmentValidationError(
-                        "frozen reception transport segment is invalid"
-                    )
+                    raise AssignmentValidationError("frozen reception transport segment is invalid")
                 seen_transport_ids.add(segment_id)
                 frozen_transport.append((segment_by_id[segment_id], text))
             if not frozen_transport:
-                raise AssignmentValidationError(
-                    "frozen reception transport aggregation is empty"
-                )
+                raise AssignmentValidationError("frozen reception transport aggregation is empty")
             llm_segment_texts = tuple(frozen_transport)
             input_hash = compute_input_hash(
                 transcript=transcript,
@@ -2719,8 +2745,7 @@ class TagExtractor:
             unknown_limits = sorted(set(budget_policy_override) - supported_limits)
             if unknown_limits:
                 raise AssignmentValidationError(
-                    "unsupported extraction budget limits: "
-                    + ", ".join(unknown_limits)
+                    "unsupported extraction budget limits: " + ", ".join(unknown_limits)
                 )
             for key, value in budget_policy_override.items():
                 if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
@@ -2728,11 +2753,7 @@ class TagExtractor:
                         f"extraction budget {key} must be a positive integer"
                     )
                 configured = budget_policy.get(key)
-                budget_policy[key] = (
-                    value
-                    if configured is None
-                    else min(int(configured), value)
-                )
+                budget_policy[key] = value if configured is None else min(int(configured), value)
         max_provider_calls = budget_policy.get("max_provider_calls")
         max_provider_tokens = budget_policy.get("max_provider_tokens")
         max_cost_microunits = budget_policy.get("max_cost_microunits")
@@ -2750,24 +2771,14 @@ class TagExtractor:
             nonlocal reserved_cost_microunits
             attempt_bound = self._provider_attempt_bound(adapter)
             reserved_tokens = estimated_tokens * attempt_bound
-            if (
-                max_wall_seconds is not None
-                and perf_counter() - started >= float(max_wall_seconds)
+            if max_wall_seconds is not None and perf_counter() - started >= float(max_wall_seconds):
+                raise _TagBudgetExceededError("wall-clock budget exhausted before format repair")
+            if max_provider_calls is not None and reserved_provider_calls + attempt_bound > int(
+                max_provider_calls
             ):
-                raise _TagBudgetExceededError(
-                    "wall-clock budget exhausted before format repair"
-                )
-            if (
-                max_provider_calls is not None
-                and reserved_provider_calls + attempt_bound > int(max_provider_calls)
-            ):
-                raise _TagBudgetExceededError(
-                    "provider call budget exhausted before format repair"
-                )
-            if (
-                max_provider_tokens is not None
-                and reserved_provider_tokens + reserved_tokens
-                > int(max_provider_tokens)
+                raise _TagBudgetExceededError("provider call budget exhausted before format repair")
+            if max_provider_tokens is not None and reserved_provider_tokens + reserved_tokens > int(
+                max_provider_tokens
             ):
                 raise _TagBudgetExceededError(
                     "provider token budget exhausted before format repair"
@@ -2781,10 +2792,7 @@ class TagExtractor:
                     raise _TagBudgetExceededError(
                         "cost budget requires a configured model price snapshot"
                     )
-                if (
-                    reserved_cost_microunits + estimated_cost
-                    > int(max_cost_microunits)
-                ):
+                if reserved_cost_microunits + estimated_cost > int(max_cost_microunits):
                     raise _TagBudgetExceededError(
                         "provider cost budget exhausted before format repair"
                     )
@@ -2829,9 +2837,7 @@ class TagExtractor:
             if rule_enabled
             else {}
         )
-        rule_min_confidence = float(
-            harness_spec["orchestration"].get("rule_min_confidence", 0.95)
-        )
+        rule_min_confidence = float(harness_spec["orchestration"].get("rule_min_confidence", 0.95))
         rule_resolved_keys = {
             key
             for key, assignment in rule_results.items()
@@ -2886,9 +2892,7 @@ class TagExtractor:
                     max_input_tokens=int(harness_spec["generation"]["max_input_tokens"]),
                 )
                 logical_calls = len(weak_segment_batches)
-                planned_calls = logical_calls * self._provider_attempt_bound(
-                    self._weak_llm
-                )
+                planned_calls = logical_calls * self._provider_attempt_bound(self._weak_llm)
                 planned_input_tokens = planned_calls * int(
                     harness_spec["generation"]["max_input_tokens"]
                 )
@@ -2897,9 +2901,8 @@ class TagExtractor:
                     configured_cap=int(harness_spec["generation"]["max_tokens"]),
                 )
                 planned_tokens = planned_input_tokens + planned_output_tokens
-                if (
-                    max_provider_calls is not None
-                    and reserved_provider_calls + planned_calls > int(max_provider_calls)
+                if max_provider_calls is not None and reserved_provider_calls + planned_calls > int(
+                    max_provider_calls
                 ):
                     raise _TagBudgetExceededError(
                         "provider call budget exhausted before weak generation"
@@ -2926,8 +2929,7 @@ class TagExtractor:
                 )
                 if max_cost_microunits is not None and (
                     planned_cost is None
-                    or reserved_cost_microunits + planned_cost
-                    > int(max_cost_microunits)
+                    or reserved_cost_microunits + planned_cost > int(max_cost_microunits)
                 ):
                     raise _TagBudgetExceededError(
                         "provider cost budget exhausted before weak generation"
@@ -2936,9 +2938,8 @@ class TagExtractor:
                 reserved_provider_tokens += planned_tokens
                 reserved_cost_microunits += planned_cost or 0
                 for weak_segment_batch in weak_segment_batches:
-                    if (
-                        max_wall_seconds is not None
-                        and perf_counter() - started >= float(max_wall_seconds)
+                    if max_wall_seconds is not None and perf_counter() - started >= float(
+                        max_wall_seconds
                     ):
                         raise _TagBudgetExceededError(
                             "wall-clock budget exhausted before weak generation"
@@ -3008,11 +3009,9 @@ class TagExtractor:
                     subject_type=prepared.subject_type,
                 )
                 distance = abs(float(weak_assignment["confidence"]) - threshold)
-                conflicts_with_rule = (
-                    rule_assignment is not None
-                    and repr(rule_assignment.get("tag_value"))
-                    != repr(weak_assignment.get("tag_value"))
-                )
+                conflicts_with_rule = rule_assignment is not None and repr(
+                    rule_assignment.get("tag_value")
+                ) != repr(weak_assignment.get("tag_value"))
                 missing_evidence = bool(definition.get("evidence_required")) and not bool(
                     weak_assignment.get("evidence_refs")
                 )
@@ -3020,25 +3019,18 @@ class TagExtractor:
                     priority = -1.0 if conflicts_with_rule or missing_evidence else distance
                     noncritical_triggers.append((priority, key))
 
-            noncritical_definitions = [
-                key for key in definitions if key not in critical_keys
-            ]
+            noncritical_definitions = [key for key in definitions if key not in critical_keys]
             noncritical_limit = (
                 math.ceil(len(noncritical_definitions) * max_noncritical_rate)
                 if noncritical_definitions and max_noncritical_rate > 0
                 else 0
             )
             escalated_noncritical = {
-                key
-                for _priority, key in sorted(noncritical_triggers)[
-                    :noncritical_limit
-                ]
+                key for _priority, key in sorted(noncritical_triggers)[:noncritical_limit]
             }
             escalated_keys = critical_keys | escalated_noncritical
             critic_definitions = {
-                key: definition
-                for key, definition in definitions.items()
-                if key in escalated_keys
+                key: definition for key, definition in definitions.items() if key in escalated_keys
             }
 
         if critic_definitions:
@@ -3065,8 +3057,7 @@ class TagExtractor:
                     int(reference["segment_id"])
                     for key in critic_definitions
                     for reference in weak_results.get(key, {}).get("evidence_refs", [])
-                    if isinstance(reference, Mapping)
-                    and reference.get("segment_id") is not None
+                    if isinstance(reference, Mapping) and reference.get("segment_id") is not None
                 }
                 critic_segment_texts = (
                     [
@@ -3082,9 +3073,7 @@ class TagExtractor:
                     + "\nReview only the supplied weak candidates and cited evidence."
                 )
                 critic_weak_candidates = {
-                    key: weak_results[key]
-                    for key in critic_definitions
-                    if key in weak_results
+                    key: weak_results[key] for key in critic_definitions if key in weak_results
                 }
                 critic_segment_batches = self._segment_batches_for_input_budget(
                     segment_texts=critic_segment_texts,
@@ -3098,17 +3087,14 @@ class TagExtractor:
                     configured_cap=int(harness_spec["generation"]["max_tokens"]),
                 )
                 logical_calls = len(critic_segment_batches)
-                planned_calls = logical_calls * self._provider_attempt_bound(
-                    self._strong_llm
-                )
+                planned_calls = logical_calls * self._provider_attempt_bound(self._strong_llm)
                 planned_input_tokens = planned_calls * int(
                     harness_spec["generation"]["max_input_tokens"]
                 )
                 planned_output_tokens = planned_calls * critic_max_tokens
                 planned_tokens = planned_input_tokens + planned_output_tokens
-                if (
-                    max_provider_calls is not None
-                    and reserved_provider_calls + planned_calls > int(max_provider_calls)
+                if max_provider_calls is not None and reserved_provider_calls + planned_calls > int(
+                    max_provider_calls
                 ):
                     raise _TagBudgetExceededError(
                         "provider call budget exhausted before critic generation"
@@ -3132,8 +3118,7 @@ class TagExtractor:
                 )
                 if max_cost_microunits is not None and (
                     planned_cost is None
-                    or reserved_cost_microunits + planned_cost
-                    > int(max_cost_microunits)
+                    or reserved_cost_microunits + planned_cost > int(max_cost_microunits)
                 ):
                     raise _TagBudgetExceededError(
                         "provider cost budget exhausted before critic generation"
@@ -3142,9 +3127,8 @@ class TagExtractor:
                 reserved_provider_tokens += planned_tokens
                 reserved_cost_microunits += planned_cost or 0
                 for critic_segment_batch in critic_segment_batches:
-                    if (
-                        max_wall_seconds is not None
-                        and perf_counter() - started >= float(max_wall_seconds)
+                    if max_wall_seconds is not None and perf_counter() - started >= float(
+                        max_wall_seconds
                     ):
                         raise _TagBudgetExceededError(
                             "wall-clock budget exhausted before critic generation"
@@ -3171,9 +3155,7 @@ class TagExtractor:
                             max_provider_calls is None
                             or reserved_provider_calls < int(max_provider_calls)
                         ),
-                        repair_budget_reserver=repair_reserver_for(
-                            self._strong_llm
-                        ),
+                        repair_budget_reserver=repair_reserver_for(self._strong_llm),
                     )
                     llm_batches.append(critic_batch)
                     for key, assignment in critic_batch.assignments.items():
@@ -3304,13 +3286,8 @@ class TagExtractor:
         counterfactual_saved_cost_microunits = sum(
             batch.counterfactual_saved_cost_microunits for batch in llm_batches
         )
-        unknown_billed_tokens = sum(
-            batch.unknown_billed_tokens for batch in llm_batches
-        )
-        if (
-            max_cost_microunits is not None
-            and cost_microunits > int(max_cost_microunits)
-        ):
+        unknown_billed_tokens = sum(batch.unknown_billed_tokens for batch in llm_batches)
+        if max_cost_microunits is not None and cost_microunits > int(max_cost_microunits):
             raise _TagBudgetExceededError(
                 "provider cost budget exhausted during generation settlement"
             )
@@ -3469,9 +3446,7 @@ class TagExtractor:
             cache_hits=cache_hits,
             strong_escalations=(len(critic_definitions) if critic_results else 0),
             cost_microunits=cost_microunits,
-            counterfactual_saved_cost_microunits=(
-                counterfactual_saved_cost_microunits
-            ),
+            counterfactual_saved_cost_microunits=(counterfactual_saved_cost_microunits),
             unknown_billed_tokens=unknown_billed_tokens,
         )
 
@@ -3631,8 +3606,7 @@ class TagExtractor:
                     "conflict_tag_keys": list(prediction.conflict_tag_keys),
                     "review_item_count": len(prediction.review_items),
                     "review_items": [
-                        {"tag_key": str(item["tag_key"])}
-                        for item in prediction.review_items
+                        {"tag_key": str(item["tag_key"])} for item in prediction.review_items
                     ],
                     "usage": {
                         "provider_input_tokens": prediction.provider_input_tokens,
@@ -4162,8 +4136,7 @@ class TagExtractor:
                 run_id = run.id
         if cached_result is not None:
             cached_selected_keys = {
-                str(assignment["tag_key"])
-                for assignment in cached_result.assignments
+                str(assignment["tag_key"]) for assignment in cached_result.assignments
             }
             if publish_current:
                 for assignment in cached_result.assignments:
@@ -4179,9 +4152,7 @@ class TagExtractor:
                     subject_type="dialogue_unit",
                     subject_id=dialogue_unit_id,
                     assignments=[],
-                    schema_version_id=int(
-                        cached_result.input_snapshot["schema_version_id"]
-                    ),
+                    schema_version_id=int(cached_result.input_snapshot["schema_version_id"]),
                     tagger_version_id=tagger_version_id,
                     extraction_run_id=cached_result.run_id,
                     deployment_id=deployment_id,
@@ -4369,16 +4340,13 @@ class TagExtractorHarnessTrialExecutor:
             )
             for label in classes:
                 true_positive = sum(
-                    actual == label and predicted == label
-                    for actual, predicted in tag_rows
+                    actual == label and predicted == label for actual, predicted in tag_rows
                 )
                 false_positive = sum(
-                    actual != label and predicted == label
-                    for actual, predicted in tag_rows
+                    actual != label and predicted == label for actual, predicted in tag_rows
                 )
                 false_negative = sum(
-                    actual == label and predicted != label
-                    for actual, predicted in tag_rows
+                    actual == label and predicted != label for actual, predicted in tag_rows
                 )
                 denominator = (2 * true_positive) + false_positive + false_negative
                 scores.append((2 * true_positive / denominator) if denominator else 0.0)
@@ -4399,11 +4367,7 @@ class TagExtractorHarnessTrialExecutor:
         assignments: Mapping[str, Mapping[str, Any]],
     ) -> Any:
         assignment = assignments.get(str(sample["tag_key"]))
-        return (
-            {"__truth_state__": "absent"}
-            if assignment is None
-            else assignment.get("tag_value")
-        )
+        return {"__truth_state__": "absent"} if assignment is None else assignment.get("tag_value")
 
     @staticmethod
     def _relative_reduction(*, candidate: int, baseline: int) -> float:
@@ -4482,9 +4446,7 @@ class TagExtractorHarnessTrialExecutor:
         generation = candidate.get("generation", {})
         max_input_tokens = int(generation.get("max_input_tokens", 12_000))
         max_output_tokens = int(generation.get("max_tokens", 2_048))
-        prompt_tokens = estimate_prompt_tokens(
-            str(generation.get("prompt_template", ""))
-        )
+        prompt_tokens = estimate_prompt_tokens(str(generation.get("prompt_template", "")))
         estimated_tokens = 0
         estimated_calls = 0
         estimated_cost = 0
@@ -4512,9 +4474,7 @@ class TagExtractorHarnessTrialExecutor:
                 # The main structured call and its one bounded format repair
                 # are both reserved at the larger main-call envelope.
                 estimated_calls += 2 * attempt_bound
-                estimated_tokens += (
-                    2 * attempt_bound * (input_tokens + max_output_tokens)
-                )
+                estimated_tokens += 2 * attempt_bound * (input_tokens + max_output_tokens)
                 call_cost = TagExtractor._estimate_provider_cost(
                     adapter,
                     input_tokens=input_tokens,
@@ -4541,9 +4501,7 @@ class TagExtractorHarnessTrialExecutor:
         optimization_trial_id: int | None = None,
     ) -> Mapping[str, Any]:
         if (optimization_run_id is None) != (optimization_trial_id is None):
-            raise ValueError(
-                "optimization run and trial correlation IDs must be provided together"
-            )
+            raise ValueError("optimization run and trial correlation IDs must be provided together")
         replay_samples = [
             sample for sample in samples if sample.get("split") in {"train", "validation"}
         ]
@@ -4586,18 +4544,14 @@ class TagExtractorHarnessTrialExecutor:
                 str(subject_type),
                 subject_id,
             )
-            subject_snapshots.setdefault(subject_identity, set()).add(
-                snapshot_checksum
-            )
+            subject_snapshots.setdefault(subject_identity, set()).add(snapshot_checksum)
             grouped.setdefault(
                 (tenant_id, baseline_id, str(subject_type), subject_id, snapshot_checksum),
                 [],
             ).append(sample)
 
         ambiguous_subjects = {
-            identity
-            for identity, checksums in subject_snapshots.items()
-            if len(checksums) != 1
+            identity for identity, checksums in subject_snapshots.items() if len(checksums) != 1
         }
         if ambiguous_subjects:
             grouped = {
@@ -4610,9 +4564,7 @@ class TagExtractorHarnessTrialExecutor:
                     "error_code": "frozen_snapshot_binding_conflict",
                     "subject": f"{subject_type}:{subject_id}",
                 }
-                for _tenant_id, _baseline_id, subject_type, subject_id in sorted(
-                    ambiguous_subjects
-                )
+                for _tenant_id, _baseline_id, subject_type, subject_id in sorted(ambiguous_subjects)
             )
 
         predictions: dict[
@@ -4632,27 +4584,22 @@ class TagExtractorHarnessTrialExecutor:
                 )[:16]
                 usage_context = LLMUsageContext(
                     logical_request_id=(
-                        f"opt:{optimization_run_id}:"
-                        f"{optimization_trial_id}:{subject_correlation}"
+                        f"opt:{optimization_run_id}:{optimization_trial_id}:{subject_correlation}"
                     ),
                     optimization_run_id=optimization_run_id,
                     optimization_trial_id=optimization_trial_id,
                     require_durable_ledger=True,
                 )
             try:
-                predictions[identity] = (
-                    await self.extractor.predict_materialized_frozen_input(
-                        tenant_id=tenant_id,
-                        subject_type=subject_type,
-                        subject_id=subject_id,
-                        input_snapshot=deepcopy(dict(subject_samples[0]["input_snapshot"])),
-                        baseline_tagger_version_id=baseline_id,
-                        harness_spec=deepcopy(candidate),
-                        target_tag_keys=sorted(
-                            {str(sample["tag_key"]) for sample in subject_samples}
-                        ),
-                        usage_context=usage_context,
-                    )
+                predictions[identity] = await self.extractor.predict_materialized_frozen_input(
+                    tenant_id=tenant_id,
+                    subject_type=subject_type,
+                    subject_id=subject_id,
+                    input_snapshot=deepcopy(dict(subject_samples[0]["input_snapshot"])),
+                    baseline_tagger_version_id=baseline_id,
+                    harness_spec=deepcopy(candidate),
+                    target_tag_keys=sorted({str(sample["tag_key"]) for sample in subject_samples}),
+                    usage_context=usage_context,
                 )
             except Exception as exc:
                 errors.append(
@@ -4689,9 +4636,7 @@ class TagExtractorHarnessTrialExecutor:
             ):
                 for definition in raw_definitions:
                     if isinstance(definition, Mapping) and definition.get("key"):
-                        definition_index[str(definition["key"])] = deepcopy(
-                            dict(definition)
-                        )
+                        definition_index[str(definition["key"])] = deepcopy(dict(definition))
             tag_key = str(sample.get("tag_key", ""))
             if tag_key and tag_key not in definition_index:
                 definition_index[tag_key] = {
@@ -4707,8 +4652,7 @@ class TagExtractorHarnessTrialExecutor:
                     "negative_values": [],
                     "critical_values": (
                         [sample.get("gold_value")]
-                        if sample.get("is_critical")
-                        and sample.get("gold_value") is not None
+                        if sample.get("is_critical") and sample.get("gold_value") is not None
                         else []
                     ),
                     "evidence_required": bool(sample.get("evidence_required")),
@@ -4718,12 +4662,8 @@ class TagExtractorHarnessTrialExecutor:
             if prediction is None:
                 continue
             prediction_subject_identity = (identity[2], identity[3])
-            candidate_predictions[prediction_subject_identity] = tuple(
-                prediction.assignments
-            )
-            assignments = {
-                str(item["tag_key"]): item for item in prediction.assignments
-            }
+            candidate_predictions[prediction_subject_identity] = tuple(prediction.assignments)
+            assignments = {str(item["tag_key"]): item for item in prediction.assignments}
             reviewed_keys = {
                 str(item.get("tag_key"))
                 for item in prediction.review_items
@@ -4747,9 +4687,7 @@ class TagExtractorHarnessTrialExecutor:
                 baseline_rows.append((tag_key, actual, baseline_predicted))
                 truth_identity = self._value_identity(actual)
                 candidate_correct = truth_identity == self._value_identity(predicted)
-                baseline_correct = (
-                    truth_identity == self._value_identity(baseline_predicted)
-                )
+                baseline_correct = truth_identity == self._value_identity(baseline_predicted)
                 if candidate_correct != baseline_correct:
                     flips.append(
                         {
@@ -4757,13 +4695,10 @@ class TagExtractorHarnessTrialExecutor:
                             "subject_id": identity[3],
                             "tag_key": tag_key,
                             "gold_value": deepcopy(sample.get("gold_value")),
-                            "baseline_value": deepcopy(
-                                sample.get("baseline_predicted_value")
-                            ),
+                            "baseline_value": deepcopy(sample.get("baseline_predicted_value")),
                             "candidate_value": deepcopy(
                                 None
-                                if isinstance(predicted, Mapping)
-                                and "__truth_state__" in predicted
+                                if isinstance(predicted, Mapping) and "__truth_state__" in predicted
                                 else predicted
                             ),
                             "direction": "fixed" if candidate_correct else "broken",
@@ -4777,9 +4712,7 @@ class TagExtractorHarnessTrialExecutor:
                         "tag_key": tag_key,
                         "tag_value": deepcopy(sample.get("gold_value")),
                         "truth_state": str(sample.get("truth_state") or "present"),
-                        "evidence_refs": deepcopy(
-                            sample.get("gold_evidence_refs") or []
-                        ),
+                        "evidence_refs": deepcopy(sample.get("gold_evidence_refs") or []),
                     }
                 )
                 baseline_assignment = sample.get("baseline_assignment")
@@ -4794,9 +4727,7 @@ class TagExtractorHarnessTrialExecutor:
                         {},
                     )[tag_key] = {
                         "tag_key": tag_key,
-                        "tag_value": deepcopy(
-                            sample.get("baseline_predicted_value")
-                        ),
+                        "tag_value": deepcopy(sample.get("baseline_predicted_value")),
                         "confidence": float(sample.get("score", 0)),
                         "evidence_refs": [],
                     }
@@ -4807,14 +4738,11 @@ class TagExtractorHarnessTrialExecutor:
                     critical_correct += int(
                         self._value_identity(actual) == self._value_identity(predicted)
                     )
-                if bool(sample.get("evidence_required")) and sample.get(
-                    "truth_state"
-                ) == "present":
+                if bool(sample.get("evidence_required")) and sample.get("truth_state") == "present":
                     evidence_required_total += 1
                     assignment = assignments.get(tag_key)
                     evidence_covered += int(
-                        assignment is not None
-                        and bool(assignment.get("evidence_refs"))
+                        assignment is not None and bool(assignment.get("evidence_refs"))
                     )
 
         # Reuse the canonical release evaluator so optimizer feasibility and
@@ -4828,10 +4756,7 @@ class TagExtractorHarnessTrialExecutor:
             definitions=definition_index,
             extraction_errors=len(errors),
             subject_count=len(
-                {
-                    (str(item["subject_type"]), int(item["subject_id"]))
-                    for item in gold_labels
-                }
+                {(str(item["subject_type"]), int(item["subject_id"])) for item in gold_labels}
             ),
             lineage_violation_count=len(ambiguous_subjects),
         )
@@ -4844,18 +4769,13 @@ class TagExtractorHarnessTrialExecutor:
             definitions=definition_index,
             extraction_errors=0,
             subject_count=len(
-                {
-                    (str(item["subject_type"]), int(item["subject_id"]))
-                    for item in gold_labels
-                }
+                {(str(item["subject_type"]), int(item["subject_id"])) for item in gold_labels}
             ),
         )
         candidate_macro_f1 = float(candidate_summary.metrics["macro_f1"])
         baseline_macro_f1 = float(baseline_summary.metrics["macro_f1"])
         critical_recall = float(candidate_summary.metrics["critical_recall"])
-        critical_recall_lcb = float(
-            candidate_summary.metrics["critical_recall_lcb"]
-        )
+        critical_recall_lcb = float(candidate_summary.metrics["critical_recall_lcb"])
         evidence_coverage = float(candidate_summary.metrics["evidence_coverage"])
 
         batches = list(predictions.values())
@@ -4867,16 +4787,12 @@ class TagExtractorHarnessTrialExecutor:
         cache_hits = sum(batch.cache_hits for batch in batches)
         cost_microunits = sum(batch.cost_microunits for batch in batches)
         counterfactual_saved_cost_microunits = sum(
-            int(getattr(batch, "counterfactual_saved_cost_microunits", 0))
-            for batch in batches
+            int(getattr(batch, "counterfactual_saved_cost_microunits", 0)) for batch in batches
         )
         unknown_billed_tokens = sum(
-            int(getattr(batch, "unknown_billed_tokens", 0))
-            for batch in batches
+            int(getattr(batch, "unknown_billed_tokens", 0)) for batch in batches
         )
-        cold_cache_cost_microunits = (
-            cost_microunits + counterfactual_saved_cost_microunits
-        )
+        cold_cache_cost_microunits = cost_microunits + counterfactual_saved_cost_microunits
         cold_provider_tokens = (
             provider_input_tokens
             + provider_output_tokens
@@ -4904,8 +4820,7 @@ class TagExtractorHarnessTrialExecutor:
         )
         for identity, subject_samples in grouped.items():
             if any(
-                not isinstance(sample.get("baseline_reviewed"), bool)
-                for sample in subject_samples
+                not isinstance(sample.get("baseline_reviewed"), bool) for sample in subject_samples
             ):
                 baseline_measurement_complete = False
             execution_ids = {
@@ -4923,11 +4838,7 @@ class TagExtractorHarnessTrialExecutor:
                 valid = True
                 for field in required_baseline_fields:
                     value = sample.get(field)
-                    if (
-                        isinstance(value, bool)
-                        or not isinstance(value, int)
-                        or value < 0
-                    ):
+                    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                         valid = False
                         break
                     values.append(value)
@@ -4971,18 +4882,10 @@ class TagExtractorHarnessTrialExecutor:
                 continue
             baseline_execution_by_subject[identity] = execution_id
 
-        baseline_tokens = sum(
-            value["cold_tokens"] for value in baseline_executions.values()
-        )
-        baseline_cost = sum(
-            value["cold_cost"] for value in baseline_executions.values()
-        )
-        baseline_calls = sum(
-            value["cold_calls"] for value in baseline_executions.values()
-        )
-        baseline_latencies = sorted(
-            value["latency"] for value in baseline_executions.values()
-        )
+        baseline_tokens = sum(value["cold_tokens"] for value in baseline_executions.values())
+        baseline_cost = sum(value["cold_cost"] for value in baseline_executions.values())
+        baseline_calls = sum(value["cold_calls"] for value in baseline_executions.values())
+        baseline_latencies = sorted(value["latency"] for value in baseline_executions.values())
         candidate_latencies = sorted(batch.latency_ms for batch in batches)
 
         def p95(values: Sequence[int]) -> int:
@@ -5045,9 +4948,7 @@ class TagExtractorHarnessTrialExecutor:
                     baseline=baseline_measurement["cold_tokens"],
                 )
             )
-        paired_token_reduction_lcb = self._paired_bootstrap_lower_bound(
-            paired_token_reductions
-        )
+        paired_token_reduction_lcb = self._paired_bootstrap_lower_bound(paired_token_reductions)
         review_rate = review_count / validation_count if validation_count else 0.0
         baseline_review_count = sum(
             sample.get("baseline_reviewed") is True
@@ -5056,33 +4957,22 @@ class TagExtractorHarnessTrialExecutor:
             for sample in subject_samples
             if sample.get("split") == "validation"
         )
-        baseline_review_rate = (
-            baseline_review_count / validation_count if validation_count else 0.0
-        )
+        baseline_review_rate = baseline_review_count / validation_count if validation_count else 0.0
         review_rate_delta = review_rate - baseline_review_rate
         envelope = self.efficiency_envelope
         efficiency_gate_results = {
             "measurement_complete": measurement_complete,
-            "cold_token_reduction": (
-                cold_token_reduction >= envelope.min_cold_token_reduction
-            ),
+            "cold_token_reduction": (cold_token_reduction >= envelope.min_cold_token_reduction),
             "paired_token_reduction_lcb": (
-                paired_token_reduction_lcb
-                >= envelope.min_paired_token_reduction_lcb
+                paired_token_reduction_lcb >= envelope.min_paired_token_reduction_lcb
             ),
-            "cold_cost_reduction": (
-                cold_cost_reduction >= envelope.min_cold_cost_reduction
-            ),
+            "cold_cost_reduction": (cold_cost_reduction >= envelope.min_cold_cost_reduction),
             "p95_latency_regression": (
                 p95_latency_regression_rate <= envelope.max_p95_latency_regression
             ),
-            "review_rate_increase": (
-                review_rate_delta <= envelope.max_review_rate_increase
-            ),
+            "review_rate_increase": (review_rate_delta <= envelope.max_review_rate_increase),
             "provider_calls_nonincrease": (
-                provider_call_delta <= 0
-                if envelope.require_provider_calls_nonincrease
-                else True
+                provider_call_delta <= 0 if envelope.require_provider_calls_nonincrease else True
             ),
         }
         efficiency_gate_passed = all(efficiency_gate_results.values())
@@ -5118,9 +5008,7 @@ class TagExtractorHarnessTrialExecutor:
             "baseline_cold_provider_calls": baseline_calls,
             "cache_hits": cache_hits,
             "cost_microunits": cost_microunits,
-            "counterfactual_saved_cost_microunits": (
-                counterfactual_saved_cost_microunits
-            ),
+            "counterfactual_saved_cost_microunits": (counterfactual_saved_cost_microunits),
             "cold_cache_cost_microunits": cold_cache_cost_microunits,
             "cost_delta": cost_delta,
             "baseline_cold_cache_cost_microunits": baseline_cost,
@@ -5149,22 +5037,14 @@ class TagExtractorHarnessTrialExecutor:
             "critical_recall": critical_recall,
             "critical_recall_lcb": critical_recall_lcb,
             "evidence_coverage": evidence_coverage,
-            "schema_violation_count": int(
-                candidate_summary.metrics["schema_violation_count"]
-            ),
-            "evidence_violation_count": int(
-                candidate_summary.metrics["evidence_violation_count"]
-            ),
-            "lineage_violation_count": int(
-                candidate_summary.metrics["lineage_violation_count"]
-            ),
+            "schema_violation_count": int(candidate_summary.metrics["schema_violation_count"]),
+            "evidence_violation_count": int(candidate_summary.metrics["evidence_violation_count"]),
+            "lineage_violation_count": int(candidate_summary.metrics["lineage_violation_count"]),
             "error_rate": float(candidate_summary.metrics["error_rate"]),
             "review_rate": review_rate,
             "baseline_review_rate": baseline_review_rate,
             "review_rate_delta": review_rate_delta,
-            "strong_escalations": sum(
-                batch.strong_escalations for batch in batches
-            ),
+            "strong_escalations": sum(batch.strong_escalations for batch in batches),
             "unknown_billed_tokens": unknown_billed_tokens,
             "efficiency_envelope": envelope.key,
             "quality_gate_passed": quality_gate_passed,

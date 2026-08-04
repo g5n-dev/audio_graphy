@@ -335,6 +335,14 @@ def test_replace_mode_accepts_prompts_beyond_the_append_delta_budget() -> None:
         (
             {
                 "prompt_mode": "replace",
+                "prompt_template": "a" * 64_001,
+                "max_prompt_template_tokens": 12_000,
+            },
+            "exceeds 64000 characters",
+        ),
+        (
+            {
+                "prompt_mode": "replace",
                 "prompt_template": "ok",
                 "max_prompt_template_tokens": 12_001,
             },
@@ -941,12 +949,8 @@ async def test_extraction_persists_six_stage_replay_trace(
 
     representative_tasks = [task for task in serving_tasks if task.reason == "random"]
     assert representative_tasks
-    assert {task.selection_policy for task in representative_tasks} == {
-        "representative_audit"
-    }
-    assert all(
-        task.sampling_probability == pytest.approx(0.05) for task in representative_tasks
-    )
+    assert {task.selection_policy for task in representative_tasks} == {"representative_audit"}
+    assert all(task.sampling_probability == pytest.approx(0.05) for task in representative_tasks)
     assert {task.source_extraction_run_id for task in representative_tasks} == {serving.run_id}
     assert {task.source_deployment_id for task in representative_tasks} == {deployment_id}
     assert {task.sampled_deployment_stage for task in representative_tasks} == {"shadow"}

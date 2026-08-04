@@ -1071,6 +1071,57 @@ async def test_evidence_cannot_cross_two_reception_spans_of_same_recording(
 
 
 @pytest.mark.asyncio
+async def test_a_worker_only_claims_job_types_it_can_execute(
+    governance_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Claiming a job you cannot run burns an attempt and eventually fails it.
+
+    The tag worker and the prompt-compile worker share one queue, so each must name
+    the types it handles or it will steal and then fail the other's work.
+    """
+
+    from audio_graphy.services.tag_governance import TagGovernanceService
+    from audio_graphy.tag_worker import TAG_WORKER_JOB_TYPES
+
+    service = TagGovernanceService(governance_factory)
+    compile_job = await service.enqueue_job(
+        tenant_id="chang_an",
+        job_type="prompt_compile",
+        scope={"compilation_id": 1},
+        idempotency_key="prompt-compile-1",
+        created_by=1,
+    )
+    extract_job = await service.enqueue_job(
+        tenant_id="chang_an",
+        job_type="extract",
+        scope={"dialogue_unit_ids": [7]},
+        idempotency_key="extract-unit-7",
+        created_by=1,
+    )
+    assert compile_job.created_at <= extract_job.created_at, (
+        "the compile job must be first in the queue for this test to mean anything"
+    )
+
+    tag_claim = await service.claim_next_job(
+        worker_id="tag-worker",
+        now=datetime.now(UTC),
+        lease_for=timedelta(seconds=30),
+        job_types=TAG_WORKER_JOB_TYPES,
+    )
+    assert tag_claim is not None
+    assert tag_claim.id == extract_job.id, "the tag worker skipped past the compile job"
+
+    lab_claim = await service.claim_next_job(
+        worker_id="prompt-lab-worker",
+        now=datetime.now(UTC),
+        lease_for=timedelta(seconds=30),
+        job_types=("prompt_compile",),
+    )
+    assert lab_claim is not None
+    assert lab_claim.id == compile_job.id
+
+
+@pytest.mark.asyncio
 async def test_job_lease_and_compare_and_swap_are_owner_scoped(
     governance_factory: async_sessionmaker[AsyncSession],
 ) -> None:
@@ -1915,13 +1966,17 @@ async def test_optimizer_rejects_holdout_and_does_not_mutate_production(
         assert unchanged.prompt_content == "production prompt"
         assert unchanged.thresholds == {"intent": 0.7}
         candidates = (
-            await session.execute(
-                select(TaggerVersion.id).where(
-                    TaggerVersion.tenant_id == "chang_an",
-                    TaggerVersion.id != production_id,
+            (
+                await session.execute(
+                    select(TaggerVersion.id).where(
+                        TaggerVersion.tenant_id == "chang_an",
+                        TaggerVersion.id != production_id,
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert candidates == []
 
 

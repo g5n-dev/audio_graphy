@@ -45,11 +45,7 @@ def _gold_lane_labels(
     ]
     rows.extend(
         (
-            (
-                "holdout_t3_present"
-                if index < positive_support
-                else "holdout_t3_absent"
-            ),
+            ("holdout_t3_present" if index < positive_support else "holdout_t3_absent"),
             "holdout",
             "t3",
             ("present" if index < positive_support else "absent"),
@@ -370,9 +366,7 @@ def test_bounded_search_evaluates_injected_candidates() -> None:
         feedback_samples=[],
         evaluator=evaluator,
         objective_policy="quality_first",
-        extra_candidates=[
-            _compiled_candidate(baseline, prompt=compiled_prompt, patch_id="a1")
-        ],
+        extra_candidates=[_compiled_candidate(baseline, prompt=compiled_prompt, patch_id="a1")],
     )
 
     assert result.winner.mutation == "generation.prompt_template=builtin#a1"
@@ -574,9 +568,7 @@ async def test_tag_extractor_trial_executor_replays_frozen_subjects_with_real_us
 
     assert len(predictor.calls) == 1
     assert predictor.calls[0]["input_snapshot"] == snapshot
-    assert predictor.calls[0]["harness_spec"]["generation"]["prompt_template"] == (
-        "真实候选提示词"
-    )
+    assert predictor.calls[0]["harness_spec"]["generation"]["prompt_template"] == ("真实候选提示词")
     usage_context = predictor.calls[0]["usage_context"]
     assert usage_context.optimization_run_id == 61
     assert usage_context.optimization_trial_id == 62
@@ -674,6 +666,83 @@ def _grown_prompt_sample() -> dict[str, Any]:
         "baseline_reviewed": False,
         "provider_latency_ms": 30,
     }
+
+
+def _budget_definitions() -> dict[str, dict[str, Any]]:
+    return {
+        "intent": {
+            "key": "intent",
+            "value_type": "enum",
+            "allowed_values": ["purchase", "browse"],
+        }
+    }
+
+
+def _generation(prompt: str, *, max_input_tokens: int = 12_000) -> dict[str, Any]:
+    return {"generation": {"prompt_template": prompt, "max_input_tokens": max_input_tokens}}
+
+
+def test_prompt_budget_report_charges_a_longer_prompt_against_segment_headroom() -> None:
+    from audio_graphy.services.tag_extractor import prompt_input_budget_report
+
+    baseline = _generation("基线规则")
+    report = prompt_input_budget_report(
+        _generation("编译产物：" * 400),
+        baseline=baseline,
+        definitions=_budget_definitions(),
+    )
+
+    assert report.fits is True
+    assert report.prompt_tokens > 0
+    assert report.schema_tokens > 0
+    assert report.fixed_tokens == report.prompt_tokens + report.schema_tokens
+    assert report.headroom_delta < 0, "a longer prompt must cost segment headroom"
+    assert 0 < report.headroom_shrink_ratio < 1
+
+
+def test_prompt_budget_report_is_neutral_for_the_baseline_itself() -> None:
+    from audio_graphy.services.tag_extractor import prompt_input_budget_report
+
+    baseline = _generation("基线规则")
+    report = prompt_input_budget_report(
+        baseline,
+        baseline=baseline,
+        definitions=_budget_definitions(),
+    )
+
+    assert report.headroom_delta == 0
+    assert report.headroom_shrink_ratio == 0.0
+    assert report.fits is True
+
+
+def test_prompt_budget_report_flags_a_prompt_the_batcher_would_reject() -> None:
+    """fits=False must agree with the guard inside _segment_batches_for_input_budget."""
+
+    from audio_graphy.services.tag_extractor import (
+        AssignmentValidationError,
+        TagExtractor,
+        prompt_input_budget_report,
+    )
+
+    definitions = _budget_definitions()
+    overflowing = "超" * 12_000
+    report = prompt_input_budget_report(
+        _generation(overflowing),
+        baseline=_generation("基线规则"),
+        definitions=definitions,
+    )
+
+    assert report.fits is False
+    assert report.headroom_tokens < 0
+    # The preflight is only useful if it predicts the real failure, so assert the
+    # production batcher actually rejects the same prompt.
+    with pytest.raises(AssignmentValidationError, match="exceed the subject input token budget"):
+        TagExtractor._segment_batches_for_input_budget(
+            segment_texts=(),
+            definitions=definitions,
+            prompt_content=overflowing,
+            max_input_tokens=12_000,
+        )
 
 
 @pytest.mark.asyncio
@@ -2988,8 +3057,7 @@ async def _add_optimizer_gold_sample(
             output_snapshot={
                 "review_item_count": len(baseline_review_tag_keys),
                 "review_items": [
-                    {"tag_key": review_tag_key}
-                    for review_tag_key in baseline_review_tag_keys
+                    {"tag_key": review_tag_key} for review_tag_key in baseline_review_tag_keys
                 ],
                 "usage": {
                     "provider_input_tokens": 10,
@@ -3141,17 +3209,17 @@ async def test_candidate_uses_frozen_cohort_keeps_absent_and_separates_subject_d
             subject_id=seeded["target_reception_id"],
             reception_id=seeded["target_reception_id"],
             tag_key="intent",
-                predicted_value="purchase",
-                gold_value="purchase",
-                truth_state="present",
-                split="validation",
-                # Keep this scope-isolation fixture quality-safe under the
-                # optimizer's critical-label recall gate.
-                score=0.8,
-                suffix="c3",
-                resulting_fact=True,
-                baseline_review_tag_keys=("objection",),
-            )
+            predicted_value="purchase",
+            gold_value="purchase",
+            truth_state="present",
+            split="validation",
+            # Keep this scope-isolation fixture quality-safe under the
+            # optimizer's critical-label recall gate.
+            score=0.8,
+            suffix="c3",
+            resulting_fact=True,
+            baseline_review_tag_keys=("objection",),
+        )
         await _add_optimizer_gold_sample(
             session,
             seeded=seeded,
@@ -3245,9 +3313,7 @@ async def test_candidate_uses_frozen_cohort_keeps_absent_and_separates_subject_d
 
     async def execute_with_heartbeat(**kwargs: Any) -> Any:
         nonlocal heartbeat_observed
-        heartbeat_observed = await TagGovernanceService(
-            optimizer_factory
-        ).heartbeat_job(
+        heartbeat_observed = await TagGovernanceService(optimizer_factory).heartbeat_job(
             job_id,
             tenant_id="chang_an",
             worker_id="candidate-test-worker",

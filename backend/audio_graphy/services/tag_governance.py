@@ -23,6 +23,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import aliased
 
+from audio_graphy.core.canonical import canonical_checksum, json_normalize
 from audio_graphy.models.reception import (
     DialogueTagAssignment,
     DialogueUnit,
@@ -808,26 +809,9 @@ def _parse_drift_domain_key(
     return None, domain_key, "output"
 
 
-def _json_normalize(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {str(key): _json_normalize(value[key]) for key in sorted(value)}
-    if isinstance(value, list):
-        return [_json_normalize(item) for item in value]
-    if isinstance(value, float):
-        return int(value) if value.is_integer() else round(value, 9)
-    return value
-
-
-def canonical_checksum(value: Any) -> str:
-    """SHA-256 of normalized JSON, used for immutable version snapshots."""
-
-    payload = json.dumps(
-        _json_normalize(value),
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+# Re-exported from audio_graphy.core.canonical, which sits below this layer so the
+# prompt compiler can content-address values identically without importing upward.
+_json_normalize = json_normalize
 
 
 def review_sampling_manifest_checksum(
@@ -5458,6 +5442,17 @@ class TagGovernanceService:
             if not isinstance(dialogue_ids, list) or not dialogue_ids:
                 raise GovernanceError("remediate requires a non-empty scope.dialogue_unit_ids list")
             ids = dialogue_ids
+        elif job_type == "prompt_compile":
+            # Scoped by the compilation it belongs to rather than by subject: a
+            # compile reads a gold set, it does not iterate a list of units.
+            compilation_id = scope.get("compilation_id")
+            if (
+                isinstance(compilation_id, bool)
+                or not isinstance(compilation_id, int)
+                or compilation_id <= 0
+            ):
+                raise GovernanceError("prompt_compile requires a positive scope.compilation_id")
+            ids = []
         else:
             raise GovernanceError("unsupported tag job type")
         if any(
@@ -5657,8 +5652,13 @@ class TagGovernanceService:
                 .all()
             )
 
-    def _claimable_job_query(self, now: datetime) -> Select[tuple[TagExtractionJob]]:
-        return (
+    def _claimable_job_query(
+        self,
+        now: datetime,
+        *,
+        job_types: Sequence[str] | None = None,
+    ) -> Select[tuple[TagExtractionJob]]:
+        query = (
             select(TagExtractionJob)
             .where(
                 or_(
@@ -5680,6 +5680,9 @@ class TagGovernanceService:
             .limit(1)
             .with_for_update(skip_locked=True)
         )
+        if job_types is not None:
+            query = query.where(TagExtractionJob.job_type.in_(list(job_types)))
+        return query
 
     @staticmethod
     async def _sync_evaluation_job_state(
@@ -5747,9 +5750,19 @@ class TagGovernanceService:
         worker_id: str,
         now: datetime,
         lease_for: timedelta,
+        job_types: Sequence[str] | None = None,
     ) -> TagExtractionJob | None:
+        """Claim the next due job, optionally restricted to types this worker runs.
+
+        Workers must name the types they can execute. A worker that claims a job it
+        cannot run does not merely no-op: it burns an attempt and eventually fails a
+        job that another worker was there to handle.
+        """
+
         async with self._factory() as session, session.begin():
-            job = (await session.execute(self._claimable_job_query(now))).scalar_one_or_none()
+            job = (
+                await session.execute(self._claimable_job_query(now, job_types=job_types))
+            ).scalar_one_or_none()
             if job is None:
                 return None
             if job.attempt_count >= job.max_attempts:

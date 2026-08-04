@@ -156,6 +156,11 @@ EXPECTED_TABLES = {
     "tag_experience_cases",
     "tag_optimization_runs",
     "tag_optimization_trials",
+    # Offline prompt compilation
+    "tag_prompt_artifacts",
+    "tag_prompt_gradients",
+    "tag_prompt_demo_sources",
+    "tag_silver_labels",
     # Centralized encrypted LLM cache
     "llm_cache_entries",
     "llm_cache_refs",
