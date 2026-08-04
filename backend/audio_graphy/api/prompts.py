@@ -74,13 +74,24 @@ async def _write_audit(
 
 @router.get("", response_model=PromptListResponse, summary="List prompts")
 async def list_prompts(
+    request: Request,
     name: str | None = Query(default=None),
     active_only: bool = Query(default=False),
     db: AsyncSession = Depends(get_db),
     _user: AuthUser = Depends(get_current_user),
 ) -> PromptListResponse:
-    """List prompt versions with optional filters."""
-    stmt = select(Prompt)
+    """List prompt versions with optional filters.
+
+    Tenant-scoped through ``created_by`` for the same reason as
+    ``get_prompt``: without it this listed every tenant's prompts, including
+    their names and versions, to any authenticated caller.
+    """
+    tenant_id = get_tenant_id(request)
+    stmt = (
+        select(Prompt)
+        .join(User, User.id == Prompt.created_by)
+        .where(User.tenant_id == tenant_id)
+    )
     if name is not None:
         stmt = stmt.where(Prompt.name == name)
     if active_only:
@@ -169,11 +180,28 @@ async def create_prompt(
 @router.get("/{prompt_id}", response_model=PromptResponse, summary="Get prompt detail")
 async def get_prompt(
     prompt_id: int,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     _user: AuthUser = Depends(get_current_user),
 ) -> PromptResponse:
-    """Get prompt detail (with content)."""
-    result = await db.execute(select(Prompt).where(Prompt.id == prompt_id))
+    """Get prompt detail (with content).
+
+    Tenant-scoped through ``created_by``: ``Prompt`` predates the
+    ``TenantScopedBase`` convention and carries no ``tenant_id`` column of its
+    own, so ownership is only reachable via the creating user. Without the join
+    this returned any tenant's prompt body to any authenticated caller — the
+    id is the only thing you needed. ``activate_prompt`` below has always
+    filtered this way; this route and ``list_prompts`` did not.
+    """
+    tenant_id = get_tenant_id(request)
+    result = await db.execute(
+        select(Prompt)
+        .join(User, User.id == Prompt.created_by)
+        .where(
+            Prompt.id == prompt_id,
+            User.tenant_id == tenant_id,
+        )
+    )
     prompt = result.scalar_one_or_none()
     if prompt is None:
         raise PromptNotFoundError(detail={"prompt_id": prompt_id})
