@@ -71,6 +71,10 @@ jobs:
           JWT_SECRET: ci-test-secret-32-chars-minimum!!
           WORKING_DIR: /tmp/audiography_ci
           ADAPTER_MODE: mock
+          # Locally an unreachable MySQL skips the integration packages so a fresh
+          # clone can run `pytest tests/`. Here it must be an error: a pipeline that
+          # goes green while silently skipping them is worse than one that refuses.
+          AUDIOGRAPHY_REQUIRE_MYSQL: "1"
         run: |
           mkdir -p /tmp/audiography_ci
           python -m pytest tests/ -v --cov=audio_graphy --cov-report=term-missing \

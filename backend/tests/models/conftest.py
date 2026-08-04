@@ -37,13 +37,6 @@ MYSQL_PORT = os.environ.get("MODEL_TEST_MYSQL_PORT", "3307")
 MYSQL_USER = os.environ.get("MODEL_TEST_MYSQL_USER", "audiography")
 MYSQL_PASSWORD = os.environ.get("MODEL_TEST_MYSQL_PASSWORD", "change-me")
 MYSQL_DB = suite_database("models")
-ensure_database(
-    host=MYSQL_HOST,
-    port=MYSQL_PORT,
-    user=MYSQL_USER,
-    password=MYSQL_PASSWORD,
-    name=MYSQL_DB,
-)
 
 
 @pytest.fixture(scope="session")
@@ -77,6 +70,16 @@ def mysql_container() -> Iterator[Any]:
 def db_engine(mysql_container: Any) -> Iterator[Engine]:
     """Create a SQLAlchemy engine and build the schema from the current models."""
 
+    # Probed here rather than at import time: a pytest.skip during conftest import
+    # is fatal, not a skip, so it took down every test in the package including the
+    # ones needing no database.
+    ensure_database(
+        host=MYSQL_HOST,
+        port=MYSQL_PORT,
+        user=MYSQL_USER,
+        password=MYSQL_PASSWORD,
+        name=MYSQL_DB,
+    )
     url: str = mysql_container.get_connection_url()
 
     engine = create_engine(

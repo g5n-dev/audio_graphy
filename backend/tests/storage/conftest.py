@@ -27,14 +27,6 @@ MYSQL_PORT = os.environ.get("MODEL_TEST_MYSQL_PORT", "3307")
 MYSQL_USER = os.environ.get("MODEL_TEST_MYSQL_USER", "audiography")
 MYSQL_PASSWORD = os.environ.get("MODEL_TEST_MYSQL_PASSWORD", "change-me")
 MYSQL_DB = suite_database("storage")
-ensure_database(
-    host=MYSQL_HOST,
-    port=MYSQL_PORT,
-    user=MYSQL_USER,
-    password=MYSQL_PASSWORD,
-    name=MYSQL_DB,
-)
-
 ASYNC_DSN = (
     f"mysql+aiomysql://{MYSQL_USER}:{MYSQL_PASSWORD}"
     f"@{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DB}?charset=utf8mb4"
@@ -44,6 +36,16 @@ ASYNC_DSN = (
 @pytest_asyncio.fixture
 async def async_engine() -> AsyncIterator[Any]:
     """Create an async SQLAlchemy engine and initialise all tables (function-scoped)."""
+    # Probed here rather than at import time: a pytest.skip during conftest import
+    # is fatal, not a skip, so it took down every test in the package including the
+    # ones needing no database.
+    ensure_database(
+        host=MYSQL_HOST,
+        port=MYSQL_PORT,
+        user=MYSQL_USER,
+        password=MYSQL_PASSWORD,
+        name=MYSQL_DB,
+    )
     engine = create_async_engine(ASYNC_DSN, echo=False, pool_size=5)
 
     # Drop whatever is there, then create fresh. Introspecting rather than trusting

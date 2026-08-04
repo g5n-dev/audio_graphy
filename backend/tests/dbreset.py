@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import os
 
+import pytest
 from sqlalchemy import Engine, create_engine, inspect, text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 _DISABLE_FK = "SET FOREIGN_KEY_CHECKS = 0"
@@ -36,7 +38,20 @@ def suite_database(suite: str) -> str:
 
 
 def ensure_database(*, host: str, port: str, user: str, password: str, name: str) -> None:
-    """Create the database if it does not exist yet."""
+    """Create the database if it does not exist yet, or skip the test that asked.
+
+    Call this from the engine fixture, never at conftest import time. A
+    ``pytest.skip`` raised while a conftest is being imported is not a skip --
+    pytest treats a failed conftest import as fatal and aborts the whole run, so
+    an unreachable MySQL took down the 99 test files that need no database along
+    with the ones that do. From inside a fixture it does what it says, and only
+    to the tests that actually need a connection.
+
+    ``AUDIOGRAPHY_REQUIRE_MYSQL=1`` restores the hard failure, and CI sets it. A
+    suite that silently skips its integration tests because the service failed to
+    start is worse than one that refuses to run: the pipeline stays green while
+    covering a fraction of what it claims.
+    """
 
     server_url = f"mysql+pymysql://{user}:{password}@{host}:{port}/"
     engine = create_engine(server_url, echo=False)
@@ -48,6 +63,14 @@ def ensure_database(*, host: str, port: str, user: str, password: str, name: str
                     "CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
                 )
             )
+    except OperationalError as exc:
+        if os.environ.get("AUDIOGRAPHY_REQUIRE_MYSQL") == "1":
+            raise
+        pytest.skip(
+            f"MySQL is unreachable at {host}:{port} ({exc.orig}); "
+            "start it with `docker compose up -d mysql`, or set "
+            "AUDIOGRAPHY_REQUIRE_MYSQL=1 to make this an error"
+        )
     finally:
         engine.dispose()
 
