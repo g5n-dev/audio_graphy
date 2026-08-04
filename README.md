@@ -465,9 +465,9 @@ Redis 当时不可用，在途 leader 也不能复活结果，恢复后会自动
 
 ## 致谢
 
-图谱 RAG 的设计范式承袭自 [VideoRAG](https://github.com/HKUDS/VideoRAG)（其自身的图谱内核来自 [LightRAG](https://github.com/HKUDS/LightRAG) / [nano-graphrag](https://github.com/gusye1234/nano-graphrag)），社区摘要与全局检索的分层模式参考微软 [GraphRAG](https://github.com/microsoft/graphrag)，双时态边模型参考 Graphiti。
+设计范式承袭自 [VideoRAG](https://github.com/HKUDS/VideoRAG)、[LightRAG](https://github.com/HKUDS/LightRAG)、[nano-graphrag](https://github.com/gusye1234/nano-graphrag)、微软 [GraphRAG](https://github.com/microsoft/graphrag) 与 [Graphiti](https://getagraphiti.com)。
 
-**本仓库不包含上述任何项目的源码**，也不依赖它们。逐字沿用的只有若干接口约定——`working_dir` 的文件命名，以及实体抽取的分隔符三元组。各项目的许可、版权方，以及哪些是承袭、哪些是独立实现，逐条列在 [NOTICES.md](./NOTICES.md)。
+**本仓库不包含上述任何项目的源码，也不依赖它们。** 各项目的许可、版权方，以及哪些是承袭、哪些是逐字沿用的接口约定、哪些是独立实现，逐条列在 [NOTICES.md](./NOTICES.md)。
 
 ---
 
