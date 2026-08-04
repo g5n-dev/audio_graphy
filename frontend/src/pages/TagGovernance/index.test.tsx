@@ -836,6 +836,64 @@ describe("TagGovernancePage", () => {
     ).toHaveValue(7);
   });
 
+  it("tells an inspector the CTA is admin-only instead of linking into a dead end", async () => {
+    // 部署面板的创建按钮和 deploy_evaluation_id 的自动开窗都是 isAdmin 限定的，
+    // 所以给非管理员发这条链接只会跳到一个什么都不发生的标签页。
+    useAuthStore.setState({
+      user: {
+        id: 2,
+        name: "质检员",
+        email: "inspector@example.com",
+        role: "inspector",
+        tenant_id: "tenant-a",
+      },
+      isAuthenticated: true,
+    });
+    mocks.evaluations.mockResolvedValue({
+      items: [
+        {
+          id: 7,
+          tenant_id: "tenant-a",
+          tagger_version_id: 42,
+          baseline_tagger_version_id: 41,
+          gold_set_version_id: 3,
+          status: "completed",
+          passed: true,
+          metrics: {
+            macro_f1: 0.88,
+            critical_recall: 0.97,
+            evidence_coverage: 0.99,
+            error_rate: 0.002,
+            evaluation_lane: "holdout",
+            sealed_release: true,
+          },
+          baseline_metrics: { macro_f1: 0.86 },
+          gates: [
+            {
+              code: "sealed_release",
+              passed: true,
+              actual: null,
+              threshold: null,
+              message: "Sealed Holdout 仅公开聚合结果",
+            },
+          ],
+          created_at: "2026-07-25T03:00:00Z",
+          updated_at: "2026-07-25T03:00:00Z",
+        },
+      ],
+      total: 1,
+    });
+    renderPage("/tag-governance?tab=evaluations");
+    await screen.findByText("Macro F1");
+
+    expect(
+      screen.queryByRole("link", { name: "创建影子部署" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByText("创建影子部署需要管理员权限。"),
+    ).toBeInTheDocument();
+  });
+
   it("shows the real sealed-holdout conflict instead of the stale-revision copy", async () => {
     const user = userEvent.setup();
     // 后端 create_deployment 对 challenge 评估的 409（api/tag_governance.py

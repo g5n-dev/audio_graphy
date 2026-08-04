@@ -811,6 +811,14 @@
   white-space: nowrap;
 }
 
+/* 非管理员看到的替代文案：占位与链接一致，但不是可点的死路。 */
+.ag-evaluation-lane__note {
+  flex: 0 0 auto;
+  font-weight: 600;
+  white-space: nowrap;
+  opacity: 0.75;
+}
+
 .ag-gate-list {
   padding: 3px 18px 15px;
 }

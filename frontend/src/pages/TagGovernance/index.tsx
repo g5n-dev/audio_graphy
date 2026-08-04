@@ -1323,11 +1323,14 @@ function EvaluationsPanel({
   pending,
   error,
   onRetry,
+  isAdmin,
 }: {
   items: TagEvaluation[];
   pending: boolean;
   error: unknown;
   onRetry: () => void;
+  /** 部署对话框是管理员限定的，CTA 必须跟着它走，否则深链落地什么都不会发生。 */
+  isAdmin: boolean;
 }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -1571,11 +1574,19 @@ function EvaluationsPanel({
                         <span>
                           Sealed Holdout 评估已通过，可进入受控发布。
                         </span>
-                        <Link
-                          to={`/tag-governance?tab=deployments&deploy_evaluation_id=${evaluation.id}`}
-                        >
-                          创建影子部署
-                        </Link>
+                        {isAdmin ? (
+                          <Link
+                            to={`/tag-governance?tab=deployments&deploy_evaluation_id=${evaluation.id}`}
+                          >
+                            创建影子部署
+                          </Link>
+                        ) : (
+                          // 部署面板的创建入口和深链自动开窗都是管理员限定的，
+                          // 给非管理员发链接只会落到一个什么都不发生的页面。
+                          <span className="ag-evaluation-lane__note">
+                            创建影子部署需要管理员权限。
+                          </span>
+                        )}
                       </footer>
                     ) : (
                       <footer className="ag-evaluation-lane is-holdout">
@@ -2872,6 +2883,7 @@ export default function TagGovernancePage() {
         )}
         {activeTab === "evaluations" && (
           <EvaluationsPanel
+            isAdmin={isAdmin}
             items={evaluationsQuery.data?.items ?? []}
             pending={evaluationsQuery.isPending}
             error={evaluationsQuery.error}
