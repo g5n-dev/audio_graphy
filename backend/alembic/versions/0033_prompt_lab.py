@@ -15,6 +15,13 @@ application layer does.
 must be given an explicit job-type filter in the same release, or it will claim these
 jobs and fail them.
 
+Both this job type and the ``prompt_lab`` tagger origin widen a CHECK, so the
+downgrade narrows one. MySQL autocommits DDL: a narrowing that trips over a live row
+leaves the DROP CHECK already committed and the constraint gone, with
+``alembic_version`` still on this revision and a re-run failing on the missing
+constraint instead. :func:`_assert_downgrade_compatible` counts those rows before any
+DDL runs, the same preflight 0022 uses for the same reason.
+
 Revision ID: 0033_prompt_lab
 Revises: 0032_voiceprint_duration_idx
 Create Date: 2026-07-31 16:00:00.000000
@@ -444,7 +451,48 @@ def upgrade() -> None:
     )
 
 
+def _assert_downgrade_compatible() -> None:
+    """Refuse a lossy partial downgrade when retained tables contain 0033 enums."""
+
+    connection = op.get_bind()
+    checks = (
+        (
+            "tag_extraction_jobs.job_type",
+            "tag_extraction_jobs",
+            "job_type",
+            ("prompt_compile",),
+        ),
+        (
+            "tagger_versions.origin",
+            "tagger_versions",
+            "origin",
+            ("prompt_lab",),
+        ),
+    )
+    incompatible: list[str] = []
+    for label, table_name, column_name, values in checks:
+        table = sa.table(table_name, sa.column(column_name, sa.String()))
+        count = int(
+            connection.execute(
+                sa.select(sa.func.count())
+                .select_from(table)
+                .where(table.c[column_name].in_(values))
+            ).scalar_one()
+        )
+        if count:
+            incompatible.append(f"{label}={list(values)!r} ({count} row(s))")
+    if incompatible:
+        details = "; ".join(incompatible)
+        raise RuntimeError(
+            "incompatible 0033 data prevents a safe downgrade; "
+            f"resolve or export these rows first: {details}"
+        )
+
+
 def downgrade() -> None:
+    # First statement, before any DDL: MySQL autocommits DDL, so a CHECK narrowed
+    # against a live row cannot be rolled back.
+    _assert_downgrade_compatible()
     _replace_check(
         "tag_extraction_jobs",
         "ck_tag_extraction_jobs_type",
