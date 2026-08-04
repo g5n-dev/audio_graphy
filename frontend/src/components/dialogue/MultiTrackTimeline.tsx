@@ -48,6 +48,14 @@ interface MultiTrackTimelineProps {
    * showing the raw diarization labels rather than inventing identities.
    */
   speakerByLabel?: ReadonlyMap<string, RecordingSpeakerRef>;
+  /**
+   * 说话人解析请求失败（而不是「没跑过声纹链路」）。
+   *
+   * 两者在时间线上的表现完全一样——都退回原始 spk_N、都不带 ⚠——但含义相反：
+   * 一个是「这里本来就没有身份信息」，另一个是「身份信息取不到，⚠ 可能被吞了」。
+   * 不区分的话，待复核的临时归属会和已确认的归属长得一模一样。
+   */
+  speakerResolutionFailed?: boolean;
 }
 
 interface TrackProps {
@@ -463,6 +471,7 @@ export const MultiTrackTimeline = memo(function MultiTrackTimeline({
   onToggleUnit,
   onSelectTag,
   speakerByLabel,
+  speakerResolutionFailed = false,
 }: MultiTrackTimelineProps) {
   const [zoom, setZoom] = useState(1);
   const scrollerRef = useRef<HTMLDivElement>(null);
@@ -613,6 +622,12 @@ export const MultiTrackTimeline = memo(function MultiTrackTimeline({
       className="ag-timeline"
       aria-label="源录音与对话语义多轨时间轴"
     >
+      {speakerResolutionFailed && (
+        <p className="ag-inline-feedback is-error" role="alert">
+          说话人身份加载失败，下方仅显示原始声道标签；本次视图中无法区分「待复核的
+          临时归属」与「已确认的归属」，请刷新后再据此判断。
+        </p>
+      )}
       <div className="ag-timeline__toolbar">
         <p>拖动或触控横向浏览，标签时间来自证据所属对话单元</p>
         <div>

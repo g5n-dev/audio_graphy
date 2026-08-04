@@ -24,7 +24,13 @@ export interface SpeakerBadgeProps {
   size?: "small" | "default";
   /**
    * AMBIGUOUS cosine range for the tooltip, from GET /speakers/voiceprint-policy.
-   * Falls back to the historical 0.5–0.7 wording when absent.
+   *
+   * Absent means "not loaded yet, or the policy request failed" — in which case
+   * the tooltip says the merge was low-confidence and stops there. It used to
+   * fall back to the wording "0.5–0.7", which is a factual claim about how this
+   * deployment scored the merge: correct on default settings and wrong on any
+   * deployment that overrode the thresholds, which is precisely the deployment
+   * whose operator most needs the real numbers.
    */
   ambiguousRange?: { low: number; high: number };
 }
@@ -62,12 +68,11 @@ export function SpeakerBadge({
         : ROLE_COLOR[role];
 
   const label = `${ambiguityPrefix}${displayName ? `${displayName} · ` : ""}${ROLE_LABEL[role]}`;
-  const rangeText = ambiguousRange
-    ? `${ambiguousRange.low}–${ambiguousRange.high}`
-    : "0.5–0.7";
   const tooltip =
     ambiguity === "AMBIGUOUS"
-      ? `该说话人合并置信度较低（${rangeText}），检索已降权处理`
+      ? ambiguousRange
+        ? `该说话人合并置信度较低（余弦 ${ambiguousRange.low}–${ambiguousRange.high}），检索已降权处理`
+        : "该说话人合并置信度较低，检索已降权处理"
       : ambiguity === "PENDING_REVIEW"
         ? "该说话人待人工复核，检索已隐藏"
         : undefined;

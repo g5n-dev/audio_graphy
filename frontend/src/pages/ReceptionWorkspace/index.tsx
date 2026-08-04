@@ -337,6 +337,10 @@ export default function ReceptionWorkspacePage() {
   const recordingSpeakerStamp = recordingSpeakerQueries
     .map((query) => query.dataUpdatedAt)
     .join(",");
+  // 至少一条录音解析失败。必须往下传：解析不出来时每个块都退回原始 spk_N 且不带 ⚠，
+  // 于是「待复核的临时归属」和「已确认的归属」在这个视图里长得一模一样——
+  // 而 ⚠ 存在的唯一理由就是不让低置信度的合并看起来像确定的。
+  const speakerResolutionFailed = recordingSpeakerQueries.some((query) => query.isError);
   const speakerByLabel = useMemo(() => {
     const map = new Map<string, RecordingSpeakerRef>();
     for (const query of recordingSpeakerQueries) {
@@ -1915,6 +1919,7 @@ export default function ReceptionWorkspacePage() {
             onToggleUnit={toggleUnit}
             onSelectTag={selectTagForEditing}
             speakerByLabel={speakerByLabel}
+            speakerResolutionFailed={speakerResolutionFailed}
           />
 
           {selectedTag && canEditTags && (

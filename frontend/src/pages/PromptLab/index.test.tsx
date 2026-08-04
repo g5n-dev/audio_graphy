@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@/api/services", () => ({
   createPromptCompilation: vi.fn(),
   decidePromptPatches: vi.fn(),
+  getPromptArtifact: vi.fn(),
   getPromptArtifactDiff: vi.fn(),
   getPromptLabReadiness: vi.fn(),
   listPromptArtifacts: vi.fn(),
@@ -17,6 +18,7 @@ vi.mock("@/api/services", () => ({
 
 import {
   decidePromptPatches,
+  getPromptArtifact,
   getPromptArtifactDiff,
   getPromptLabReadiness,
   listPromptArtifacts,
@@ -33,6 +35,7 @@ const mocks = {
   readiness: getPromptLabReadiness as unknown as ReturnType<typeof vi.fn>,
   artifacts: listPromptArtifacts as unknown as ReturnType<typeof vi.fn>,
   diff: getPromptArtifactDiff as unknown as ReturnType<typeof vi.fn>,
+  artifact: getPromptArtifact as unknown as ReturnType<typeof vi.fn>,
   gradients: listPromptGradients as unknown as ReturnType<typeof vi.fn>,
   taggers: listTaggerVersions as unknown as ReturnType<typeof vi.fn>,
   evaluations: listTagEvaluations as unknown as ReturnType<typeof vi.fn>,
@@ -117,6 +120,7 @@ beforeEach(() => {
     blockers: [],
   });
   mocks.artifacts.mockReset().mockResolvedValue({ items: [ARTIFACT], total: 1 });
+  mocks.artifact.mockReset().mockResolvedValue(ARTIFACT);
   mocks.diff.mockReset().mockResolvedValue({
     artifact_id: 301,
     status: "draft",
@@ -345,5 +349,29 @@ describe("PromptLabPage", () => {
     await userEvent.click(screen.getByRole("button", { name: "重新加载" }));
 
     await waitFor(() => expect(mocks.readiness).toHaveBeenCalled());
+  });
+});
+
+describe("PromptLabPage — 超出列表窗口的产物", () => {
+  it("resolves an artifact the newest-50 list does not contain", async () => {
+    // 列表按 created_at DESC 取 50 条。第 51 条往后，复盘 Tab 会对着一个明明选中的
+    // 产物说「先在「编译运行」里选择一个产物」——而 Diff 和梯度两个 Tab 拿的是裸
+    // artifactId，同一时刻在正常渲染同一个产物。深链和按状态筛选都能走到这里。
+    mocks.artifacts.mockResolvedValue({ items: [], total: 0 });
+    mocks.artifact.mockResolvedValue({ ...ARTIFACT, id: 12 });
+
+    renderPage("/prompt-lab?tab=replay&artifact=12");
+
+    await waitFor(() => expect(mocks.artifact).toHaveBeenCalledWith(12));
+    expect(
+      screen.queryByText(/先在「编译运行」里选择一个产物/),
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not spend a request when the list already has the artifact", async () => {
+    renderPage("/prompt-lab?tab=replay&artifact=301");
+
+    await waitFor(() => expect(mocks.artifacts).toHaveBeenCalled());
+    expect(mocks.artifact).not.toHaveBeenCalled();
   });
 });

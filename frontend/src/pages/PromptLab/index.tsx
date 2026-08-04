@@ -3,7 +3,11 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 
 import { useTabList } from "@/components/governance/useTabList";
-import { getPromptLabReadiness, listPromptArtifacts } from "@/api/services";
+import {
+  getPromptArtifact,
+  getPromptLabReadiness,
+  listPromptArtifacts,
+} from "@/api/services";
 import { useAuthStore } from "@/stores/auth";
 import type { PromptArtifact, PromptArtifactSummary } from "@/types/api";
 
@@ -93,10 +97,23 @@ export default function PromptLabPage() {
     retry: false,
   });
 
-  const selectedArtifact: PromptArtifactSummary | undefined = useMemo(
+  const cachedArtifact: PromptArtifactSummary | undefined = useMemo(
     () => artifacts.data?.items.find((item) => item.id === artifactId),
     [artifacts.data, artifactId],
   );
+
+  // 列表只取最新 50 条，超过就找不到——而 Diff 和梯度两个 Tab 拿的是裸 artifactId，
+  // 照样工作。只有复盘 Tab 依赖这个对象，于是它会对着一个明明选中的产物说
+  // 「先在「编译运行」里选择一个产物」。深链和按状态筛选都能走到这里。
+  const fallbackArtifact = useQuery({
+    queryKey: ["prompt-lab", "artifact", artifactId],
+    queryFn: () => getPromptArtifact(artifactId!),
+    enabled: artifactId !== null && artifacts.isSuccess && cachedArtifact === undefined,
+    retry: false,
+  });
+
+  const selectedArtifact: PromptArtifactSummary | undefined =
+    cachedArtifact ?? fallbackArtifact.data;
 
   const selectArtifact = useCallback(
     (id: number) => {

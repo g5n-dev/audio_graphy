@@ -287,5 +287,44 @@ describe("MultiTrackTimeline", () => {
 
     // Inventing an identity would be worse than showing the raw label.
     expect(screen.getByText("spk_0")).toBeInTheDocument();
+    // ...but "never ran" is silent, because there is nothing to report.
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("says so when speaker resolution failed rather than looking like it never ran", () => {
+    // 两种情况在时间线上表现完全一样——都退回原始 spk_N、都不带 ⚠——但含义相反。
+    // 解析失败时，一个 ambiguity_tag='PENDING_REVIEW' 的临时归属和一个已确认的归属
+    // 在这个视图里无法区分，而 ⚠ 存在的唯一理由就是不让低置信度合并看起来像确定的。
+    const workspace = {
+      ...WORKSPACE,
+      transcript_items: [
+        {
+          id: 9001,
+          dialogue_unit_id: 501,
+          recording_id: 42,
+          start_sec: 630,
+          end_sec: 640,
+          speaker_label: "spk_0",
+          speaker_role: "unknown" as const,
+          text: "这车落地多少钱？",
+        },
+      ],
+    };
+
+    render(
+      <MultiTrackTimeline
+        workspace={workspace}
+        currentTime={635}
+        selectedUnitIds={new Set()}
+        selectedTagId={null}
+        onSeek={vi.fn()}
+        onToggleUnit={vi.fn()}
+        onSelectTag={vi.fn()}
+        speakerResolutionFailed
+      />,
+    );
+
+    expect(screen.getByRole("alert")).toHaveTextContent("说话人身份加载失败");
+    expect(screen.getByText("spk_0")).toBeInTheDocument();
   });
 });

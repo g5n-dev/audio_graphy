@@ -101,6 +101,17 @@ EXPECTED_TABLES = {
     "tag_experience_cases",
     "tag_optimization_runs",
     "tag_optimization_trials",
+    # 0033 — prompt lab. Both assertions in this file are vacuous for a name that
+    # is absent from this set (`issubset` on upgrade, `intersection` on
+    # downgrade), so leaving them out meant the only test that actually executes
+    # Alembic asserted nothing about them: misspell a table in the migration and
+    # the roundtrip stays green while the first prompt-lab query fails at runtime
+    # against a migrated database. tests/models/test_metadata.py already lists
+    # all four; this is the file that was missed.
+    "tag_prompt_artifacts",
+    "tag_prompt_gradients",
+    "tag_prompt_demo_sources",
+    "tag_silver_labels",
 }
 
 
