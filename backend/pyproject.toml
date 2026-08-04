@@ -227,8 +227,11 @@ addopts = [
     "--cov-report=term-missing",
     "--cov-report=html:htmlcov",
     "--cov-report=xml:coverage.xml",
-    "--cov-fail-under=85",
 ]
+# --cov-fail-under lives on the CI command line, not here: in addopts it applies
+# to every invocation, so running one test file "fails" at ~2% coverage and the
+# only way to work is to pass --no-cov, which then hides real coverage locally.
+# The gate itself is unchanged -- see .github/workflows/ci.yml.
 asyncio_default_fixture_loop_scope = "function"
 markers = [
     "unit: unit tests (single module, mocked deps)",

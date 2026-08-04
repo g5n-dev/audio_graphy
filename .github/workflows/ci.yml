@@ -1,10 +1,11 @@
 name: CI
 
 on:
+  # Every branch, not just main. Gating only on main meant the branch the work
+  # actually happens on was never verified, and the README's CI badge reported
+  # on a branch nobody was pushing to.
   push:
-    branches: [main]
   pull_request:
-    branches: [main]
 
 jobs:
   backend:
@@ -72,7 +73,8 @@ jobs:
           ADAPTER_MODE: mock
         run: |
           mkdir -p /tmp/audiography_ci
-          python -m pytest tests/ -v --cov=audio_graphy --cov-report=term-missing
+          python -m pytest tests/ -v --cov=audio_graphy --cov-report=term-missing \
+            --cov-fail-under=85
 
       - name: Vector hot-query performance gate
         working-directory: backend
@@ -102,6 +104,13 @@ jobs:
       - name: ESLint
         working-directory: frontend
         run: npm run lint
+
+      # Its own step, before the tests. `npm run build` type-checks as a side
+      # effect, but it runs last and its failure reads as a bundling problem;
+      # a type error should say so, and should not wait for the test suite.
+      - name: TypeScript type check
+        working-directory: frontend
+        run: npx tsc --noEmit
 
       - name: Unit tests
         working-directory: frontend

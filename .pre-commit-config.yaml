@@ -21,7 +21,11 @@ repos:
         args: [--fix=lf]
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.8.0
+    # Must match backend/pyproject.toml's pinned `ruff==0.16.0`. Formatting
+    # changed between 0.8 and 0.16, so a mismatch means the hook reformats a
+    # file one way and CI demands the other — the contributor's local run is
+    # green and the pipeline is red, over the same bytes.
+    rev: v0.16.0
     hooks:
       - id: ruff
         args: [--fix, --exit-non-zero-on-fix]
