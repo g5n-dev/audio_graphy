@@ -68,6 +68,7 @@ import { StatusChip } from "@/components/governance/StatusChip";
 import { useAuthStore } from "@/stores/auth";
 import { getErrorMessage, getErrorStatus } from "@/utils/errors";
 import { EvolutionPanel } from "./EvolutionPanel";
+import { RunsPanel } from "./RunsPanel";
 import "./tagGovernance.css";
 
 const TABS = [
@@ -95,6 +96,11 @@ const TABS = [
     id: "evolution",
     label: "自进化",
     description: "反馈、Badcase、有界搜索与候选差异",
+  },
+  {
+    id: "runs",
+    label: "运行记录",
+    description: "异步任务的状态、进度、重试与失败原因",
   },
   {
     id: "audit",
@@ -2892,6 +2898,7 @@ export default function TagGovernancePage() {
             initialCohort={optimizationCohort}
           />
         )}
+        {activeTab === "runs" && <RunsPanel />}
         {activeTab === "audit" && (
           <AuditsPanel
             items={auditQuery.data?.items ?? []}

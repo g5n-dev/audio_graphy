@@ -1420,13 +1420,18 @@ export interface CreateTaggerVersionRequest {
   change_summary?: string | null;
 }
 
+/**
+ * 与 `ck_tag_extraction_jobs_type` 保持一致（models/tag_governance.py）。
+ * `prompt_compile` 由提示词实验室的编译流程写入，同样出现在 `GET /tag-jobs` 里。
+ */
 export type TagJobType =
   | "extract"
   | "recompute"
   | "review_batch"
   | "evaluate"
   | "optimize"
-  | "remediate";
+  | "remediate"
+  | "prompt_compile";
 export type TagJobStatus =
   | "queued"
   | "running"

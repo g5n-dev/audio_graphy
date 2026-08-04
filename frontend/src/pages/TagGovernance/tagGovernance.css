@@ -3017,3 +3017,106 @@
   font-weight: 700;
   text-decoration: none;
 }
+
+/* 运行记录：治理任务索引。表格骨架复用 .ag-version-table，这里只补筛选器、
+   操作列和展开的 Trial 明细。 */
+.ag-runs-filters {
+  align-items: flex-end;
+}
+
+.ag-runs-filters label {
+  display: grid;
+  gap: 4px;
+  color: #60708a;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.ag-runs-filters select {
+  min-width: 150px;
+  min-height: 34px;
+  padding: 6px 9px;
+  color: #2b3b58;
+  background: #fff;
+  border: 1px solid #d2dce8;
+  border-radius: 7px;
+}
+
+.ag-runs-table__actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  white-space: nowrap;
+}
+
+.ag-runs-table__actions a {
+  color: #2f6bff;
+  font-weight: 650;
+  text-decoration: none;
+}
+
+.ag-runs-table__actions a:hover {
+  text-decoration: underline;
+}
+
+/* 每个任务是一个独立的 tbody（展开行是它的第二行），所以行分隔线要挂在
+   tbody 之间，否则展开的详情会跟下一条运行黏在一起。 */
+.ag-runs-table tbody:not(:last-child) tr:last-child td {
+  border-bottom: 1px solid #edf1f6;
+}
+
+.ag-runs-table__detail td {
+  background: #f8fafd;
+}
+
+.ag-run-trials {
+  display: grid;
+  gap: 10px;
+}
+
+.ag-run-trials__summary {
+  color: #60708a;
+  font-size: 13px;
+}
+
+.ag-run-trials__list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ag-run-trials__list li {
+  display: grid;
+  grid-template-columns: 90px 90px minmax(0, 1fr);
+  gap: 10px;
+  align-items: baseline;
+  padding: 6px 10px;
+  background: #fff;
+  border: 1px solid #e6ecf5;
+  border-radius: 7px;
+  font-size: 13px;
+}
+
+.ag-run-trials__list strong {
+  color: #2b3b58;
+}
+
+.ag-run-trials__list small {
+  color: #8a96a9;
+}
+
+.ag-run-trials > a {
+  justify-self: start;
+  color: #2f6bff;
+  font-size: 13px;
+  font-weight: 650;
+  text-decoration: none;
+}
+
+@media (width <= 900px) {
+  .ag-runs-filters {
+    flex-wrap: wrap;
+  }
+}

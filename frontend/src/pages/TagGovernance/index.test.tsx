@@ -24,8 +24,10 @@ vi.mock("@/api/services", () => ({
   createTagOptimizationRun: vi.fn(),
   freezeTagGoldSet: vi.fn(),
   getTagEvolutionOverview: vi.fn(),
+  getTagOptimizationRun: vi.fn(),
   listTagAuditEvents: vi.fn(),
   listTagBadcases: vi.fn(),
+  listTagJobs: vi.fn(),
   listTagDeploymentObservations: vi.fn(),
   listTagDeployments: vi.fn(),
   listTagEvaluations: vi.fn(),
@@ -52,6 +54,7 @@ import {
   getTagEvolutionOverview,
   listTagAuditEvents,
   listTagBadcases,
+  listTagJobs,
   listTagDeploymentObservations,
   listTagDeployments,
   listTagEvaluations,
@@ -85,6 +88,7 @@ const mocks = {
   evolutionOverview:
     getTagEvolutionOverview as unknown as ReturnType<typeof vi.fn>,
   badcases: listTagBadcases as unknown as ReturnType<typeof vi.fn>,
+  jobs: listTagJobs as unknown as ReturnType<typeof vi.fn>,
   optimizationRuns:
     listTagOptimizationRuns as unknown as ReturnType<typeof vi.fn>,
   deploymentObservations:
@@ -371,6 +375,35 @@ describe("TagGovernancePage", () => {
       ],
       total: 1,
     });
+    mocks.jobs.mockResolvedValue({
+      items: [
+        {
+          id: 77,
+          tenant_id: "tenant-a",
+          job_type: "extract",
+          status: "running",
+          scope: { reception_ids: [5] },
+          tagger_version_id: 42,
+          origin: "manual",
+          total_items: 40,
+          completed_items: 12,
+          failed_items: 1,
+          failed_subset: [],
+          attempt_count: 1,
+          max_attempts: 3,
+          revision: 1,
+          lease_owner: "worker-1",
+          lease_expires_at: null,
+          next_attempt_at: null,
+          last_error_code: null,
+          last_error_message: null,
+          created_at: "2026-07-25T06:00:00Z",
+          updated_at: "2026-07-25T06:05:00Z",
+          finished_at: null,
+        },
+      ],
+      total: 1,
+    });
     mocks.evolutionOverview.mockResolvedValue({
       production_harness: {
         id: 42,
@@ -422,7 +455,7 @@ describe("TagGovernancePage", () => {
     ).toBeVisible();
   });
 
-  it("uses six real, keyboard-operable tabs and mounts one panel at a time", async () => {
+  it("uses seven real, keyboard-operable tabs and mounts one panel at a time", async () => {
     const user = userEvent.setup();
     renderPage();
 
@@ -430,7 +463,7 @@ describe("TagGovernancePage", () => {
       await screen.findByRole("heading", { name: "标签治理中心" }),
     ).toBeInTheDocument();
     const tablist = screen.getByRole("tablist", { name: "标签治理视图" });
-    expect(within(tablist).getAllByRole("tab")).toHaveLength(6);
+    expect(within(tablist).getAllByRole("tab")).toHaveLength(7);
     expect(
       within(tablist).getByRole("tab", { name: "标签体系" }),
     ).toHaveAttribute("aria-selected", "true");
@@ -1381,6 +1414,23 @@ describe("TagGovernancePage", () => {
       ).not.toHaveProperty("trigger");
     });
     expect(await screen.findByText("优化运行 #72 已进入队列")).toBeVisible();
+  });
+
+  it("reaches the async run index by clicking, not by typing a URL", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText("销售对话标签");
+
+    await user.click(screen.getByRole("tab", { name: "运行记录" }));
+
+    const row = await screen.findByRole("row", { name: /#77/ });
+    expect(within(row).getByText("标签抽取")).toBeInTheDocument();
+    expect(within(row).getByText("12 / 40")).toBeInTheDocument();
+    // 索引存在的意义就是不必先知道 job id：行里直接给出通往既有详情页的链接。
+    expect(within(row).getByRole("link", { name: "查看详情" })).toHaveAttribute(
+      "href",
+      "/tag-runs/77",
+    );
   });
 
   it("renders recoverable error and empty states", async () => {
