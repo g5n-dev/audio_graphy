@@ -47,11 +47,17 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# L3 locked constants — do NOT change without dual-sign sign-off.
-SILERO_SAMPLE_RATE: int = 16000
-SILERO_CHUNK_SAMPLES: int = 512
-SILERO_CHUNK_BYTES: int = SILERO_CHUNK_SAMPLES * 2  # int16 → 1024 bytes
-SILERO_CHUNK_SEC: float = SILERO_CHUNK_SAMPLES / SILERO_SAMPLE_RATE  # 0.032s
+# L3 locked constants — do NOT change without dual-sign sign-off. They live in
+# core.silero_framing (a module with no imports) so the batch VAD container
+# can read them without pulling in adapters/__init__ -> bundle -> the LLM,
+# embedding and ASR adapters. Re-exported here so existing importers are
+# unaffected.
+from audio_graphy.core.silero_framing import (  # noqa: E402
+    SILERO_CHUNK_BYTES,
+    SILERO_CHUNK_SAMPLES,
+    SILERO_CHUNK_SEC,
+    SILERO_SAMPLE_RATE,
+)
 
 # FSM state names (PRD Appendix B table).
 _SILENCE = "SILENCE"

@@ -88,9 +88,7 @@ async def list_prompts(
     """
     tenant_id = get_tenant_id(request)
     stmt = (
-        select(Prompt)
-        .join(User, User.id == Prompt.created_by)
-        .where(User.tenant_id == tenant_id)
+        select(Prompt).join(User, User.id == Prompt.created_by).where(User.tenant_id == tenant_id)
     )
     if name is not None:
         stmt = stmt.where(Prompt.name == name)

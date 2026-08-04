@@ -48,7 +48,7 @@ from typing import Any
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, status
 
-from audio_graphy.adapters.real.streaming_vad_silero import (
+from audio_graphy.core.silero_framing import (
     SILERO_CHUNK_SAMPLES,
     SILERO_CHUNK_SEC,
     SILERO_SAMPLE_RATE,

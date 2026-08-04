@@ -227,3 +227,75 @@ class TestDegradesHonestlyWithoutTheModel:
         assert caught.value.status_code == 503
         # The detail carries the load error, so the caller's log says which file.
         assert "unavailable" in str(caught.value.detail)
+
+
+class TestTheContainerCanActuallyStart:
+    """The Dockerfile's COPY list must equal the service's import closure.
+
+    A wrong list is invisible everywhere except in the container: the build
+    succeeds, every test passes (they run against the full source tree), and the
+    image dies at `import audio_graphy.services.silero_vad_service`.
+
+    That is exactly what shipped. The framing constants used to live in
+    `adapters.real.streaming_vad_silero`, so importing them executed
+    `adapters/__init__.py` -> `adapters.bundle` -> the LLM, embedding and ASR
+    adapters. The list copied eight files and needed thirteen.
+    """
+
+    @staticmethod
+    def _copied_modules() -> set[str]:
+        import re
+        from pathlib import Path
+
+        dockerfile = (
+            Path(__file__).resolve().parents[3] / "docker" / "silero-vad-service" / "Dockerfile"
+        )
+        return {
+            match.group(1)
+            for match in re.finditer(
+                r"^COPY\s+--chown=\S+\s+(audio_graphy/\S+\.py)\s", dockerfile.read_text(), re.M
+            )
+        }
+
+    def test_the_import_closure_is_exactly_what_the_dockerfile_copies(self) -> None:
+        """Computed by importing in a subprocess whose sys.path holds ONLY the
+        copied files — the editable install in this venv would otherwise satisfy
+        every missing module from the source tree and hide the whole defect.
+        """
+        import os
+        import shutil
+        import subprocess
+        import sys
+        import tempfile
+        from pathlib import Path
+
+        backend = Path(__file__).resolve().parents[2]
+        site = next(p for p in sys.path if p.endswith("site-packages"))
+        copied = self._copied_modules()
+        assert copied, "no COPY lines parsed — the Dockerfile shape changed"
+
+        with tempfile.TemporaryDirectory() as staging, tempfile.TemporaryDirectory() as cwd:
+            for rel in copied:
+                dst = Path(staging) / rel
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy(backend / rel, dst)
+            probe = (
+                "import sys;"
+                "sys.path=[p for p in sys.path if 'WorkPlace/audio_graphy' not in p];"
+                f"sys.path.insert(0,{staging!r});sys.path.append({site!r});"
+                "import audio_graphy.services.silero_vad_service as m;"
+                "print(m.SILERO_CHUNK_SAMPLES)"
+            )
+            result = subprocess.run(
+                [sys.executable, "-S", "-c", probe],
+                cwd=cwd,
+                env={**os.environ, "PYTHONNOUSERSITE": "1"},
+                capture_output=True,
+                text=True,
+            )
+
+        assert result.returncode == 0, (
+            "the image would die at import with only the copied files:\n"
+            + result.stderr.strip().splitlines()[-1]
+        )
+        assert result.stdout.strip() == "512"

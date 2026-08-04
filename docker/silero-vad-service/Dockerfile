@@ -38,17 +38,20 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
 
 WORKDIR /app
 
-# Only what the service imports. It shares the streaming adapter's constants
-# and ONNX conventions, so that module comes along — importing it must not drag
-# in the rest of the package, which is why the copy list is this short.
+# The service's exact import closure — 5 files, asserted by
+# tests/services/test_silero_vad_service.py so this list cannot drift.
+#
+# It used to copy the adapters tree instead, because the framing constants lived
+# in adapters.real.streaming_vad_silero. That made the image UNSTARTABLE:
+# importing anything under audio_graphy.adapters executes adapters/__init__.py,
+# which imports adapters.bundle and reaches the LLM, embedding and ASR adapters.
+# The build succeeded and the container died at import. The constants now live
+# in core.silero_framing, which imports nothing.
 COPY --chown=audiography:audiography audio_graphy/__init__.py /app/audio_graphy/__init__.py
+COPY --chown=audiography:audiography audio_graphy/core/__init__.py /app/audio_graphy/core/__init__.py
+COPY --chown=audiography:audiography audio_graphy/core/silero_framing.py /app/audio_graphy/core/silero_framing.py
 COPY --chown=audiography:audiography audio_graphy/services/__init__.py /app/audio_graphy/services/__init__.py
 COPY --chown=audiography:audiography audio_graphy/services/silero_vad_service.py /app/audio_graphy/services/silero_vad_service.py
-COPY --chown=audiography:audiography audio_graphy/adapters/__init__.py /app/audio_graphy/adapters/__init__.py
-COPY --chown=audiography:audiography audio_graphy/adapters/real/__init__.py /app/audio_graphy/adapters/real/__init__.py
-COPY --chown=audiography:audiography audio_graphy/adapters/real/streaming_vad_silero.py /app/audio_graphy/adapters/real/streaming_vad_silero.py
-COPY --chown=audiography:audiography audio_graphy/adapters/exceptions.py /app/audio_graphy/adapters/exceptions.py
-COPY --chown=audiography:audiography audio_graphy/adapters/protocols.py /app/audio_graphy/adapters/protocols.py
 
 ENV SILERO_VAD_MODEL_PATH=/models/silero_vad.onnx
 # One ONNX thread and one in-flight request. The graph is small and the loop is
