@@ -819,3 +819,135 @@ async def test_expired_plan_is_durably_cancelled_before_error_is_returned(
         revision = await db.get(ReceptionTimelineRevision, expired_revision_id)
     assert revision is not None
     assert revision.state == "CANCELLED"
+
+
+async def _force_operation_terminal(
+    factory: async_sessionmaker[AsyncSession],
+    *,
+    operation_id: int,
+    revision_id: int,
+    status: str,
+    idempotency_key: str,
+    plan_token: str,
+) -> None:
+    """Move a seeded queued operation into a terminal state behind a known key.
+
+    The seeded revision carries an opaque token hash, so the hash is rewritten
+    to a token the test controls before replaying ``create_operation``.
+    """
+
+    async with factory() as db, db.begin():
+        operation = await db.get(ReceptionAudioOperation, operation_id)
+        revision = await db.get(ReceptionTimelineRevision, revision_id)
+        assert operation is not None and revision is not None
+        operation.idempotency_key = idempotency_key
+        operation.status = status
+        operation.progress = 1.0
+        operation.finished_at = datetime.now(UTC)
+        revision.plan_token_hash = hashlib.sha256(plan_token.encode()).hexdigest()
+
+
+@pytest.mark.asyncio
+async def test_retry_after_failed_operation_creates_a_new_operation_for_same_key(
+    artifact_factory: async_sessionmaker[AsyncSession],
+    tmp_path: Path,
+) -> None:
+    """A terminal FAILED row must never be replayed as a fake success.
+
+    The workspace derives one deterministic Idempotency-Key per
+    (reception, version, plan token), so a user retry after a failure reuses
+    the key of the dead operation. The retry must enqueue fresh work.
+    """
+
+    audio_root = tmp_path / "audio-failed-retry"
+    audio_root.mkdir()
+    operation_id, reception_id, revision_id, _old_path = await _seed_operation(
+        artifact_factory,
+        audio_root,
+    )
+    token = "retry-plan-token"
+    key = "workspace-audio-retry"
+    await _force_operation_terminal(
+        artifact_factory,
+        operation_id=operation_id,
+        revision_id=revision_id,
+        status="failed",
+        idempotency_key=key,
+        plan_token=token,
+    )
+    service = ReceptionAudioOperationService(
+        artifact_factory,
+        SimpleNamespace(),  # type: ignore[arg-type]
+    )
+
+    retried = await service.create_operation(
+        tenant_id="tenant-a",
+        reception_id=reception_id,
+        plan_token=token,
+        mode="physical",
+        expected_version=1,
+        idempotency_key=key,
+    )
+
+    assert retried.id != operation_id
+    assert retried.status == "queued"
+    async with artifact_factory() as db:
+        failed = await db.get(ReceptionAudioOperation, operation_id)
+    assert failed is not None
+    assert failed.status == "failed"
+    # The dead row released the client key so future replays hit the new row.
+    assert failed.idempotency_key != key
+    assert await service.pending_operation_ids(limit=10) == [int(retried.id)]
+
+
+@pytest.mark.asyncio
+async def test_replaying_a_succeeded_operation_returns_the_committed_result(
+    artifact_factory: async_sessionmaker[AsyncSession],
+    tmp_path: Path,
+) -> None:
+    """Replaying a completed request must not run the same plan twice."""
+
+    audio_root = tmp_path / "audio-succeeded-replay"
+    audio_root.mkdir()
+    operation_id, reception_id, revision_id, _old_path = await _seed_operation(
+        artifact_factory,
+        audio_root,
+    )
+    token = "replay-plan-token"
+    key = "workspace-audio-replay"
+    await _force_operation_terminal(
+        artifact_factory,
+        operation_id=operation_id,
+        revision_id=revision_id,
+        status="succeeded",
+        idempotency_key=key,
+        plan_token=token,
+    )
+    service = ReceptionAudioOperationService(
+        artifact_factory,
+        SimpleNamespace(),  # type: ignore[arg-type]
+    )
+
+    replayed = await service.create_operation(
+        tenant_id="tenant-a",
+        reception_id=reception_id,
+        plan_token=token,
+        mode="physical",
+        expected_version=1,
+        idempotency_key=key,
+    )
+
+    assert replayed.id == operation_id
+    assert replayed.status == "succeeded"
+    async with artifact_factory() as db:
+        operations = list(
+            (
+                await db.execute(
+                    select(ReceptionAudioOperation).where(
+                        ReceptionAudioOperation.reception_id == reception_id,
+                        ReceptionAudioOperation.idempotency_key == key,
+                    )
+                )
+            ).scalars()
+        )
+    assert [int(operation.id) for operation in operations] == [operation_id]

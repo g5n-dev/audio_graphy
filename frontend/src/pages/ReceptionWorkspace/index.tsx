@@ -13,6 +13,7 @@ import {
 } from "react-router-dom";
 import {
   cancelReceptionAudioOperation,
+  correctReceptionDialogueTag,
   createTagJob,
   createTagReviewBatch,
   createReceptionAudioOperation,
@@ -502,6 +503,10 @@ export default function ReceptionWorkspacePage() {
         queryKey: ["reception-workspace", id],
       });
     } else if (operation.status === "failed") {
+      // 幂等键由（接待, 版本, 计划 token）确定性派生：保留失败前的旧计划会让
+      // “重试”携带同一个已终结的键。清空计划迫使用户重新生成预览，键随新
+      // token 自然轮换，重试才会真正入队。
+      setAudioPlan(null);
       setOperationStatus(
         `音频任务失败，源顺序草稿仍保留：${
           operation.error_message ??
@@ -1024,9 +1029,29 @@ export default function ReceptionWorkspacePage() {
     },
     onSuccess: (operation) => {
       setActiveAudioOperationId(operation.id);
-      setOperationStatus(
-        `音频任务 #${operation.id} 已入队，当前活动版本在任务提交成功前保持不变。`,
-      );
+      // 服务端对同一幂等键可能重放一个已终结的旧任务；必须按返回状态提示，
+      // 不能把任何返回都宣布为“已入队”。
+      if (operation.status === "succeeded") {
+        setAudioPlan(null);
+        setOperationStatus(
+          `音频任务 #${operation.id} 此前已成功完成，本次为幂等重放，正在刷新产物。`,
+        );
+        void queryClient.invalidateQueries({
+          queryKey: ["reception-workspace", id],
+        });
+      } else if (
+        operation.status === "failed" ||
+        operation.status === "cancelled"
+      ) {
+        setAudioPlan(null);
+        setOperationStatus(
+          `音频任务 #${operation.id} 已处于 ${operation.status} 终态，未重新执行；请重新生成合并预览后再提交。`,
+        );
+      } else {
+        setOperationStatus(
+          `音频任务 #${operation.id} 已入队，当前活动版本在任务提交成功前保持不变。`,
+        );
+      }
     },
     onError: (error) => handleGeometryFailure("音频任务提交", error),
   });
@@ -1205,7 +1230,15 @@ export default function ReceptionWorkspacePage() {
         throw new Error("标签或接待数据尚未加载");
       }
       if (!activeSchemaVersion || !selectedTagDefinition) {
-        throw new Error("该标签不属于当前已发布 Schema，不能写入治理事实");
+        // 旧版（非当前已发布 Schema）标签没有治理复核批次可挂靠，但后端
+        // PATCH 自带 legacy 更正分支：同样乐观锁校验并写入审计，直接走它。
+        return correctReceptionDialogueTag(id, selectedTag.id, {
+          expected_reception_version: workspace.reception.version,
+          expected_group_version: selectedTag.group_version,
+          label_value: draft.labelValue,
+          reason: draft.reason,
+          evidence_ref_ids: draft.evidenceRefIds,
+        });
       }
       const receptionId = positiveNumericId(workspace.reception.id);
       const dialogueUnitId = positiveNumericId(selectedTag.dialogue_unit_id);

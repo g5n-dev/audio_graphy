@@ -357,7 +357,22 @@ class ReceptionAudioOperationService:
                     .with_for_update()
                 )
             ).scalar_one_or_none()
-            if existing is not None:
+            if existing is not None and existing.status in {"failed", "cancelled"}:
+                # The workspace derives a deterministic key from
+                # (reception, version, plan token), so a user's retry after a
+                # failure arrives with the SAME key. Returning the dead row
+                # would make the retry a silent no-op, so archive the key on
+                # the terminal row and fall through to create a fresh
+                # operation. The id prefix keeps the unique index satisfied
+                # even when the truncated original keys collide.
+                existing.idempotency_key = (
+                    f"superseded:{int(existing.id)}:{existing.idempotency_key}"[:128]
+                )
+                # The rename must reach the database before the retry row is
+                # inserted below, or the unique (tenant, reception, key) index
+                # rejects the insert inside the same flush.
+                await db.flush()
+            elif existing is not None:
                 if (
                     int(existing.timeline_revision_id) != int(revision.id)
                     or existing.mode != mode
@@ -368,6 +383,8 @@ class ReceptionAudioOperationService:
                         code="IDEMPOTENCY_KEY_REUSED",
                         detail={"operation_id": int(existing.id)},
                     )
+                # Dedupe in-flight requests and replay a succeeded operation's
+                # committed result; a completed plan must never run twice.
                 await db.commit()
                 return existing
 

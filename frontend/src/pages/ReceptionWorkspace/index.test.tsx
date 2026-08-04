@@ -15,6 +15,7 @@ import type { ReceptionWorkspaceResponse } from "@/types/api";
 
 vi.mock("@/api/services", () => ({
   cancelReceptionAudioOperation: vi.fn(),
+  correctReceptionDialogueTag: vi.fn(),
   createTagJob: vi.fn(),
   createTagReviewBatch: vi.fn(),
   createReceptionAudioOperation: vi.fn(),
@@ -36,6 +37,7 @@ vi.mock("@/api/services", () => ({
 
 import {
   cancelReceptionAudioOperation,
+  correctReceptionDialogueTag,
   createTagJob,
   createTagReviewBatch,
   createReceptionAudioOperation,
@@ -62,6 +64,8 @@ const mockedGetWorkspace = getReceptionWorkspace as unknown as ReturnType<
 const mockedGetLineage =
   getTagFactLineage as unknown as ReturnType<typeof vi.fn>;
 const mockedCreateTagJob = createTagJob as unknown as ReturnType<typeof vi.fn>;
+const mockedCorrectTag =
+  correctReceptionDialogueTag as unknown as ReturnType<typeof vi.fn>;
 const mockedCreateReview =
   createTagReviewBatch as unknown as ReturnType<typeof vi.fn>;
 const mockedDecideReview =
@@ -314,6 +318,7 @@ describe("ReceptionWorkspacePage", () => {
       },
       isAuthenticated: true,
     });
+    mockedCorrectTag.mockReset();
     mockedCreateReview.mockReset();
     mockedDecideReview.mockReset();
     mockedDeriveTags.mockReset();
@@ -418,6 +423,27 @@ describe("ReceptionWorkspacePage", () => {
       status: "queued",
       scope: {},
       tagger_version_id: 42,
+    });
+    mockedCorrectTag.mockResolvedValue({
+      reception_id: 1,
+      reception_version: 4,
+      superseded_assignment_id: 701,
+      assignment: {
+        id: 902,
+        reception_id: 1,
+        dialogue_unit_id: 1,
+        group_key: "service-stage",
+        group_version: "v2-m4",
+        label_key: "stage.greeting",
+        label_value: "fail",
+        confidence: null,
+        source: "manual",
+        priority: 0,
+        evidence_refs: [],
+        model_run_id: null,
+        is_current: true,
+        assigned_at: "2026-07-23T01:03:00Z",
+      },
     });
     mockedCreateReview.mockResolvedValue({
       batch_id: "workspace-correction",
@@ -1714,6 +1740,134 @@ describe("ReceptionWorkspacePage", () => {
         ],
         expected_version: 3,
       });
+    });
+  });
+
+  it("clears the stale audio plan after a failed operation so retry rotates the key", async () => {
+    const user = userEvent.setup();
+    mockedGetWorkspace.mockResolvedValue({
+      ...WORKSPACE,
+      capabilities: {
+        ...WORKSPACE.capabilities,
+        supports_audio_plans: true,
+        supports_audio_operations: true,
+      },
+    });
+    mockedGetAudioOperation.mockResolvedValue({
+      id: "audio-op-1",
+      reception_id: "reception-1",
+      status: "failed",
+      mode: "both",
+      progress: 1,
+      error: null,
+      error_message: "编码器崩溃",
+      created_at: "2026-07-23T01:00:00Z",
+      updated_at: "2026-07-23T01:00:01Z",
+    });
+    renderWorkspace();
+
+    await user.click(
+      await screen.findByRole("button", { name: "生成合并预览" }),
+    );
+    expect(await screen.findByText("计划总时长 02:00")).toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", { name: "提交音频任务" }),
+    );
+
+    expect(
+      await screen.findByText("音频任务失败，源顺序草稿仍保留：编码器崩溃"),
+    ).toBeInTheDocument();
+    // 幂等键由计划 token 派生：失败后旧计划必须被丢弃，否则“提交音频任务”
+    // 会带着同一个已终结的键重放失败任务。
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("button", { name: "提交音频任务" }),
+      ).not.toBeInTheDocument();
+    });
+  });
+
+  it("reports an idempotent replay of a completed operation instead of claiming a new enqueue", async () => {
+    const user = userEvent.setup();
+    mockedGetWorkspace.mockResolvedValue({
+      ...WORKSPACE,
+      capabilities: {
+        ...WORKSPACE.capabilities,
+        supports_audio_plans: true,
+        supports_audio_operations: true,
+      },
+    });
+    mockedCreateAudioOperation.mockResolvedValue({
+      id: "audio-op-1",
+      reception_id: "reception-1",
+      status: "succeeded",
+      mode: "both",
+      progress: 1,
+      error: null,
+      created_at: "2026-07-23T01:00:00Z",
+      updated_at: "2026-07-23T01:00:01Z",
+    });
+    // 让状态轮询保持挂起，断言的是提交回调本身的提示文案，
+    // 而不是轮询副作用随后覆盖的完成提示。
+    mockedGetAudioOperation.mockImplementation(() => new Promise(() => {}));
+    renderWorkspace();
+
+    await user.click(
+      await screen.findByRole("button", { name: "生成合并预览" }),
+    );
+    expect(await screen.findByText("计划总时长 02:00")).toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", { name: "提交音频任务" }),
+    );
+
+    expect(
+      await screen.findByText(
+        "音频任务 #audio-op-1 此前已成功完成，本次为幂等重放，正在刷新产物。",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/已入队，当前活动版本在任务提交成功前保持不变/),
+    ).not.toBeInTheDocument();
+  });
+
+  it("corrects a legacy non-schema tag through the compatibility PATCH", async () => {
+    const user = userEvent.setup();
+    // 默认 mock 的已发布 Schema 不含 stage.greeting，所以该标签只能走
+    // legacy PATCH 更正分支，而不是治理复核批次。
+    renderWorkspace();
+
+    await user.click(
+      await screen.findByRole("button", {
+        name: /编辑标签 stage\.greeting: pass/,
+      }),
+    );
+    const valueInput = screen.getByRole("textbox", { name: "标签值" });
+    await user.clear(valueInput);
+    await user.type(valueInput, "fail");
+    await user.type(
+      screen.getByRole("textbox", { name: "标签编辑原因" }),
+      "复听后确认旧版标签值有误",
+    );
+    await user.click(screen.getByRole("button", { name: "保存人工更正" }));
+
+    await waitFor(() => {
+      expect(mockedCorrectTag).toHaveBeenCalledWith("reception-1", "tag-1", {
+        expected_reception_version: 3,
+        expected_group_version: "v2",
+        label_value: "fail",
+        reason: "复听后确认旧版标签值有误",
+        evidence_ref_ids: ["ev-1"],
+      });
+    });
+    expect(mockedCreateReview).not.toHaveBeenCalled();
+    expect(mockedDecideReview).not.toHaveBeenCalled();
+    expect(
+      await screen.findByText(
+        "标签人工更正已写入治理事实，时间轴、证据、图谱与洞察正在同步。",
+      ),
+    ).toBeInTheDocument();
+    // onSuccess 会失效 workspace 查询：断言真的发起了刷新请求。
+    await waitFor(() => {
+      expect(mockedGetWorkspace.mock.calls.length).toBeGreaterThanOrEqual(2);
     });
   });
 });
