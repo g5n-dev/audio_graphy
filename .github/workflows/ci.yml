@@ -134,3 +134,53 @@ jobs:
             docker compose --env-file .env.example --profile "$profile" config --quiet
           done
           docker compose -f docker-compose.yml -f docker-compose.streaming-vad.yml --env-file .env.example --profile models-single-gpu config --quiet
+
+      # `config` does not stat bind sources, so an overlay can validate cleanly
+      # and still fail at `up` on a path that does not exist. Two kinds of source
+      # are legitimately absent from a clone and are not failures: ones compose
+      # creates itself (create_host_path), and operator-supplied model files,
+      # which must be named in .env.example so the failure is at least
+      # documented. Anything else is a path that will break `up`.
+      - name: Every bind source either exists or is documented
+        run: |
+          python3 - <<'EOF'
+          import pathlib
+          import subprocess
+          import sys
+
+          import yaml
+
+          rendered = subprocess.run(
+              ["docker", "compose",
+               "-f", "docker-compose.yml",
+               "-f", "docker-compose.streaming-vad.yml",
+               "--env-file", ".env.example",
+               "--profile", "models-single-gpu", "config"],
+              capture_output=True, text=True, check=True,
+          ).stdout
+          documented = pathlib.Path(".env.example").read_text(encoding="utf-8")
+          root = pathlib.Path.cwd()
+
+          undocumented = []
+          for name, service in (yaml.safe_load(rendered).get("services") or {}).items():
+              for volume in service.get("volumes") or []:
+                  if not isinstance(volume, dict) or volume.get("type") != "bind":
+                      continue
+                  if (volume.get("bind") or {}).get("create_host_path"):
+                      continue
+                  source = pathlib.Path(volume["source"])
+                  if source.exists():
+                      continue
+                  try:
+                      relative = source.relative_to(root).as_posix()
+                  except ValueError:
+                      relative = source.as_posix()
+                  if relative in documented or source.name in documented:
+                      print(f"note: {name} expects operator-supplied {relative}")
+                      continue
+                  undocumented.append(f"{name}: {relative}")
+
+          for entry in undocumented:
+              print(f"::error::bind source does not exist and is undocumented: {entry}")
+          sys.exit(1 if undocumented else 0)
+          EOF
