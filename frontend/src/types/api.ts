@@ -276,10 +276,6 @@ export interface PromptListResponse {
   items: PromptListItem[];
 }
 
-export interface PromptResponse extends PromptListItem {
-  content: string;
-}
-
 // ============================================================
 // Query
 // ============================================================
@@ -1848,28 +1844,6 @@ export interface TagAuditEvent {
   updated_at: string;
 }
 
-export interface OptimizeTaggerVersionRequest {
-  gold_set_version_id: number;
-  production_tagger_version_id: number;
-}
-
-export interface OptimizeTaggerVersionResponse {
-  candidate: TaggerVersion;
-  optimization: {
-    source_tagger_version_id: number;
-    gold_set_version_id: number;
-    train_error_summary: Record<
-      string,
-      Array<{ error: string; count: number }>
-    >;
-    threshold_search: Record<
-      string,
-      { threshold: number; validation_f1: number; sample_count: number }
-    >;
-    holdout_read: false;
-  };
-}
-
 export type TagEvolutionDriftStatus = "stable" | "watch" | "paused";
 export type TagOptimizationObjectivePolicy =
   "balanced" | "quality_first" | "efficiency_guarded";
@@ -2011,10 +1985,30 @@ export interface TagOptimizationCandidateComparison {
   };
   improved_badcase_count: number;
   regressed_badcase_count: number;
+  /**
+   * Present on POST /tag-optimization-runs/{id}/compare (build_candidate_comparison).
+   * `trial_id` is null when neither trial carries a complete reward vector yet,
+   * in which case `basis` is "insufficient_completed_reward".
+   */
+  recommendation?: {
+    trial_id: number | null;
+    basis: string;
+  };
+  status?: "success" | "warning";
+  summary?: string;
+  next_actions?: string[];
+  artifacts?: string[];
 }
 
+/**
+ * Shape of `TagOptimizationTrial.to_dict()` as returned inside
+ * GET /tag-optimization-runs/{id}. Only the columns the UI reads are listed.
+ */
 export interface TagOptimizationTrial {
   id: number;
+  optimization_run_id: number;
+  parent_trial_id?: number | null;
+  candidate_tagger_version_id?: number | null;
   ordinal: number;
   status:
     | "pending"
@@ -2024,10 +2018,17 @@ export interface TagOptimizationTrial {
     | "failed"
     | "cancelled";
   phase?: "train" | "validation" | "challenge" | "holdout";
-  mutation?: Record<string, unknown>;
-  mutation_dimension?: string | null;
-  elimination_reason?: string | null;
-  reward?: Record<string, number | boolean | null>;
+  /** Written by the optimizer as `{description, dimension}`. */
+  mutation?: {
+    description?: string | null;
+    dimension?: string | null;
+    [key: string]: unknown;
+  };
+  harness_spec?: Record<string, unknown>;
+  reward_vector?: Record<string, number | boolean | null>;
+  metrics?: Record<string, number | null>;
+  gate_results?: Record<string, unknown>;
+  summary?: Record<string, unknown>;
 }
 
 export interface TagOptimizationRun {

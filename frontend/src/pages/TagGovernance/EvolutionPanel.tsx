@@ -8,8 +8,10 @@ import {
 import { type FormEvent, useEffect, useMemo, useState } from "react";
 import {
   cancelTagOptimizationRun,
+  compareTagOptimizationTrials,
   createTagOptimizationRun,
   getTagEvolutionOverview,
+  getTagOptimizationRun,
   listTagBadcases,
   listTagOptimizationRuns,
 } from "@/api/services";
@@ -21,6 +23,7 @@ import type {
   TagOptimizationObjectivePolicy,
   TagOptimizationRun,
   TagOptimizationSourceCohort,
+  TagOptimizationTrial,
 } from "@/types/api";
 import { PanelState } from "@/components/PanelState";
 import { getErrorMessage } from "@/utils/errors";
@@ -41,6 +44,51 @@ const HARNESS_DIMENSIONS = [
   { id: "output", label: "输出校验与回退" },
 ] as const;
 
+// build_candidate_comparison 返回的 delta 键就是 Trial metrics / reward_vector
+// 里的原始键名，这里只给已知键配中文名，未知键原样透出，避免服务端新增指标时被吞掉。
+const DELTA_LABELS: Record<string, string> = {
+  macro_f1: "Macro F1",
+  critical_recall: "关键召回",
+  critical_recall_lcb: "关键召回 LCB",
+  evidence_coverage: "证据覆盖",
+  evidence_iou: "证据 IoU",
+  review_rate: "复核率",
+  error_rate: "错误率",
+  p95_latency_ms: "P95 时延",
+  cost_per_1k: "每千次成本",
+  quality_delta: "质量奖励",
+  review_rate_delta: "复核率奖励",
+  p95_latency_delta: "时延奖励",
+  cost_delta: "成本奖励",
+};
+const RATIO_DELTA_KEYS = new Set([
+  "macro_f1",
+  "critical_recall",
+  "critical_recall_lcb",
+  "evidence_coverage",
+  "evidence_iou",
+  "review_rate",
+  "error_rate",
+  "quality_delta",
+  "review_rate_delta",
+]);
+// 这些维度越低越好，右侧 Trial 的负 delta 才算改善。
+const LOWER_IS_BETTER_DELTA_KEYS = new Set([
+  "review_rate",
+  "error_rate",
+  "p95_latency_ms",
+  "cost_per_1k",
+  "review_rate_delta",
+  "p95_latency_delta",
+  "cost_delta",
+]);
+const RECOMMENDATION_BASIS_LABELS: Record<string, string> = {
+  feasibility_then_quality_review_latency_cost:
+    "按可行性 → 质量 → 复核率 → 时延 → 成本的词典序排序",
+  baseline_retained_by_lexicographic_reward: "词典序奖励下基线仍然最优",
+  insufficient_completed_reward: "奖励向量尚不完整",
+};
+
 function percent(value: number | null | undefined): string {
   if (typeof value !== "number" || !Number.isFinite(value)) return "—";
   return `${new Intl.NumberFormat("zh-CN", {
@@ -55,6 +103,51 @@ function count(value: number | null | undefined): string {
 function signedPercent(value: number | null | undefined): string {
   if (typeof value !== "number" || !Number.isFinite(value)) return "—";
   return `${value >= 0 ? "+" : ""}${percent(value)}`;
+}
+
+function deltaLabel(key: string): string {
+  return DELTA_LABELS[key] ?? key;
+}
+
+function formatDelta(key: string, value: number): string {
+  if (RATIO_DELTA_KEYS.has(key)) return signedPercent(value);
+  const formatted = new Intl.NumberFormat("zh-CN", {
+    maximumFractionDigits: 3,
+  }).format(value);
+  return `${value > 0 ? "+" : ""}${formatted}${
+    key.endsWith("_ms") ? " ms" : ""
+  }`;
+}
+
+function deltaTone(key: string, value: number): "better" | "worse" | "flat" {
+  if (value === 0) return "flat";
+  const improved = LOWER_IS_BETTER_DELTA_KEYS.has(key) ? value < 0 : value > 0;
+  return improved ? "better" : "worse";
+}
+
+/** 服务端只回传有限数值 delta，非有限值会被过滤，这里同样只渲染数值项。 */
+function numericDeltaEntries(
+  deltas: Record<string, number | null | undefined> | undefined,
+): [string, number][] {
+  return Object.entries(deltas ?? {}).filter(
+    (entry): entry is [string, number] =>
+      typeof entry[1] === "number" && Number.isFinite(entry[1]),
+  );
+}
+
+function trialLabel(trial: TagOptimizationTrial): string {
+  const dimension = trial.mutation?.dimension;
+  const dimensionLabel =
+    HARNESS_DIMENSIONS.find((item) => item.id === dimension)?.label ??
+    (typeof dimension === "string" ? dimension : null);
+  const description = trial.mutation?.description;
+  return [
+    `Trial ${trial.ordinal}`,
+    dimensionLabel,
+    typeof description === "string" && description ? description : null,
+  ]
+    .filter((part): part is string => Boolean(part))
+    .join(" · ");
 }
 
 function displayValue(value: unknown): string {
@@ -409,6 +502,270 @@ function CancelOptimizationDialog({
   );
 }
 
+function HarnessDiffList({
+  comparison,
+  ariaLabel,
+}: {
+  comparison: TagOptimizationCandidateComparison;
+  ariaLabel: string;
+}) {
+  return (
+    <ul className="ag-harness-diff-list" aria-label={ariaLabel}>
+      {HARNESS_DIMENSIONS.map((dimension) => {
+        const item = comparison.dimensions.find(
+          (candidate) => candidate.dimension === dimension.id,
+        );
+        return (
+          <li key={dimension.id}>
+            <code>{dimension.label}</code>
+            {item ? (
+              <>
+                <span>{displayValue(item.before)}</span>
+                <b aria-hidden="true">→</b>
+                <strong>{displayValue(item.after)}</strong>
+              </>
+            ) : (
+              <span className="is-unchanged">本次未变更</span>
+            )}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function DeltaList({
+  ariaLabel,
+  emptyCopy,
+  deltas,
+}: {
+  ariaLabel: string;
+  emptyCopy: string;
+  deltas: Record<string, number | null | undefined> | undefined;
+}) {
+  const entries = numericDeltaEntries(deltas);
+  if (entries.length === 0) {
+    return <p className="ag-compact-state">{emptyCopy}</p>;
+  }
+  return (
+    // dl 本身没有隐含 role，显式标成有名字的 group 才能被读屏和测试定位。
+    <dl className="ag-trial-delta-list" role="group" aria-label={ariaLabel}>
+      {entries.map(([key, value]) => (
+        <div key={key} className={`is-${deltaTone(key, value)}`}>
+          <dt>{deltaLabel(key)}</dt>
+          <dd>{formatDelta(key, value)}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+/**
+ * 对比同一次运行里的任意两个 Trial。
+ *
+ * Trial 列表只在 GET /tag-optimization-runs/{id} 里返回（列表接口不带 trials），
+ * 所以这里必须单独取运行详情；对比结果由服务端 build_candidate_comparison 计算，
+ * 前端不自己算 delta，避免和优化器的排序口径分叉。
+ */
+function TrialComparisonDialog({
+  runId,
+  onClose,
+}: {
+  runId: number;
+  onClose: () => void;
+}) {
+  const [leftTrialId, setLeftTrialId] = useState<number | null>(null);
+  const [rightTrialId, setRightTrialId] = useState<number | null>(null);
+  const detailQuery = useQuery({
+    queryKey: ["tag-governance", "evolution", "run", runId],
+    queryFn: () => getTagOptimizationRun(runId),
+    retry: false,
+  });
+  const trials = useMemo(
+    () => detailQuery.data?.trials ?? [],
+    [detailQuery.data],
+  );
+  const compareMutation = useMutation({
+    mutationFn: (pair: { left: number; right: number }) =>
+      compareTagOptimizationTrials(runId, pair.left, pair.right),
+  });
+
+  useEffect(() => {
+    if (trials.length < 2 || leftTrialId !== null) return;
+    // 默认摆出「基线 vs 本轮选中的候选」，也就是运行卡片上已经展示的那一对，
+    // 用户再改成任意两个 Trial。
+    const selected =
+      trials.find((trial) => trial.candidate_tagger_version_id != null) ??
+      trials[trials.length - 1];
+    const baseline =
+      trials.find((trial) => trial.id !== selected.id) ?? trials[0];
+    setLeftTrialId(baseline.id);
+    setRightTrialId(selected.id);
+  }, [leftTrialId, trials]);
+
+  const sameTrial =
+    leftTrialId !== null &&
+    rightTrialId !== null &&
+    leftTrialId === rightTrialId;
+  const comparison = compareMutation.data ?? null;
+  const trialName = (trialId: number | null): string => {
+    const trial = trials.find((item) => item.id === trialId);
+    return trial ? trialLabel(trial) : `Trial #${trialId ?? "—"}`;
+  };
+
+  return (
+    <div className="ag-dialog-backdrop">
+      <section
+        className="ag-governance-dialog ag-trial-compare-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="trial-compare-dialog-title"
+        onKeyDown={(event) => {
+          if (event.key === "Escape") onClose();
+        }}
+      >
+        <header>
+          <div>
+            <span className="ag-card-kicker">TRIAL COMPARISON</span>
+            <h2 id="trial-compare-dialog-title">对比运行 #{runId} 的 Trial</h2>
+          </div>
+          <button type="button" aria-label="关闭 Trial 对比" onClick={onClose}>
+            <IconClose />
+          </button>
+        </header>
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (leftTrialId === null || rightTrialId === null || sameTrial) {
+              return;
+            }
+            compareMutation.mutate({ left: leftTrialId, right: rightTrialId });
+          }}
+        >
+          <PanelState
+            pending={detailQuery.isPending}
+            error={detailQuery.error}
+            empty={trials.length < 2}
+            emptyTitle="可对比的 Trial 不足"
+            emptyDescription="本次运行还没有产生两个以上 Trial，等有界搜索推进后再来对比。"
+            onRetry={() => void detailQuery.refetch()}
+            pendingLabel="正在加载本次运行的 Trial…"
+          >
+            <label>
+              左侧 Trial
+              <select
+                aria-label="左侧 Trial"
+                value={leftTrialId ?? ""}
+                onChange={(event) => {
+                  compareMutation.reset();
+                  setLeftTrialId(Number(event.target.value));
+                }}
+              >
+                {trials.map((trial) => (
+                  <option key={trial.id} value={trial.id}>
+                    {trialLabel(trial)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              右侧 Trial
+              <select
+                aria-label="右侧 Trial"
+                value={rightTrialId ?? ""}
+                onChange={(event) => {
+                  compareMutation.reset();
+                  setRightTrialId(Number(event.target.value));
+                }}
+              >
+                {trials.map((trial) => (
+                  <option key={trial.id} value={trial.id}>
+                    {trialLabel(trial)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {sameTrial && (
+              <p className="ag-inline-feedback is-error" role="alert">
+                两侧必须选择不同的 Trial。
+              </p>
+            )}
+            {compareMutation.error !== null &&
+            compareMutation.error !== undefined ? (
+              <p className="ag-inline-feedback is-error" role="alert">
+                {getErrorMessage(
+                  compareMutation.error,
+                  "Trial 对比失败，请稍后重试。",
+                )}
+              </p>
+            ) : null}
+            {comparison && (
+              <section
+                className="ag-trial-compare-result"
+                aria-label={`运行 ${runId} 的 Trial 对比结果`}
+              >
+                <p
+                  className={`ag-inline-feedback ${
+                    comparison.recommendation?.trial_id != null
+                      ? "is-success"
+                      : "is-error"
+                  }`}
+                  role="status"
+                >
+                  {comparison.recommendation?.trial_id != null
+                    ? `推荐 ${trialName(comparison.recommendation.trial_id)}：${
+                        RECOMMENDATION_BASIS_LABELS[
+                          comparison.recommendation.basis
+                        ] ?? comparison.recommendation.basis
+                      }`
+                    : "两个 Trial 的奖励向量还不完整，暂时给不出推荐。"}
+                </p>
+                <h3>指标差异（右侧 − 左侧）</h3>
+                <DeltaList
+                  ariaLabel="Trial 指标差异"
+                  emptyCopy="两个 Trial 没有可比的数值指标。"
+                  deltas={comparison.metric_deltas}
+                />
+                <h3>奖励向量差异</h3>
+                <DeltaList
+                  ariaLabel="Trial 奖励向量差异"
+                  emptyCopy="两个 Trial 没有可比的奖励分量。"
+                  deltas={comparison.reward_deltas}
+                />
+                <div className="ag-candidate-outcomes">
+                  <span>改善 {comparison.improved_badcase_count}</span>
+                  <span>退化 {comparison.regressed_badcase_count}</span>
+                </div>
+                <h3>六维 Harness 差异</h3>
+                <HarnessDiffList
+                  comparison={comparison}
+                  ariaLabel="Trial 对比六维差异"
+                />
+              </section>
+            )}
+          </PanelState>
+          <footer>
+            <button type="button" className="is-secondary" onClick={onClose}>
+              关闭
+            </button>
+            <button
+              type="submit"
+              disabled={
+                compareMutation.isPending ||
+                sameTrial ||
+                leftTrialId === null ||
+                rightTrialId === null
+              }
+            >
+              {compareMutation.isPending ? "正在对比…" : "对比 Trial"}
+            </button>
+          </footer>
+        </form>
+      </section>
+    </div>
+  );
+}
+
 function QualityOverview({ overview }: { overview: TagEvolutionOverview }) {
   const quality = overview.quality;
   const feedback = overview.feedback;
@@ -631,12 +988,14 @@ function OptimizationRuns({
   isAdmin,
   cancellingRunId,
   onCancel,
+  onCompareTrials,
   onReoptimize,
 }: {
   items: TagOptimizationRun[];
   isAdmin: boolean;
   cancellingRunId: number | null;
   onCancel: (runId: number) => void;
+  onCompareTrials: (runId: number) => void;
   /** Holdout 未通过时的恢复路径：带原 cohort 重新打开优化对话框。 */
   onReoptimize: (run: TagOptimizationRun) => void;
 }) {
@@ -712,6 +1071,18 @@ function OptimizationRuns({
                   </div>
                   <div className="ag-optimization-run-actions">
                     <span>{runStatus(run.status)}</span>
+                    {/*
+                      对比只读 Trial 指标，后端是 require_inspector_or_above，
+                      和本面板其它读接口同级，所以不额外按 isAdmin 收窄。
+                    */}
+                    <button
+                      type="button"
+                      className="is-compare"
+                      aria-label={`对比运行 ${run.id} 的 Trial`}
+                      onClick={() => onCompareTrials(run.id)}
+                    >
+                      对比 Trial
+                    </button>
                     {isAdmin && ACTIVE_RUN_STATUSES.has(run.status) && (
                       <button
                         type="button"
@@ -739,30 +1110,10 @@ function OptimizationRuns({
                 </div>
                 {comparison && (
                   <>
-                    <ul
-                      className="ag-harness-diff-list"
-                      aria-label="候选 Harness 六维差异"
-                    >
-                      {HARNESS_DIMENSIONS.map((dimension) => {
-                        const item = comparison.dimensions.find(
-                          (candidate) => candidate.dimension === dimension.id,
-                        );
-                        return (
-                          <li key={dimension.id}>
-                            <code>{dimension.label}</code>
-                            {item ? (
-                              <>
-                                <span>{displayValue(item.before)}</span>
-                                <b aria-hidden="true">→</b>
-                                <strong>{displayValue(item.after)}</strong>
-                              </>
-                            ) : (
-                              <span className="is-unchanged">本次未变更</span>
-                            )}
-                          </li>
-                        );
-                      })}
-                    </ul>
+                    <HarnessDiffList
+                      comparison={comparison}
+                      ariaLabel="候选 Harness 六维差异"
+                    />
                     <div className="ag-candidate-outcomes">
                       <span>
                         Macro F1{" "}
@@ -853,6 +1204,7 @@ export function EvolutionPanel({
     isAdmin && initialDialog === "optimize",
   );
   const [cancelRunId, setCancelRunId] = useState<number | null>(null);
+  const [compareRunId, setCompareRunId] = useState<number | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   // 「重新优化」沿用失败运行的 cohort，让重跑针对同一批反馈样本。
   const [reoptimizeCohort, setReoptimizeCohort] =
@@ -998,6 +1350,7 @@ export function EvolutionPanel({
           setSuccess(null);
           setCancelRunId(runId);
         }}
+        onCompareTrials={(runId) => setCompareRunId(runId)}
         onReoptimize={(run) => {
           setSuccess(null);
           createMutation.reset();
@@ -1017,6 +1370,12 @@ export function EvolutionPanel({
             setDialogOpen(false);
           }}
           onCreate={(body) => createMutation.mutate(body)}
+        />
+      )}
+      {compareRunId !== null && (
+        <TrialComparisonDialog
+          runId={compareRunId}
+          onClose={() => setCompareRunId(null)}
         />
       )}
       {cancelRunId !== null && (

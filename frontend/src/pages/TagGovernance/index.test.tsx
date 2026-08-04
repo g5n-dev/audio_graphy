@@ -35,7 +35,6 @@ vi.mock("@/api/services", () => ({
   listTagOptimizationRuns: vi.fn(),
   listTagSchemas: vi.fn(),
   listTaggerVersions: vi.fn(),
-  optimizeTaggerVersion: vi.fn(),
   publishTagSchemaVersion: vi.fn(),
   resumeTagDeployment: vi.fn(),
   rollbackTagDeployment: vi.fn(),
@@ -62,7 +61,6 @@ import {
   listTagOptimizationRuns,
   listTagSchemas,
   listTaggerVersions,
-  optimizeTaggerVersion,
   resumeTagDeployment,
   rollbackTagDeployment,
 } from "@/api/services";
@@ -102,7 +100,6 @@ const mocks = {
   >,
   schemas: listTagSchemas as unknown as ReturnType<typeof vi.fn>,
   taggers: listTaggerVersions as unknown as ReturnType<typeof vi.fn>,
-  optimize: optimizeTaggerVersion as unknown as ReturnType<typeof vi.fn>,
 };
 
 function renderPage(initialEntry = "/tag-governance") {

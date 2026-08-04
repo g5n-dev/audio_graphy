@@ -6,27 +6,63 @@ import { EvolutionPanel } from "./EvolutionPanel";
 
 vi.mock("@/api/services", () => ({
   cancelTagOptimizationRun: vi.fn(),
+  compareTagOptimizationTrials: vi.fn(),
   createTagOptimizationRun: vi.fn(),
   getTagEvolutionOverview: vi.fn(),
+  getTagOptimizationRun: vi.fn(),
   listTagBadcases: vi.fn(),
   listTagOptimizationRuns: vi.fn(),
 }));
 
 import {
   cancelTagOptimizationRun,
+  compareTagOptimizationTrials,
   createTagOptimizationRun,
   getTagEvolutionOverview,
+  getTagOptimizationRun,
   listTagBadcases,
   listTagOptimizationRuns,
 } from "@/api/services";
 
 const mocks = {
   cancel: cancelTagOptimizationRun as unknown as ReturnType<typeof vi.fn>,
+  compare: compareTagOptimizationTrials as unknown as ReturnType<typeof vi.fn>,
   create: createTagOptimizationRun as unknown as ReturnType<typeof vi.fn>,
   overview: getTagEvolutionOverview as unknown as ReturnType<typeof vi.fn>,
+  runDetail: getTagOptimizationRun as unknown as ReturnType<typeof vi.fn>,
   badcases: listTagBadcases as unknown as ReturnType<typeof vi.fn>,
   runs: listTagOptimizationRuns as unknown as ReturnType<typeof vi.fn>,
 };
+
+const TRIALS = [
+  {
+    id: 11,
+    optimization_run_id: 71,
+    ordinal: 1,
+    status: "completed" as const,
+    phase: "validation" as const,
+    mutation: { description: "保持基线", dimension: "context" },
+    candidate_tagger_version_id: null,
+  },
+  {
+    id: 12,
+    optimization_run_id: 71,
+    ordinal: 2,
+    status: "pruned" as const,
+    phase: "validation" as const,
+    mutation: { description: "扩大示例窗口", dimension: "context" },
+    candidate_tagger_version_id: null,
+  },
+  {
+    id: 13,
+    optimization_run_id: 71,
+    ordinal: 3,
+    status: "completed" as const,
+    phase: "validation" as const,
+    mutation: { description: "引入弱到强 critic", dimension: "orchestration" },
+    candidate_tagger_version_id: 44,
+  },
+];
 
 function renderPanel(
   props: Partial<React.ComponentProps<typeof EvolutionPanel>> = {},
@@ -164,6 +200,43 @@ describe("EvolutionPanel", () => {
       status: "cancelled",
       phase: "validation",
     });
+    mocks.runDetail.mockResolvedValue({
+      id: 71,
+      status: "running",
+      phase: "validation",
+      baseline_tagger_version_id: 42,
+      candidate_tagger_version_id: 44,
+      gold_set_version_id: 7,
+      cohort: { source: "scheduled" },
+      objective: { policy: "balanced" },
+      search_budget: { max_trials: 24, sealed_holdout_queries: 1 },
+      trigger: "scheduled",
+      summary: {},
+      trials: TRIALS,
+      created_at: "2026-07-25T06:00:00Z",
+      updated_at: "2026-07-25T06:20:00Z",
+    });
+    mocks.compare.mockResolvedValue({
+      dimensions: [
+        {
+          dimension: "orchestration",
+          before: "weak_llm",
+          after: "weak_to_strong_critic",
+        },
+      ],
+      metric_deltas: { macro_f1: 0.024, p95_latency_ms: 84 },
+      reward_deltas: { quality_delta: 0.02, cost_delta: -0.4 },
+      improved_badcase_count: 12,
+      regressed_badcase_count: 1,
+      recommendation: {
+        trial_id: 13,
+        basis: "feasibility_then_quality_review_latency_cost",
+      },
+      status: "success",
+      summary: "trial 13 ranks first",
+      next_actions: ["evaluate_recommended_candidate"],
+      artifacts: ["tag_optimization_trial:11", "tag_optimization_trial:13"],
+    });
   });
 
   it("shows unbiased quality, feedback health, badcases and release truth support", async () => {
@@ -297,6 +370,108 @@ describe("EvolutionPanel", () => {
     // 重新优化沿用失败运行的 cohort，让重跑针对同一批反馈样本。
     expect(dialog).toHaveTextContent("来自标签洞察");
     expect(within(dialog).getByText("门店 S9")).toBeVisible();
+  });
+
+  it("compares two trials of a run and shows the metric-by-metric verdict", async () => {
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(
+      await screen.findByRole("button", { name: "对比运行 71 的 Trial" }),
+    );
+
+    const dialog = await screen.findByRole("dialog", {
+      name: "对比运行 #71 的 Trial",
+    });
+    await waitFor(() => expect(mocks.runDetail).toHaveBeenCalledWith(71));
+    // 默认摆出「基线 vs 本轮选中的候选」，也就是运行卡片上已展示的那一对。
+    expect(
+      within(dialog).getByRole("combobox", { name: "左侧 Trial" }),
+    ).toHaveValue("11");
+    expect(
+      within(dialog).getByRole("combobox", { name: "右侧 Trial" }),
+    ).toHaveValue("13");
+    expect(mocks.compare).not.toHaveBeenCalled();
+
+    await user.selectOptions(
+      within(dialog).getByRole("combobox", { name: "左侧 Trial" }),
+      "12",
+    );
+    await user.click(within(dialog).getByRole("button", { name: "对比 Trial" }));
+
+    await waitFor(() => expect(mocks.compare).toHaveBeenCalledWith(71, 12, 13));
+    const result = await screen.findByRole("region", {
+      name: "运行 71 的 Trial 对比结果",
+    });
+    expect(
+      within(result).getByText(/推荐 Trial 3 · 编排 DAG · 引入弱到强 critic/),
+    ).toBeVisible();
+    const metrics = within(result).getByRole("group", {
+      name: "Trial 指标差异",
+    });
+    expect(within(metrics).getByText("Macro F1")).toBeVisible();
+    expect(within(metrics).getByText("+2.4%")).toBeVisible();
+    expect(within(metrics).getByText("P95 时延")).toBeVisible();
+    expect(within(metrics).getByText("+84 ms")).toBeVisible();
+    const rewards = within(result).getByRole("group", {
+      name: "Trial 奖励向量差异",
+    });
+    expect(within(rewards).getByText("质量奖励")).toBeVisible();
+    expect(within(rewards).getByText("+2%")).toBeVisible();
+    expect(within(rewards).getByText("成本奖励")).toBeVisible();
+    expect(within(rewards).getByText("-0.4")).toBeVisible();
+    expect(within(result).getByText("改善 12")).toBeVisible();
+    expect(within(result).getByText("退化 1")).toBeVisible();
+    expect(
+      within(result).getByRole("list", { name: "Trial 对比六维差异" }),
+    ).toBeVisible();
+  });
+
+  it("refuses to compare a trial with itself, matching the endpoint's own rule", async () => {
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(
+      await screen.findByRole("button", { name: "对比运行 71 的 Trial" }),
+    );
+    const dialog = await screen.findByRole("dialog", {
+      name: "对比运行 #71 的 Trial",
+    });
+    await user.selectOptions(
+      await within(dialog).findByRole("combobox", { name: "左侧 Trial" }),
+      "13",
+    );
+
+    expect(within(dialog).getByRole("alert")).toHaveTextContent(
+      "两侧必须选择不同的 Trial",
+    );
+    expect(
+      within(dialog).getByRole("button", { name: "对比 Trial" }),
+    ).toBeDisabled();
+    expect(mocks.compare).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a failed trial comparison inside the dialog", async () => {
+    const user = userEvent.setup();
+    mocks.compare.mockRejectedValueOnce(new Error("优化运行不存在"));
+    renderPanel();
+
+    await user.click(
+      await screen.findByRole("button", { name: "对比运行 71 的 Trial" }),
+    );
+    const dialog = await screen.findByRole("dialog", {
+      name: "对比运行 #71 的 Trial",
+    });
+    await user.click(
+      await within(dialog).findByRole("button", { name: "对比 Trial" }),
+    );
+
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(
+      "优化运行不存在",
+    );
+    expect(
+      screen.queryByRole("region", { name: "运行 71 的 Trial 对比结果" }),
+    ).not.toBeInTheDocument();
   });
 
   it("asks for explicit confirmation before cancelling an active run", async () => {

@@ -330,4 +330,18 @@ describe("tag governance services", () => {
       { params: { limit: 50 } },
     );
   });
+
+  it("keeps exactly one way to start an optimization and one way to read a schema", async () => {
+    const services = await import("./services");
+    // POST /tagger-versions/optimize 走 create_server_bound_optimization_candidate：
+    // 只产出一个 draft 候选，没有 Trial envelope、没有密封 Holdout、没有可取消的
+    // run 记录，且请求体里的 production_tagger_version_id 会被路由直接忽略。
+    // 保留客户端包装就等于给产品第二条弱保证的优化入口。
+    expect(services).not.toHaveProperty("optimizeTaggerVersion");
+    // GET /tag-schemas/{id} 与列表返回同一份 {…schema, versions[]}，
+    // 页面已经从列表读，单取没有额外字段。
+    expect(services).not.toHaveProperty("getTagSchema");
+    // GET /prompts/{id} 属于没有任何 UI 的遗留 canary 流程，并且没有租户过滤。
+    expect(services).not.toHaveProperty("getPrompt");
+  });
 });

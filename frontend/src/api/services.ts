@@ -23,7 +23,6 @@ import type {
   EntityDetailResponse,
   MeResponse,
   PromptListResponse,
-  PromptResponse,
   PipelineRunResponse,
   QueryResponse,
   RecordingCreateRequest,
@@ -90,8 +89,6 @@ import type {
   StreamingTicketRequest,
   StreamingTicketResponse,
   FreezeTagGoldSetRequest,
-  OptimizeTaggerVersionRequest,
-  OptimizeTaggerVersionResponse,
   TagAuditEventListResponse,
   TagBadcaseListResponse,
   TagDeployment,
@@ -277,11 +274,6 @@ export async function listPrompts(name?: string): Promise<PromptListResponse> {
   const { data } = await httpClient.get<PromptListResponse>("/prompts", {
     params: name ? { name } : undefined,
   });
-  return data;
-}
-
-export async function getPrompt(id: number): Promise<PromptResponse> {
-  const { data } = await httpClient.get<PromptResponse>(`/prompts/${id}`);
   return data;
 }
 
@@ -1005,11 +997,6 @@ export async function listTagSchemas(): Promise<TagSchemaListResponse> {
   return data;
 }
 
-export async function getTagSchema(id: number): Promise<TagSchema> {
-  const { data } = await httpClient.get<TagSchema>(`/tag-schemas/${id}`);
-  return data;
-}
-
 export async function createTagSchema(
   body: CreateTagSchemaRequest,
 ): Promise<TagSchema> {
@@ -1049,16 +1036,6 @@ export async function createTaggerVersion(
 ): Promise<TaggerVersion> {
   const { data } = await httpClient.post<TaggerVersion>(
     "/tagger-versions",
-    body,
-  );
-  return data;
-}
-
-export async function optimizeTaggerVersion(
-  body: OptimizeTaggerVersionRequest,
-): Promise<OptimizeTaggerVersionResponse> {
-  const { data } = await httpClient.post<OptimizeTaggerVersionResponse>(
-    "/tagger-versions/optimize",
     body,
   );
   return data;
