@@ -2105,7 +2105,6 @@ export interface TagOptimizationRun {
   total_trials?: number;
   trials?: TagOptimizationTrial[];
   candidate_comparison?: TagOptimizationCandidateComparison | null;
-  failure_reason?: string | null;
   is_demo?: boolean;
   data_source?: "demo" | "production";
   created_at: string;

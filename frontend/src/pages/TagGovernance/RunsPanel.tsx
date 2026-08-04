@@ -146,7 +146,6 @@ function OptimizationRunDetail({ runId }: { runId: number }) {
         {run.winner_tagger_version_id
           ? ` · 胜出候选 #${run.winner_tagger_version_id}`
           : ""}
-        {run.failure_reason ? ` · ${run.failure_reason}` : ""}
       </p>
       {trials.length === 0 ? (
         <p className="ag-compact-state">该运行尚未产生 Trial。</p>

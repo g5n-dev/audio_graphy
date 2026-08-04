@@ -1168,9 +1168,10 @@ function OptimizationRuns({
                       </>
                     ) : (
                       <>
+                        {/* 固定文案：后端与演示 Worker 都不产出逐运行的失败
+                            原因字段，具体门禁差值在 candidate_comparison 里。 */}
                         <span>
-                          {run.failure_reason ??
-                            "候选未通过密封 Holdout 门禁，不能进入发布。"}
+                          候选未通过密封 Holdout 门禁，不能进入发布。
                         </span>
                         {isAdmin && (
                           <button

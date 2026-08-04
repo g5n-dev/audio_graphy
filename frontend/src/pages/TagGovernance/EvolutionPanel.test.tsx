@@ -346,7 +346,6 @@ describe("EvolutionPanel", () => {
             holdout_passed: false,
           },
           next_actions: ["inspect_regressions", "create_new_optimization_run"],
-          failure_reason: "关键召回下降超出硬门禁",
           created_at: "2026-07-25T06:00:00Z",
           updated_at: "2026-07-25T08:00:00Z",
         },
@@ -356,7 +355,11 @@ describe("EvolutionPanel", () => {
     renderPanel();
 
     expect(await screen.findByText("Sealed Holdout 未通过")).toBeVisible();
-    expect(screen.getByText("关键召回下降超出硬门禁")).toBeVisible();
+    // 逐运行的失败原因字段(failure_reason)后端与演示 Worker 都不产出,
+    // 曾经的 fixture 值只是把「永远走 fallback」的事实藏了起来。
+    expect(
+      screen.getByText("候选未通过密封 Holdout 门禁，不能进入发布。"),
+    ).toBeVisible();
     expect(
       screen.queryByRole("link", { name: "创建影子部署" }),
     ).not.toBeInTheDocument();

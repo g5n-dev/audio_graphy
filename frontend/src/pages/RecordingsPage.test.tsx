@@ -5,10 +5,10 @@
  */
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import RecordingsPage from "./RecordingsPage";
 import { recordingsPollInterval } from "@/utils/recordingsPolling";
 import { useAuthStore } from "@/stores/auth";
@@ -41,7 +41,10 @@ const LIST: RecordingListResponse = {
       recorded_at: "2026-07-30T10:00:00Z",
       indexed_at: null,
       prompt_version: null,
-      active_pipeline_run_id: 11,
+      // 真实系统的不变量:指针只在终态(indexed/ready_no_speech)写入。
+      // 非终态行带非空指针曾让 RecordingDetailPage 的套件认证过一个
+      // 永远渲染不出来的面板——fixture 不再撒那个谎。
+      active_pipeline_run_id: null,
     },
     {
       id: 2,
@@ -52,7 +55,7 @@ const LIST: RecordingListResponse = {
       recorded_at: "2026-07-30T11:00:00Z",
       indexed_at: null,
       prompt_version: null,
-      active_pipeline_run_id: 12,
+      active_pipeline_run_id: null,
     },
   ],
   total: 2,
@@ -121,6 +124,48 @@ beforeEach(() => {
   mockedReindex.mockReset();
   mockedList.mockResolvedValue(LIST);
   setUser("admin");
+});
+
+describe("the polling wiring", () => {
+  // 策略函数的单测(下面那组)在接线被整段删掉时仍然全绿——commit 4654a18
+  // 的「回退即红」对这一项曾经就是这么落空的。这里渲染真实页面、推进真实
+  // 时钟,删掉 refetchInterval 这条测试才会红。
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("refetches while a row is still moving and stops once every row settles", async () => {
+    vi.useFakeTimers();
+    renderPage();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(mockedList).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_100);
+    });
+    expect(mockedList).toHaveBeenCalledTimes(2);
+
+    mockedList.mockResolvedValue({
+      ...LIST,
+      items: LIST.items.map((item) => ({
+        ...item,
+        status: "indexed",
+        pipeline_state: "ready",
+        active_pipeline_run_id: 99,
+      })),
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_100);
+    });
+    const callsWhenTerminal = mockedList.mock.calls.length;
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(mockedList).toHaveBeenCalledTimes(callsWhenTerminal);
+  });
 });
 
 describe("recordingsPollInterval", () => {
