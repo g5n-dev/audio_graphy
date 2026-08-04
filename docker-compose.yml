@@ -365,10 +365,17 @@ services:
   # leave this profile unused. It is here for Linux hosts, and for anyone
   # who wants the whole stack inside compose.
   #
-  # Deliberately NOT under model-security: ollama writes model blobs and a
-  # runner cache into its own volume, and a read-only root breaks it.
+  # Under model-security like every other model container. The anchor is only
+  # no-new-privileges + cap_drop:ALL; `read_only` is set per service, and never
+  # here — so the previous note ("a read-only root breaks it") described a
+  # restriction the anchor does not impose. Writing model blobs into its own
+  # volume needs neither extra capabilities nor privilege escalation.
   ollama:
-    image: ollama/ollama:latest
+    <<: *model-security
+    # Pinned like the other model images. `latest` is the one floating tag in
+    # this file: two operators running the documented command months apart get
+    # different runtimes, and there is no record of which one produced a result.
+    image: ollama/ollama:0.12.12
     container_name: audiography-ollama
     profiles: ["models-cpu-llm"]
     restart: unless-stopped

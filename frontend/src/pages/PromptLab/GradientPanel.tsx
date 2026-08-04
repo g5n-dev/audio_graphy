@@ -333,6 +333,8 @@ export function GradientPanel({
   };
 
   const removedCount = buildDecisions().filter((d) => d.decision === "rejected").length;
+  // 空清单和「加载失败」在这里是同一件事：两种情况下提交都必然被后端拒绝。
+  const patchesUnavailable = (diff.data?.patches ?? []).length === 0;
 
   return (
     <div className="ag-plab-gradients">
@@ -367,9 +369,24 @@ export function GradientPanel({
           <button type="button" className="is-secondary" onClick={() => setStaged(new Map())}>
             清空暂存
           </button>
-          <button type="button" onClick={() => setConfirming(true)}>
-            提交决策
-          </button>
+          {/*
+            决策集从 diff 的补丁清单构造，卡片却来自梯度接口——两个请求都 retry:false，
+            可以一个成功一个失败。diff 挂掉时提交的是 {decisions: []}，后端 min_length=1
+            直接 422，暂存的决策全丢，而报错里一个字都没提到是 diff 没拿到。
+            所以拿不到补丁清单就不让提交，并说清缺的是什么。
+          */}
+          {patchesUnavailable ? (
+            <span className="ag-inline-feedback is-error" role="alert">
+              补丁清单加载失败，暂无法提交决策（暂存内容已保留）。
+              <button type="button" className="is-secondary" onClick={() => void diff.refetch()}>
+                重试
+              </button>
+            </span>
+          ) : (
+            <button type="button" onClick={() => setConfirming(true)}>
+              提交决策
+            </button>
+          )}
         </div>
       )}
 

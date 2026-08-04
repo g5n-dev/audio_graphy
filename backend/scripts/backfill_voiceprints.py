@@ -25,6 +25,8 @@ import logging
 import sys
 from pathlib import Path
 
+from sqlalchemy import select
+
 # Make `audio_graphy` importable when run as a plain script (python scripts/...).
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 if str(BACKEND_DIR) not in sys.path:
@@ -34,6 +36,7 @@ from audio_graphy.config import build_adapters, get_settings  # noqa: E402
 from audio_graphy.core.crypto import AudioCrypto  # noqa: E402
 from audio_graphy.core.voiceprint_backfill import VoiceprintBackfill  # noqa: E402
 from audio_graphy.db import create_db_engine, create_session_factory  # noqa: E402
+from audio_graphy.models.tenant import Tenant  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +91,23 @@ async def _run(args: argparse.Namespace) -> int:
             max_plaintext_bytes=settings.max_recording_audio_bytes,
         )
         crypto.validate_master_key()
+
+        # Checked for the same reason every other precondition above is: an
+        # unknown tenant matches zero recordings, so a typo produces a
+        # successful run reporting "scanned=0 linked=0" and the operator
+        # concludes the historical corpus is linked. Per ADR-0001 the feature
+        # flag only affects new recordings, so that gap is permanent until
+        # someone thinks to rerun it.
+        async with session_factory() as session:
+            known = (
+                await session.execute(select(Tenant.code).where(Tenant.code == args.tenant))
+            ).scalar_one_or_none()
+        if known is None:
+            async with session_factory() as session:
+                codes = (await session.execute(select(Tenant.code).order_by(Tenant.code))).scalars()
+                available = ", ".join(codes) or "(none)"
+            logger.error("No tenant with code %r. Known tenants: %s", args.tenant, available)
+            return 2
 
         job = VoiceprintBackfill(
             session_factory,

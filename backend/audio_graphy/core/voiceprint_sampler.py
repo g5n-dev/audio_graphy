@@ -28,6 +28,18 @@ Segments below ``min_segment_sec`` never contribute. A speaker whose
 qualifying speech totals less than ``min_total_sec`` yields no candidate at
 all — a 2-second sample is not a sound basis for merging identities across
 recordings. ``max_segments`` caps extraction cost per speaker.
+
+``min_total_sec`` is re-checked after extraction against what actually
+contributed, because a segment can pass the pre-check and then fail to embed
+or be dropped as an outlier. Note what that means under ``longest_segment``:
+exactly one segment ever contributes, so the effective requirement becomes a
+single turn of at least ``min_total_sec`` — the per-segment and per-speaker
+floors collapse into one. That is the honest reading of the setting (a 2s
+embedding really is 2s of evidence, whatever the speaker said elsewhere), but
+it is stricter than "1s segments, 3s total" sounds, and with the shipped
+defaults it enrolls no speaker whose longest turn is under 3s — which this
+docstring calls normal for call-center customers a few lines above. Prefer
+``weighted_mean`` unless extraction cost is the binding constraint.
 """
 
 from __future__ import annotations
@@ -223,10 +235,16 @@ class VoiceprintSampler:
             # discarded segments do not count, so a speaker that only passed
             # on paper must not produce a candidate.
             if sampled_sec < self._min_total_sec:
-                skipped[speaker_id] = (
-                    f"only {sampled_sec:.2f}s of audio produced usable embeddings "
-                    f"(need {self._min_total_sec}s)"
+                # Named per strategy: under longest_segment this is one segment's
+                # duration, so the message would otherwise read as "the speaker
+                # only spoke 2s" when they may have spoken for a minute across
+                # turns none of which reached the floor on its own.
+                detail = (
+                    f"longest single segment is only {sampled_sec:.2f}s"
+                    if self._strategy == "longest_segment"
+                    else f"only {sampled_sec:.2f}s of audio produced usable embeddings"
                 )
+                skipped[speaker_id] = f"{detail} (need {self._min_total_sec}s)"
                 continue
 
             candidates.append(

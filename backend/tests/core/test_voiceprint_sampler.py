@@ -407,3 +407,38 @@ class TestCandidateShape:
         )
         assert report.candidates[0].role_hint == "unknown"
         assert report.candidates[0].display_name == ""
+
+
+class TestLongestSegmentGateSemantics:
+    """``min_total_sec`` means something different under each strategy."""
+
+    async def test_a_speaker_whose_turns_are_all_short_is_skipped_and_told_why(
+        self,
+    ) -> None:
+        """2s + 2s + 2s: one candidate under weighted_mean, none under longest_segment.
+
+        Exactly one segment ever contributes under ``longest_segment``, so the
+        post-extraction re-check applies the per-speaker total floor to a single
+        turn and the two gates collapse into one. That is the honest reading — a
+        2s embedding is 2s of evidence — but it is stricter than "1s segments, 3s
+        total" sounds, and the skip reason has to name which gate it was, or it
+        reads as "this speaker barely spoke" about someone who spoke for a minute
+        in turns none of which reached the floor alone.
+        """
+
+        segments = [_Seg(start, start + 2.0, "spk_0") for start in (0.0, 10.0, 20.0)]
+
+        spread = await VoiceprintSampler(_FakeVoiceprint()).sample(
+            recording_id=1,
+            audio_path="/tmp/a.wav",
+            segments=segments,
+        )
+        assert len(spread.candidates) == 1
+
+        single = await VoiceprintSampler(_FakeVoiceprint(), strategy="longest_segment").sample(
+            recording_id=1,
+            audio_path="/tmp/a.wav",
+            segments=segments,
+        )
+        assert single.candidates == ()
+        assert "longest single segment" in single.skipped_speakers["spk_0"]

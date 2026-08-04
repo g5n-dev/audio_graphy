@@ -13,6 +13,7 @@ dropped link is silent data loss.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
@@ -24,6 +25,31 @@ logger = logging.getLogger(__name__)
 
 # MySQL caps lock names at 64 bytes.
 _MAX_LOCK_NAME = 64
+
+
+def _lock_name(purpose: str, tenant_id: str) -> str:
+    """Build a lock name that stays inside MySQL's 64-byte cap without colliding.
+
+    Truncating ``ag:{purpose}:{tenant_id}`` is what this used to do, and it means
+    two tenant codes sharing a long enough prefix serialize against each other:
+    with ``purpose='speaker_link'`` only 48 bytes of tenant id survive. Tenant
+    codes are unvalidated operator input and the column holds 64 characters, so
+    the input that produces this is accepted everywhere else. The symptom is
+    latency coupling rather than a wrong answer -- B acquires once A releases --
+    which is exactly why it would be diagnosed late.
+
+    Short names are left readable so a ``SHOW PROCESSLIST`` still says which
+    tenant is holding what; only over-long ones fall back to a digest.
+    """
+
+    name = f"ag:{purpose}:{tenant_id}"
+    if len(name.encode("utf-8")) <= _MAX_LOCK_NAME:
+        return name
+    digest = hashlib.sha256(tenant_id.encode("utf-8")).hexdigest()[:32]
+    hashed = f"ag:{purpose}:h:{digest}"
+    # A purpose long enough to overflow even the digest form is a bug in the
+    # caller, not operator input; truncating here keeps the name legal.
+    return hashed[:_MAX_LOCK_NAME]
 
 
 @asynccontextmanager
@@ -42,7 +68,7 @@ async def tenant_advisory_lock(
     The lock lives on its own connection: MySQL releases ``GET_LOCK`` when
     that connection closes, so an abandoned worker cannot wedge the tenant.
     """
-    lock_name = f"ag:{purpose}:{tenant_id}"[:_MAX_LOCK_NAME]
+    lock_name = _lock_name(purpose, tenant_id)
     session: AsyncSession | None = None
     acquired = False
     try:

@@ -4,8 +4,10 @@ SpeakerLinker refuses to use a tentatively-attached vector (an AMBIGUOUS
 merge) as a speaker's representative template — otherwise one uncertain
 merge redefines that speaker for every later comparison (ADR-0001).
 
-Existing rows default to 1.0: their attachment confidence is unknown, and
-retroactively demoting them would change matching for live tenants.
+Existing rows default to 1.0. That was described here as "their attachment
+confidence is unknown", which is wrong for the rows that matter: the same merge
+also wrote the cosine to ``speaker_links``. Migration 0038 backfills from there;
+this one stays a pure schema change so the two can be reasoned about separately.
 
 Revision ID: 0034_voiceprint_attach_cos
 Revises: 0033_prompt_lab

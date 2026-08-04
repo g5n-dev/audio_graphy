@@ -417,3 +417,34 @@ describe("GradientPanel", () => {
     expect(onGoToCompile).toHaveBeenCalledOnce();
   });
 });
+
+describe("GradientPanel — diff 与梯度可以只挂一个", () => {
+  it("refuses to submit an empty decision set when the patch list failed to load", async () => {
+    // 卡片来自梯度接口，决策集却是从 diff 的补丁清单构造的，两个请求都 retry:false。
+    // diff 挂掉时提交的是 {decisions: []}，后端 min_length=1 直接 422，暂存全丢，
+    // 而错误提示里一个字都没提到是补丁清单没拿到。
+    mocks.diff.mockRejectedValue(new Error("boom"));
+    renderPanel();
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: `接受补丁 ${ID_A.slice(0, 8)}` }),
+    );
+
+    expect(await screen.findByText(/补丁清单加载失败/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "提交决策" })).not.toBeInTheDocument();
+    // 暂存不清空：用户填的东西不该因为另一个请求挂了而消失。
+    expect(screen.getByText(/已暂存 1 项决策/)).toBeInTheDocument();
+    expect(mocks.decide).not.toHaveBeenCalled();
+  });
+
+  it("submits normally once the patch list is there", async () => {
+    renderPanel();
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: `接受补丁 ${ID_A.slice(0, 8)}` }),
+    );
+
+    expect(screen.getByRole("button", { name: "提交决策" })).toBeInTheDocument();
+    expect(screen.queryByText(/补丁清单加载失败/)).not.toBeInTheDocument();
+  });
+});
