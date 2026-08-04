@@ -4244,3 +4244,31 @@ async def test_nullable_lineage_recipe_is_database_idempotent(
     assert replay.id == first.id
     assert first.recipe_hash == replay.recipe_hash
     assert len(facts) == 1
+
+
+def test_the_deployment_conflict_messages_are_a_frontend_contract() -> None:
+    """The web UI branches on these exact strings, so they are API surface.
+
+    ``_domain`` maps every governance conflict onto one
+    TAG_GOVERNANCE_CONFLICT / 409, so the front end cannot tell them apart by
+    status or code — ``deploymentOperationErrorCopy`` in
+    TagGovernance/index.tsx matches the message text. The two conflicts below
+    need OPPOSITE remedies: one says go produce a candidate through
+    self-evolution, the other says pick a different evaluation. Reword either
+    string without updating that function and the operator is sent the wrong
+    way, with no error to show for it.
+
+    If you need to reword one, change both sides in the same commit.
+    """
+    import inspect
+
+    from audio_graphy.services import tag_governance
+
+    source = inspect.getsource(tag_governance)
+    for phrase in (
+        "deployment requires a release-service sealed holdout evaluation",
+        "a sealed holdout evaluation can start only one deployment",
+    ):
+        assert phrase in source, (
+            f"{phrase!r} is matched verbatim by the deployment dialog's error copy"
+        )

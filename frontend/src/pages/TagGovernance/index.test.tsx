@@ -858,6 +858,52 @@ describe("TagGovernancePage", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("tells a reused-evaluation conflict apart from a wrong-lane one", async () => {
+    const user = userEvent.setup();
+    // 两种 409 都提到 sealed holdout，但补救动作相反：这一种要换一次评估，
+    // 而不是去自进化面板产生新候选。只按 /sealed holdout/ 匹配会指错路。
+    const conflict = Object.assign(
+      new Error("Request failed with status code 409"),
+      {
+        response: {
+          status: 409,
+          data: {
+            error: {
+              code: "TAG_GOVERNANCE_CONFLICT",
+              message: "a sealed holdout evaluation can start only one deployment",
+              detail: {},
+            },
+          },
+        },
+      },
+    );
+    mocks.createDeployment.mockRejectedValue(conflict);
+    renderPage("/tag-governance?tab=deployments");
+    await screen.findByText("灰度流量 25%");
+
+    await user.click(screen.getByRole("button", { name: "创建影子部署" }));
+    const dialog = screen.getByRole("dialog", { name: "创建影子部署" });
+    await user.type(
+      within(dialog).getByRole("spinbutton", { name: "部署抽取版本 ID" }),
+      "42",
+    );
+    await user.type(
+      within(dialog).getByRole("spinbutton", { name: "部署评估 ID" }),
+      "7",
+    );
+    await user.type(
+      within(dialog).getByRole("spinbutton", { name: "部署基线抽取版本 ID" }),
+      "41",
+    );
+    await user.click(
+      within(dialog).getByRole("button", { name: "创建影子部署" }),
+    );
+
+    const alert = await within(dialog).findByRole("alert");
+    expect(alert).toHaveTextContent(/已经启动过一次部署/);
+    expect(alert).not.toHaveTextContent(/自进化面板/);
+  });
+
   it("freezes a server-resolved review cohort with every completeness guarantee", async () => {
     const user = userEvent.setup();
     mocks.freezeGoldSet.mockResolvedValue({

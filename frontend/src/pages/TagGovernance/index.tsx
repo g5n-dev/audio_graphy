@@ -147,7 +147,16 @@ function isSealedHoldoutEvaluation(evaluation: TagEvaluation): boolean {
  */
 function deploymentOperationErrorCopy(error: unknown): string {
   const message = getErrorMessage(error, "部署操作失败");
-  if (getErrorStatus(error) === 409 && /sealed holdout/i.test(message)) {
+  if (getErrorStatus(error) !== 409) return message;
+  // 两种冲突都提到 sealed holdout，但补救动作相反：一个要去产生新候选，
+  // 一个要换一次评估。只匹配 /sealed holdout/ 会把后者也引向自进化面板。
+  if (/can start only one deployment/i.test(message)) {
+    return (
+      "这次密封 Holdout 评估已经启动过一次部署，不能重复引用。" +
+      "请选择另一次评估，或重新运行评估后再创建部署。"
+    );
+  }
+  if (/requires a release-service sealed holdout/i.test(message)) {
     return (
       "该评估不是发布服务在密封 Holdout 上运行的结果，challenge 验证结果" +
       "不能用于部署。请在自进化面板产生候选，待其密封评估通过后再创建部署。"
