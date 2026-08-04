@@ -115,7 +115,10 @@ describe("LiveAudioCapturePanel", () => {
         return { stop: vi.fn() };
       },
     );
-    render(<LiveAudioCapturePanel recordings={RECORDINGS} />);
+    const onCommitted = vi.fn();
+    render(
+      <LiveAudioCapturePanel recordings={RECORDINGS} onCommitted={onCommitted} />,
+    );
 
     await user.type(
       screen.getByLabelText("实时采集同意凭证"),
@@ -188,6 +191,9 @@ describe("LiveAudioCapturePanel", () => {
     expect(socket.sent).toContain(JSON.stringify({ type: "finalize" }));
     act(() => socket.message({ type: "session_closed" }));
     expect(await screen.findByText("采集已提交")).toBeInTheDocument();
+    // 落库发生在这一刻。面板拿不到工作台的数据，不回调外层就无从刷新，
+    // 页面会在「已完成持久化确认」旁边继续画采集前的转写。
+    expect(onCommitted).toHaveBeenCalledTimes(1);
   });
 
   it("stops a microphone handle that resolves after the session has already closed", async () => {

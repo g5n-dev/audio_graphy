@@ -17,6 +17,7 @@ vi.mock("@/api/services", () => ({
   cancelReceptionAudioOperation: vi.fn(),
   correctReceptionDialogueTag: vi.fn(),
   createTagJob: vi.fn(),
+  getTagJob: vi.fn(),
   createTagReviewBatch: vi.fn(),
   createReceptionAudioOperation: vi.fn(),
   createReceptionAudioPlan: vi.fn(),
@@ -40,6 +41,7 @@ import {
   cancelReceptionAudioOperation,
   correctReceptionDialogueTag,
   createTagJob,
+  getTagJob,
   createTagReviewBatch,
   createReceptionAudioOperation,
   createReceptionAudioPlan,
@@ -68,6 +70,7 @@ const mockedGetLineage =
 const mockedGetProvenance =
   getReceptionProvenance as unknown as ReturnType<typeof vi.fn>;
 const mockedCreateTagJob = createTagJob as unknown as ReturnType<typeof vi.fn>;
+const mockedGetTagJob = getTagJob as unknown as ReturnType<typeof vi.fn>;
 const mockedCorrectTag =
   correctReceptionDialogueTag as unknown as ReturnType<typeof vi.fn>;
 const mockedCreateReview =
@@ -428,6 +431,19 @@ describe("ReceptionWorkspacePage", () => {
       status: "queued",
       scope: {},
       tagger_version_id: 42,
+      total_items: 0,
+      completed_items: 0,
+      last_error_message: null,
+    });
+    mockedGetTagJob.mockResolvedValue({
+      id: 88,
+      job_type: "recompute",
+      status: "queued",
+      scope: {},
+      tagger_version_id: 42,
+      total_items: 0,
+      completed_items: 0,
+      last_error_message: null,
     });
     mockedCorrectTag.mockResolvedValue({
       reception_id: 1,
@@ -1391,6 +1407,37 @@ describe("ReceptionWorkspacePage", () => {
     ).toHaveAttribute("href", "/tag-runs/88");
     expect(screen.getByText("服务端已绑定 Tagger #42")).toBeInTheDocument();
     expect(mockedDeriveTags).not.toHaveBeenCalled();
+  });
+
+  it("follows the recompute job to its terminal state and refreshes the page", async () => {
+    // 重算由后台 worker 执行。卡片如果只画「已入队」那一刻的快照，跑完之后
+    // 这一页画的仍然是重算前的标签，而卡片还在说任务在排队。
+    const user = userEvent.setup();
+    mockedGetTagJob.mockResolvedValue({
+      id: 88,
+      job_type: "recompute",
+      status: "completed",
+      scope: {},
+      tagger_version_id: 42,
+      total_items: 12,
+      completed_items: 12,
+      last_error_message: null,
+    });
+    renderWorkspace();
+
+    await screen.findByText("客户购买意向");
+    const workspaceCallsBefore = mockedGetWorkspace.mock.calls.length;
+    await user.click(screen.getByRole("button", { name: "创建标签重算任务" }));
+
+    expect(
+      await screen.findByText("标签重算已完成，本页已刷新"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("12 / 12")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(mockedGetWorkspace.mock.calls.length).toBeGreaterThan(
+        workspaceCallsBefore,
+      );
+    });
   });
 
   it("keeps the semantic idempotency key stable when Tagger versions change", async () => {

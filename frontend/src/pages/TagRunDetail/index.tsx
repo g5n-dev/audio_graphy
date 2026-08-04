@@ -9,14 +9,8 @@ import {
 import { Link, useParams } from "react-router-dom";
 import { cancelTagJob, getTagJob, retryTagJob } from "@/api/services";
 import type { TagJob, TagJobStatus } from "@/types/api";
+import { isTerminalTagJob, tagJobPollInterval } from "@/utils/tagJobs";
 import "../TagGovernance/tagGovernance.css";
-
-const TERMINAL_STATUSES = new Set<TagJobStatus>([
-  "completed",
-  "succeeded",
-  "failed",
-  "cancelled",
-]);
 
 function statusLabel(status: TagJobStatus): string {
   return (
@@ -77,7 +71,18 @@ function RunScope({ job }: { job: TagJob }) {
         {receptions.length > 0 && (
           <div>
             <dt>接待</dt>
-            <dd>接待 {receptions.join("、")}</dd>
+            {/* 任务范围里的接待 ID 是这一页唯一的去向线索：不做成链接，
+                操作员只能把编号抄下来自己拼 URL。 */}
+            <dd>
+              {receptions.map((receptionId, index) => (
+                <span key={receptionId}>
+                  {index > 0 && "、"}
+                  <Link to={`/receptions/${receptionId}/workspace`}>
+                    接待 {receptionId}
+                  </Link>
+                </span>
+              ))}
+            </dd>
           </div>
         )}
         {units.length > 0 && (
@@ -296,10 +301,8 @@ export default function TagRunDetailPage() {
     queryFn: () => getTagJob(jobId),
     enabled: validId,
     retry: false,
-    refetchInterval: (currentQuery) => {
-      const status = currentQuery.state.data?.status;
-      return status && !TERMINAL_STATUSES.has(status) ? 3_000 : false;
-    },
+    refetchInterval: (currentQuery) =>
+      tagJobPollInterval(currentQuery.state.data?.status),
   });
   const retryMutation = useMutation({
     mutationFn: () => retryTagJob(jobId),
@@ -375,7 +378,7 @@ export default function TagRunDetailPage() {
           <span className={`ag-run-status is-${job.status}`}>
             {statusLabel(job.status)}
           </span>
-          {!TERMINAL_STATUSES.has(job.status) && (
+          {!isTerminalTagJob(job.status) && (
             <button
               type="button"
               className="is-secondary"

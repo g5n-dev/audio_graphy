@@ -31,6 +31,12 @@ interface ConfirmedCaption {
 interface LiveAudioCapturePanelProps {
   recordings: ReceptionRecordingItem[];
   disabled?: boolean;
+  /**
+   * 服务端确认 drain 与持久化之后调用。面板自己没有工作台的数据，
+   * 不通知外层的话，页面会在「已完成持久化确认」的字样旁边继续显示
+   * 采集前的转写和分段，直到操作员手动刷新。
+   */
+  onCommitted?: () => void;
 }
 
 interface CaptureLease {
@@ -105,7 +111,11 @@ function integerWatermark(value: unknown): number | null {
 export function LiveAudioCapturePanel({
   recordings,
   disabled = false,
+  onCommitted,
 }: LiveAudioCapturePanelProps) {
+  // socket 的 handler 在连接建立时捕获闭包，走 ref 才不会调到旧的回调。
+  const onCommittedRef = useRef(onCommitted);
+  onCommittedRef.current = onCommitted;
   const [phase, setPhase] = useState<CapturePhase>("idle");
   const phaseRef = useRef<CapturePhase>("idle");
   const [recordingId, setRecordingId] = useState(
@@ -560,6 +570,9 @@ export function LiveAudioCapturePanel({
           setStatusDetail("服务端已完成 drain 与持久化确认");
           clearPendingFrames();
           void stopMedia(session.runEpoch);
+          // 这一刻转写与分段才真的落库；不通知外层，工作台会在这句
+          // 「已完成持久化确认」旁边继续画采集前的数据。
+          onCommittedRef.current?.();
         }
       };
 

@@ -15,6 +15,7 @@ import {
   cancelReceptionAudioOperation,
   correctReceptionDialogueTag,
   createTagJob,
+  getTagJob,
   createTagReviewBatch,
   createReceptionAudioOperation,
   createReceptionAudioPlan,
@@ -60,8 +61,9 @@ import type {
   ReceptionTagAssignment,
   RecordingSpeakerRef,
   TagDefinition,
-  TagJob,
+  TagJobStatus,
 } from "@/types/api";
+import { isTerminalTagJob, tagJobPollInterval } from "@/utils/tagJobs";
 
 type AudioSourceId = string | null;
 
@@ -192,6 +194,23 @@ function canonicalFactId(modelRunId: string | null | undefined): number | null {
   return positiveNumericId(modelRunId.slice("fact:".length));
 }
 
+/** 卡片标题跟着任务状态走：固定写「已入队」会把跑完和失败都说成排队中。 */
+function tagJobHeadline(status: TagJobStatus): string {
+  switch (status) {
+    case "completed":
+    case "succeeded":
+      return "标签重算已完成，本页已刷新";
+    case "failed":
+      return "标签重算失败";
+    case "cancelled":
+      return "标签重算已取消";
+    case "running":
+      return "标签重算进行中";
+    default:
+      return "后台标签任务已入队";
+  }
+}
+
 export default function ReceptionWorkspacePage() {
   const { id } = useParams<{ id: string }>();
   const location = useLocation();
@@ -240,7 +259,9 @@ export default function ReceptionWorkspacePage() {
   const [tagGroupVersion, setTagGroupVersion] = useState("rules-v1");
   const [schemaVersionId, setSchemaVersionId] = useState<number | null>(null);
   const [targetLabels, setTargetLabels] = useState<Set<string>>(new Set());
-  const [tagJob, setTagJob] = useState<TagJob | null>(null);
+  // 只存 ID：任务的状态由下面的查询跟进。存整个对象就等于把「已入队」
+  // 那一刻的快照永久钉在页面上——重算跑完、失败、被取消，卡片都不会变。
+  const [tagJobId, setTagJobId] = useState<number | null>(null);
   const initializedSchemaRef = useRef<number | null>(null);
   const initializedLegacyRef = useRef(false);
 
@@ -279,6 +300,26 @@ export default function ReceptionWorkspacePage() {
     retry: false,
     placeholderData: (previous) => previous,
   });
+  // 重算任务由后台 worker 执行，工作台必须跟进到终态：跑完之后这一页的
+  // 标签才是新的，而在此之前页面画的仍然是重算前的那一版。
+  const tagJobQuery = useQuery({
+    queryKey: ["tag-job", tagJobId],
+    queryFn: () => getTagJob(tagJobId ?? 0),
+    enabled: tagJobId !== null,
+    retry: false,
+    refetchInterval: (query) => tagJobPollInterval(query.state.data?.status),
+  });
+  const tagJob = tagJobQuery.data ?? null;
+  const tagJobSettled = isTerminalTagJob(tagJob?.status);
+  useEffect(() => {
+    // 只在落到终态的那一次刷新工作台。写在 effect 里而不是 onSuccess，
+    // 是因为轮询的每一轮都会 onSuccess，那样会变成 3 秒一次全量重取。
+    if (tagJobSettled) {
+      void queryClient.invalidateQueries({
+        queryKey: ["reception-workspace", id],
+      });
+    }
+  }, [id, queryClient, tagJobSettled]);
   const automationQuery = useQuery({
     queryKey: ["reception-automation", id],
     queryFn: () => getReceptionAutomation(id ?? ""),
@@ -1200,7 +1241,8 @@ export default function ReceptionWorkspacePage() {
       );
     },
     onSuccess: (job) => {
-      setTagJob(job);
+      setTagJobId(job.id);
+      queryClient.setQueryData(["tag-job", job.id], job);
       setOperationStatus(
         `标签重算任务 #${job.id} 已入队；抽取、写入与重试由后台 worker 执行。`,
       );
@@ -1913,6 +1955,11 @@ export default function ReceptionWorkspacePage() {
             <LiveAudioCapturePanel
               recordings={operationRecordings}
               disabled={geometryIsBusy}
+              onCommitted={() => {
+                void queryClient.invalidateQueries({
+                  queryKey: ["reception-workspace", id],
+                });
+              }}
             />
           )}
 
@@ -2295,8 +2342,16 @@ export default function ReceptionWorkspacePage() {
                 aria-live="polite"
               >
                 <div>
-                  <strong>后台标签任务已入队</strong>
+                  <strong>{tagJobHeadline(tagJob.status)}</strong>
                   <span>Schema #{schemaVersionId}</span>
+                  {tagJob.total_items > 0 && (
+                    <span>
+                      {tagJob.completed_items} / {tagJob.total_items}
+                    </span>
+                  )}
+                  {tagJob.last_error_message && (
+                    <span>{tagJob.last_error_message}</span>
+                  )}
                   <span>
                     {tagJob.tagger_version_id === null ||
                     tagJob.tagger_version_id === undefined

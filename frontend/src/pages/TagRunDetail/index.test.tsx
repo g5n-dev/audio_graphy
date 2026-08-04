@@ -88,7 +88,15 @@ describe("TagRunDetailPage", () => {
       screen.getByRole("progressbar", { name: "运行完成度" }),
     ).toHaveAttribute("aria-valuenow", "64");
     expect(screen.getByText("模型抽取")).toBeInTheDocument();
-    expect(screen.getByText("接待 101、102")).toBeInTheDocument();
+    // 范围里的接待编号是这一页唯一的去向线索，必须能点回工作台。
+    expect(screen.getByRole("link", { name: "接待 101" })).toHaveAttribute(
+      "href",
+      "/receptions/101/workspace",
+    );
+    expect(screen.getByRole("link", { name: "接待 102" })).toHaveAttribute(
+      "href",
+      "/receptions/102/workspace",
+    );
     expect(screen.getByText("intent、objection")).toBeInTheDocument();
     expect(screen.getByText("失败子集")).toBeInTheDocument();
     expect(screen.getByText("102")).toBeInTheDocument();
