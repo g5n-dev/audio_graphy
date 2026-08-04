@@ -61,8 +61,20 @@ async def _seed_recording(session_factory: Any, recording_id: int, path: str) ->
 
 
 class _Settings:
-    """Voiceprint settings with the feature switched on."""
+    """Voiceprint settings with the feature switched on.
 
+    Hand-written rather than a real ``Settings``: this suite runs without the
+    env/validator machinery. The cost is that every field the linking chain
+    starts reading has to be mirrored here, and a miss surfaces as
+    "speaker linking failed ... AttributeError" swallowed into a warning, with
+    the assertion failing three frames away. Two fields have been added late for
+    exactly that reason — check this class first when this file fails after a
+    config change.
+    """
+
+    # Scopes the MySQL advisory lock, which is server-global rather than
+    # per-database (see core/tenant_lock.py).
+    deployment_id = "audiography"
     enable_voiceprint = True
     voiceprint_sampling_strategy = "weighted_mean"
     voiceprint_sample_min_segment_sec = 1.0
