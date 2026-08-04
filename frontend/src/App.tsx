@@ -16,6 +16,7 @@
  *   /communities  — compatibility redirect to /graph?view=clusters
  *   /tag-governance — tag schema/evaluation/deployment governance
  *   /tag-review   — human review workbench
+ *   /prompt-lab   — 离线 Prompt 编译与人工复核
  *   /tag-runs/:id — tag extraction/recompute run detail
  *   *             — not-found view (unknown paths are never silently redirected)
  */
@@ -47,6 +48,7 @@ import {
   IconUser,
   IconClockCircle,
   IconMenu,
+  IconThunderbolt,
 } from "@arco-design/web-react/icon";
 import { useAuthStore } from "@/stores/auth";
 import "@/styles/immersiveGraphShell.css";
@@ -77,6 +79,7 @@ const TagInsightsPage = lazy(() => import("@/pages/TagInsights"));
 const TagGovernancePage = lazy(() => import("@/pages/TagGovernance"));
 const TagReviewPage = lazy(() => import("@/pages/TagReview"));
 const TagRunDetailPage = lazy(() => import("@/pages/TagRunDetail"));
+const PromptLabPage = lazy(() => import("@/pages/PromptLab"));
 
 const { Header, Sider, Content } = Layout;
 const { Title } = Typography;
@@ -252,6 +255,26 @@ function TagGovernanceForbiddenView({ role }: { role?: string }) {
   );
 }
 
+/**
+ * 标签治理系路由的权限边界。
+ *
+ * 抽象自 /tag-governance、/tag-review、/tag-runs/:id 三份完全相同的内联三元——
+ * 每加一条受保护路由就复制一次，等于把 canGovernTags 这个局部量的耦合也复制一次。
+ * 刻意留在本文件内：挪进 src/components/ 会让 App 静态依赖一个新目录，
+ * 是把整条懒加载链拽回首屏 chunk 的最快路径。
+ */
+function GovernedRoute({
+  allowed,
+  role,
+  children,
+}: {
+  allowed: boolean;
+  role?: string;
+  children: ReactNode;
+}) {
+  return allowed ? <>{children}</> : <TagGovernanceForbiddenView role={role} />;
+}
+
 const menuGroups = [
   {
     label: "工作总览",
@@ -287,6 +310,12 @@ const menuGroups = [
         key: "/tag-review",
         icon: <IconUser />,
         label: "人工复核",
+        requiresInspector: true,
+      },
+      {
+        key: "/prompt-lab",
+        icon: <IconThunderbolt />,
+        label: "提示词实验室",
         requiresInspector: true,
       },
       { key: "/speakers", icon: <IconUser />, label: "说话人" },
@@ -499,31 +528,33 @@ function AppLayout() {
                 <Route
                   path="/tag-governance"
                   element={
-                    canGovernTags ? (
+                    <GovernedRoute allowed={canGovernTags} role={user?.role}>
                       <TagGovernancePage />
-                    ) : (
-                      <TagGovernanceForbiddenView role={user?.role} />
-                    )
+                    </GovernedRoute>
                   }
                 />
                 <Route
                   path="/tag-review"
                   element={
-                    canGovernTags ? (
+                    <GovernedRoute allowed={canGovernTags} role={user?.role}>
                       <TagReviewPage />
-                    ) : (
-                      <TagGovernanceForbiddenView role={user?.role} />
-                    )
+                    </GovernedRoute>
                   }
                 />
                 <Route
                   path="/tag-runs/:id"
                   element={
-                    canGovernTags ? (
+                    <GovernedRoute allowed={canGovernTags} role={user?.role}>
                       <TagRunDetailPage />
-                    ) : (
-                      <TagGovernanceForbiddenView role={user?.role} />
-                    )
+                    </GovernedRoute>
+                  }
+                />
+                <Route
+                  path="/prompt-lab"
+                  element={
+                    <GovernedRoute allowed={canGovernTags} role={user?.role}>
+                      <PromptLabPage />
+                    </GovernedRoute>
                   }
                 />
                 <Route path="*" element={<RouteNotFoundView />} />

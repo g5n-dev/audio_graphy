@@ -418,6 +418,193 @@ const demoGovernanceSeeds: Record<string, DemoRecord[]> = {
       data_source: "demo",
     },
   ],
+  /**
+   * rendered_prompt 必须严格等于「header + 已采纳补丁（按 ordinal, patch_id 排序）
+   * + 示例：+ 各示例」用 \n\n 拼接的结果——前端按同一规则逆向切块来做补丁归属，
+   * 拼错会让演示站的归属重建返回 exact:false，差异页就看不到补丁标识。
+   */
+  "prompt-lab/artifacts": [
+    {
+      id: 301,
+      tenant_id: demoTenantId,
+      compilation_id: 9001,
+      optimization_run_id: null,
+      baseline_tagger_version_id: 21,
+      gold_set_version_id: 51,
+      parent_artifact_id: null,
+      candidate_tagger_version_id: null,
+      compiler: "builtin",
+      compiler_version: "builtin-proposer-v1",
+      metric_version: "prompt-lab-metric-v1",
+      status: "draft",
+      baseline_prompt: "基线规则：依据 schema 与 segments 判定有文本依据的标签。",
+      header: "基线规则：依据 schema 与 segments 判定有文本依据的标签。",
+      rendered_prompt: "基线规则：依据 schema 与 segments 判定有文本依据的标签。\n\n标签「price」在 7 个已复核样本上被漏判。若某个 segment 明确支持该标签，即使表述间接也应输出并引用该 segment。\n\n标签「compliance_risk」在 5 个已复核样本上证据引用不当。输出该标签时，evidence_segment_ids 必须且只能包含直接支持该判定的 segment。\n\n示例：\n\n示例：顾问说「这个月有活动，落地价能到十九万八」，应输出 price 并引用该 segment。",
+      patches: [
+        {
+          patch_id: "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+          kind: "rule_clarification",
+          origin: "builtin",
+          ordinal: 1,
+          body: "标签「price」在 7 个已复核样本上被漏判。若某个 segment 明确支持该标签，即使表述间接也应输出并引用该 segment。",
+          rationale: "聚类 tag_reasoning:price:missed_label 共 7 例，复核理由 missed_label。",
+          target_tag_keys: ["price"],
+          gradient_text: null,
+          source_badcase_ids: [71],
+          source_gold_label_ids: [],
+        },
+        {
+          patch_id: "b2c3d4e5f60718293a4b5c6d7e8f90a1",
+          kind: "constraint_add",
+          origin: "builtin",
+          ordinal: 2,
+          body: "标签「compliance_risk」在 5 个已复核样本上证据引用不当。输出该标签时，evidence_segment_ids 必须且只能包含直接支持该判定的 segment。",
+          rationale: "聚类 evidence:compliance_risk:wrong_segment 共 5 例。",
+          target_tag_keys: ["compliance_risk"],
+          gradient_text: null,
+          source_badcase_ids: [72],
+          source_gold_label_ids: [],
+        },
+      ],
+      demos: [
+        {
+          demo_id: "d4e5f60718293a4b5c6d7e8f90a1b2c3",
+          gold_label_id: 501,
+          subject_type: "dialogue_unit",
+          subject_id: 4021,
+          rendered_text: "示例：顾问说「这个月有活动，落地价能到十九万八」，应输出 price 并引用该 segment。",
+          redaction_mode: "synthetic",
+          source_checksum: "f0e1d2c3b4a5968778695a4b3c2d1e0f9a8b7c6d5e4f30211223344556677889",
+          reception_id: 3001,
+          segment_ids: [88011, 88012],
+          recording_ids: [7001],
+        },
+      ],
+      accepted_patch_ids: ["a1b2c3d4e5f60718293a4b5c6d7e8f90", "b2c3d4e5f60718293a4b5c6d7e8f90a1"],
+      prompt_token_estimate: 268,
+      input_budget_report: {
+        prompt_tokens: 268,
+        schema_tokens: 214,
+        fixed_tokens: 482,
+        usable_tokens: 10800,
+        headroom_tokens: 10318,
+        baseline_fixed_tokens: 246,
+        baseline_headroom_tokens: 10554,
+        headroom_delta: -236,
+        headroom_shrink_ratio: 0.0224,
+        fits: true,
+      },
+      redaction_report: { demo_count: 1, by_redaction_mode: { synthetic: 1 } },
+      artifact_checksum: "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809",
+      created_at: "2026-08-02T09:15:00Z",
+      updated_at: "2026-08-02T09:15:00Z",
+    },
+    {
+      id: 302,
+      tenant_id: demoTenantId,
+      compilation_id: 9001,
+      optimization_run_id: null,
+      baseline_tagger_version_id: 21,
+      gold_set_version_id: 51,
+      parent_artifact_id: 301,
+      candidate_tagger_version_id: 22,
+      compiler: "builtin",
+      compiler_version: "builtin-proposer-v1",
+      metric_version: "prompt-lab-metric-v1",
+      status: "review",
+      baseline_prompt: "基线规则：依据 schema 与 segments 判定有文本依据的标签。",
+      header: "基线规则：依据 schema 与 segments 判定有文本依据的标签。",
+      rendered_prompt: "基线规则：依据 schema 与 segments 判定有文本依据的标签。\n\n标签「price」在 7 个已复核样本上被漏判。若某个 segment 明确支持该标签，即使表述间接也应输出并引用该 segment。\n\n示例：\n\n示例：顾问说「这个月有活动，落地价能到十九万八」，应输出 price 并引用该 segment。",
+      patches: [
+        {
+          patch_id: "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+          kind: "rule_clarification",
+          origin: "builtin",
+          ordinal: 1,
+          body: "标签「price」在 7 个已复核样本上被漏判。若某个 segment 明确支持该标签，即使表述间接也应输出并引用该 segment。",
+          rationale: "聚类 tag_reasoning:price:missed_label 共 7 例。",
+          target_tag_keys: ["price"],
+          gradient_text: null,
+          source_badcase_ids: [71],
+          source_gold_label_ids: [],
+        },
+      ],
+      demos: [
+        {
+          demo_id: "d4e5f60718293a4b5c6d7e8f90a1b2c3",
+          gold_label_id: 501,
+          subject_type: "dialogue_unit",
+          subject_id: 4021,
+          rendered_text: "示例：顾问说「这个月有活动，落地价能到十九万八」，应输出 price 并引用该 segment。",
+          redaction_mode: "synthetic",
+          source_checksum: "f0e1d2c3b4a5968778695a4b3c2d1e0f9a8b7c6d5e4f30211223344556677889",
+          reception_id: 3001,
+          segment_ids: [88011, 88012],
+          recording_ids: [7001],
+        },
+      ],
+      accepted_patch_ids: ["a1b2c3d4e5f60718293a4b5c6d7e8f90"],
+      prompt_token_estimate: 208,
+      input_budget_report: {
+        prompt_tokens: 268,
+        schema_tokens: 214,
+        fixed_tokens: 482,
+        usable_tokens: 10800,
+        headroom_tokens: 10318,
+        baseline_fixed_tokens: 246,
+        baseline_headroom_tokens: 10554,
+        headroom_delta: -236,
+        headroom_shrink_ratio: 0.0224,
+        fits: true,
+      },
+      redaction_report: { demo_count: 1, by_redaction_mode: { synthetic: 1 } },
+      artifact_checksum: "2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a",
+      created_at: "2026-08-02T10:40:00Z",
+      updated_at: "2026-08-02T10:40:00Z",
+    },
+  ],
+  "prompt-lab/gradients": [
+    {
+      id: 401,
+      tenant_id: demoTenantId,
+      artifact_id: 301,
+      patch_id: "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+      iteration: 1,
+      source_badcase_id: 71,
+      tag_key: "price",
+      failure_stage: "tag_reasoning",
+      failure_mode: "correct:missed_label",
+      gradient_text: "当前规则只要求出现「优惠」字样，但这 7 例中金额与「优惠」分处不同 segment，模型未跨句关联。",
+      proposed_edit: "标签「price」在 7 个已复核样本上被漏判。若某个 segment 明确支持该标签，即使表述间接也应输出并引用该 segment。",
+      decision: "pending",
+      decided_by: null,
+      decided_at: null,
+      decision_note: null,
+      evaluation: { source_badcase_count: 7, support: 7 },
+      created_at: "2026-08-02T09:15:00Z",
+      updated_at: "2026-08-02T09:15:00Z",
+    },
+    {
+      id: 402,
+      tenant_id: demoTenantId,
+      artifact_id: 301,
+      patch_id: "b2c3d4e5f60718293a4b5c6d7e8f90a1",
+      iteration: 1,
+      source_badcase_id: 72,
+      tag_key: "compliance_risk",
+      failure_stage: "evidence",
+      failure_mode: "correct:wrong_segment",
+      gradient_text: "证据指向了顾问的总结句而非客户原话，导致合规判定无法复核。",
+      proposed_edit: "标签「compliance_risk」在 5 个已复核样本上证据引用不当。输出该标签时，evidence_segment_ids 必须且只能包含直接支持该判定的 segment。",
+      decision: "pending",
+      decided_by: null,
+      decided_at: null,
+      decision_note: null,
+      evaluation: { source_badcase_count: 5, support: 5 },
+      created_at: "2026-08-02T09:15:00Z",
+      updated_at: "2026-08-02T09:15:00Z",
+    },
+  ],
   "tag-optimization-runs": [
     {
       id: 91,
@@ -1329,6 +1516,8 @@ async function handleGovernanceRequest(
     "tag-deployments",
     "tag-badcases",
     "tag-optimization-runs",
+    // prompt-lab/gradients 刻意不在这里：它要求 artifact_id 必填，走下面的专门分支。
+    "prompt-lab/artifacts",
   ]);
   const namespace = pathname.startsWith("/") ? pathname.slice(1) : pathname;
 
@@ -1344,6 +1533,28 @@ async function handleGovernanceRequest(
         items = items.filter((item) => item.status === requestedStatus);
       }
     }
+    if (namespace === "prompt-lab/artifacts") {
+      const status = url.searchParams.get("status");
+      const rawLimit = url.searchParams.get("limit");
+      const limit = rawLimit === null ? 50 : Number(rawLimit);
+      if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
+        return apiError(422, "VALIDATION_ERROR", "limit 必须是 1 到 200 之间的整数。");
+      }
+      items = items
+        .filter((item) => !status || item.status === status)
+        .slice(0, limit)
+        // 与真实接口一致：列表不返回 Prompt 正文。
+        .map((item) => {
+          const rest = { ...item };
+          delete rest.baseline_prompt;
+          delete rest.header;
+          delete rest.rendered_prompt;
+          delete rest.patches;
+          delete rest.demos;
+          return rest;
+        });
+      return json({ items, total: items.length });
+    }
     if (namespace === "tag-badcases") {
       const status = url.searchParams.get("status");
       const failureStage = url.searchParams.get("failure_stage");
@@ -1356,6 +1567,208 @@ async function handleGovernanceRequest(
       );
     }
     return json({ items, total: items.length });
+  }
+
+  if (request.method === "GET" && pathname === "/prompt-lab/readiness") {
+    // 刻意留两个未达标组合，让覆盖矩阵的三档颜色都能出现。
+    return json({
+      tenant_id: demoTenantId,
+      ready: false,
+      gold_label_total: 412,
+      silver_label_total: 1180,
+      feedback_total: 412,
+      feedback_threshold: 200,
+      domain_threshold: 30,
+      frozen_gold_set_versions: 2,
+      pending_artifacts: 1,
+      annotation_hours_remaining: 1.5,
+      domains: [
+        { domain: "dialogue_unit:stage", gold_count: 96, silver_count: 240, feedback_count: 96, meets_threshold: true },
+        { domain: "dialogue_unit:intent", gold_count: 88, silver_count: 210, feedback_count: 88, meets_threshold: true },
+        { domain: "dialogue_unit:objection", gold_count: 42, silver_count: 160, feedback_count: 42, meets_threshold: true },
+        { domain: "dialogue_unit:next_step", gold_count: 34, silver_count: 150, feedback_count: 34, meets_threshold: true },
+        { domain: "reception:compliance_risk", gold_count: 12, silver_count: 220, feedback_count: 12, meets_threshold: false },
+        { domain: "reception:next_step", gold_count: 26, silver_count: 200, feedback_count: 26, meets_threshold: false },
+      ],
+      blockers: [
+        "domain_support_below_30:reception:compliance_risk",
+        "domain_support_below_30:reception:next_step",
+      ],
+      is_demo: true,
+      data_source: "demo",
+    });
+  }
+
+  if (request.method === "GET" && pathname === "/prompt-lab/gradients") {
+    const rawId = url.searchParams.get("artifact_id");
+    const artifactId = Number(rawId);
+    if (!rawId || !Number.isInteger(artifactId) || artifactId <= 0) {
+      return apiError(422, "VALIDATION_ERROR", "artifact_id 必须是正整数。");
+    }
+    const decision = url.searchParams.get("decision");
+    const items = (await governanceRecords(env, "prompt-lab/gradients"))
+      .filter((item) => item.artifact_id === artifactId)
+      .filter((item) => !decision || item.decision === decision)
+      .sort((left, right) => left.id - right.id);
+    return json({ items, total: items.length });
+  }
+
+  const artifactDiffMatch = /^\/prompt-lab\/artifacts\/(\d+)\/diff$/.exec(pathname);
+  if (request.method === "GET" && artifactDiffMatch) {
+    const record = await governanceRecord(
+      env,
+      "prompt-lab/artifacts",
+      Number(artifactDiffMatch[1]),
+    );
+    if (!record) {
+      return apiError(404, "PROMPT_LAB_NOT_FOUND", "演示站未提供该产物。");
+    }
+    const budget = record.input_budget_report as Record<string, number>;
+    const promptTokens = Number(record.prompt_token_estimate ?? 0);
+    return json({
+      artifact_id: record.id,
+      status: record.status,
+      baseline_prompt: record.baseline_prompt,
+      candidate_prompt: record.rendered_prompt,
+      patches: record.patches,
+      demos: record.demos,
+      accepted_patch_ids: record.accepted_patch_ids,
+      prompt_token_estimate: promptTokens,
+      // 与线上同口径：只有固定开销之间可相减；prompt_token_estimate 只是策略正文。
+      fixed_token_delta: budget.fixed_tokens - budget.baseline_fixed_tokens,
+      input_budget_report: budget,
+      redaction_report: record.redaction_report,
+    });
+  }
+
+  const artifactGetMatch = /^\/prompt-lab\/artifacts\/(\d+)$/.exec(pathname);
+  if (request.method === "GET" && artifactGetMatch) {
+    const record = await governanceRecord(
+      env,
+      "prompt-lab/artifacts",
+      Number(artifactGetMatch[1]),
+    );
+    return record
+      ? json(record)
+      : apiError(404, "PROMPT_LAB_NOT_FOUND", "演示站未提供该产物。");
+  }
+
+  if (request.method === "POST" && pathname === "/prompt-lab/compilations") {
+    const body = await requestBody(request);
+    const baselineId = Number(body.baseline_tagger_version_id);
+    if (!Number.isInteger(baselineId) || baselineId <= 0) {
+      return apiError(400, "PROMPT_LAB_INVALID", "baseline_tagger_version_id 必须是正整数。");
+    }
+    const source = await governanceRecord(env, "prompt-lab/artifacts", 301);
+    if (!source || !env?.DB) return persistenceUnavailable();
+    const artifactId = await nextRecordId(env.DB, "prompt-lab/artifacts", 400);
+    const compilationId = await nextRecordId(env.DB, "prompt-lab-compilations", 9100);
+    // 演示站里 worker 是瞬时的：立刻落一份产物，让轮询能观察到它出现。
+    const created = {
+      ...source,
+      id: artifactId,
+      compilation_id: compilationId,
+      parent_artifact_id: null,
+      status: "draft",
+      created_at: new Date(0).toISOString(),
+      updated_at: new Date(0).toISOString(),
+    };
+    const failure = await persistGovernanceRecord(
+      env,
+      "prompt-lab/artifacts",
+      created,
+      "prompt_lab.compile",
+      { baseline_tagger_version_id: baselineId },
+    );
+    if (failure) return failure;
+    for (const gradient of await governanceRecords(env, "prompt-lab/gradients")) {
+      if (gradient.artifact_id !== 301) continue;
+      const gradientId = await nextRecordId(env.DB, "prompt-lab/gradients", 500);
+      await persistGovernanceRecord(
+        env,
+        "prompt-lab/gradients",
+        { ...gradient, id: gradientId, artifact_id: artifactId, decision: "pending" },
+        "prompt_lab.gradient",
+      );
+    }
+    return json({ compilation_id: compilationId, job_id: artifactId }, 202);
+  }
+
+  const decisionsMatch = /^\/prompt-lab\/artifacts\/(\d+)\/decisions$/.exec(pathname);
+  if (request.method === "POST" && decisionsMatch) {
+    const parent = await governanceRecord(
+      env,
+      "prompt-lab/artifacts",
+      Number(decisionsMatch[1]),
+    );
+    if (!parent) {
+      return apiError(404, "PROMPT_LAB_NOT_FOUND", "演示站未提供该产物。");
+    }
+    const body = await requestBody(request);
+    const decisions = Array.isArray(body.decisions) ? body.decisions : [];
+    if (decisions.length === 0) {
+      return apiError(400, "PROMPT_LAB_INVALID", "decisions 不能为空。");
+    }
+    const patches = (parent.patches ?? []) as Array<Record<string, unknown>>;
+    const known = new Set(patches.map((patch) => String(patch.patch_id)));
+    const accepted = new Set<string>();
+    for (const raw of decisions as Array<Record<string, unknown>>) {
+      const patchId = String(raw.patch_id);
+      if (!known.has(patchId)) {
+        return apiError(400, "PROMPT_LAB_INVALID", `未知的 patch_id：${patchId}`);
+      }
+      if (raw.decision === "accepted") accepted.add(patchId);
+    }
+    const dropped = new Set(
+      (Array.isArray(body.dropped_demo_ids) ? body.dropped_demo_ids : []).map(String),
+    );
+    const demos = ((parent.demos ?? []) as Array<Record<string, unknown>>).filter(
+      (demo) => !dropped.has(String(demo.demo_id)),
+    );
+    // 与服务端 render() 同规则重算，否则前端的归属重建会对不上。
+    const keptPatches = patches
+      .filter((patch) => accepted.has(String(patch.patch_id)))
+      .sort((left, right) => {
+        const byOrdinal = Number(left.ordinal) - Number(right.ordinal);
+        if (byOrdinal !== 0) return byOrdinal;
+        return String(left.patch_id) < String(right.patch_id) ? -1 : 1;
+      });
+    const blocks = [String(parent.header ?? "").trim()]
+      .filter(Boolean)
+      .concat(keptPatches.map((patch) => String(patch.body).trim()).filter(Boolean));
+    const demoTexts = demos
+      .map((demo) => String(demo.rendered_text).trim())
+      .filter(Boolean);
+    if (demoTexts.length > 0) blocks.push("示例：", ...demoTexts);
+    if (!env?.DB) return persistenceUnavailable();
+    const childId = await nextRecordId(env.DB, "prompt-lab/artifacts", 400);
+    const child = {
+      ...parent,
+      id: childId,
+      parent_artifact_id: parent.id,
+      status: "review",
+      patches: keptPatches,
+      demos,
+      accepted_patch_ids: [...accepted],
+      rendered_prompt: blocks.join("\n\n"),
+      created_at: new Date(0).toISOString(),
+      updated_at: new Date(0).toISOString(),
+    };
+    const failure = await persistGovernanceRecord(
+      env,
+      "prompt-lab/artifacts",
+      child,
+      "prompt_lab.decisions",
+      { parent_artifact_id: parent.id, accepted: [...accepted] },
+    );
+    if (failure) return failure;
+    await persistGovernanceRecord(
+      env,
+      "prompt-lab/artifacts",
+      { ...parent, status: "superseded" },
+      "prompt_lab.superseded",
+    );
+    return json(child, 201);
   }
 
   if (request.method === "GET" && pathname === "/tag-evolution/overview") {

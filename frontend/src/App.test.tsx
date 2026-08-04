@@ -77,6 +77,9 @@ vi.mock("@/pages/TagReview", () => ({
 vi.mock("@/pages/TagRunDetail", () => ({
   default: () => <div>tag-run-detail-route</div>,
 }));
+vi.mock("@/pages/PromptLab", () => ({
+  default: () => <div>prompt-lab-route</div>,
+}));
 
 vi.mock("@/pages/ReceptionStateInsights", () => ({
   default: () => <div>reception-state-insights-route</div>,
@@ -140,6 +143,7 @@ describe("App route loading", () => {
     ["/tag-governance", "tag-governance-route"],
     ["/tag-review", "tag-review-route"],
     ["/tag-runs/42", "tag-run-detail-route"],
+    ["/prompt-lab", "prompt-lab-route"],
   ])("routes %s to its lazy feature page", async (path, expectedText) => {
     useAuthStore.setState({
       token: "test-token",
@@ -326,6 +330,7 @@ describe("App route loading", () => {
     expect(within(toolGroup).getByText("智能问答")).toBeInTheDocument();
     expect(within(toolGroup).getByText("标签治理")).toBeInTheDocument();
     expect(within(toolGroup).getByText("人工复核")).toBeInTheDocument();
+    expect(within(toolGroup).getByText("提示词实验室")).toBeInTheDocument();
     expect(within(toolGroup).getByText("说话人")).toBeInTheDocument();
   });
 
@@ -355,9 +360,12 @@ describe("App route loading", () => {
     });
     expect(within(sidebar).queryByText("标签治理")).not.toBeInTheDocument();
     expect(within(sidebar).queryByText("人工复核")).not.toBeInTheDocument();
+    expect(
+      within(sidebar).queryByText("提示词实验室"),
+    ).not.toBeInTheDocument();
   });
 
-  it.each(["/tag-governance", "/tag-review", "/tag-runs/42"])(
+  it.each(["/tag-governance", "/tag-review", "/tag-runs/42", "/prompt-lab"])(
     "explains the permission boundary instead of silently redirecting agents: %s",
     async (path) => {
       useAuthStore.setState({
@@ -391,6 +399,7 @@ describe("App route loading", () => {
       expect(screen.queryByText("tag-governance-route")).not.toBeInTheDocument();
       expect(screen.queryByText("tag-review-route")).not.toBeInTheDocument();
       expect(screen.queryByText("tag-run-detail-route")).not.toBeInTheDocument();
+      expect(screen.queryByText("prompt-lab-route")).not.toBeInTheDocument();
     },
   );
 

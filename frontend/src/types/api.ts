@@ -2108,3 +2108,236 @@ export interface ReceptionAutomationResponse {
   updated_at: string;
   finished_at: string | null;
 }
+
+// ============================================================
+// Prompt lab — offline prompt compilation
+// ============================================================
+
+export type PromptCompilerName =
+  | "builtin"
+  | "builtin_grounded"
+  | "dspy_mipro"
+  | "dspy_bootstrap"
+  | "dspy_gepa"
+  | "textgrad_tgd";
+
+export type PromptEfficiencyPolicy = "token_reduction_v1" | "quality_uplift_v1";
+
+/**
+ * verbatim 存在于后端模型层供调试，但 API 既不接受也不返回——见后端
+ * schemas/prompt_lab.py 的模块注释。前端类型上就堵死。
+ */
+export type PromptRedactionMode = "masked" | "synthetic";
+
+export type PromptArtifactStatus =
+  | "draft"
+  | "review"
+  | "accepted"
+  | "rejected"
+  | "superseded";
+
+export type PromptPatchKind =
+  | "instruction_rewrite"
+  | "constraint_add"
+  | "rule_clarification";
+
+export type PromptPatchOrigin = PromptCompilerName | "manual";
+
+export type PromptGradientDecision = "pending" | "accepted" | "rejected";
+
+export interface PromptLabDomainCoverage {
+  /** 形如 "{subject_type}:{tag_key}"。 */
+  domain: string;
+  gold_count: number;
+  silver_count: number;
+  /** 只统计人工金标；银标可见但不计入门槛。 */
+  feedback_count: number;
+  meets_threshold: boolean;
+}
+
+export interface PromptLabReadiness {
+  tenant_id: string;
+  ready: boolean;
+  gold_label_total: number;
+  silver_label_total: number;
+  feedback_total: number;
+  feedback_threshold: number;
+  domain_threshold: number;
+  frozen_gold_set_versions: number;
+  pending_artifacts: number;
+  annotation_hours_remaining: number;
+  domains: PromptLabDomainCoverage[];
+  /**
+   * 机器码：reviewed_feedback_below_200 / domain_support_below_30:{domain}
+   * / no_reviewed_domains / no_frozen_gold_set。未知码要原样展示，不能静默丢弃。
+   */
+  blockers: string[];
+}
+
+export interface PromptPatch {
+  patch_id: string;
+  kind: PromptPatchKind;
+  origin: PromptPatchOrigin;
+  ordinal: number;
+  body: string;
+  rationale: string;
+  target_tag_keys: string[];
+  gradient_text: string | null;
+  source_badcase_ids: number[];
+  source_gold_label_ids: number[];
+}
+
+export interface PromptDemo {
+  demo_id: string;
+  gold_label_id: number;
+  subject_type: string;
+  subject_id: number;
+  rendered_text: string;
+  redaction_mode: PromptRedactionMode;
+  source_checksum: string;
+  reception_id: number | null;
+  segment_ids: number[];
+  recording_ids: number[];
+}
+
+export interface PromptInputBudgetReport {
+  prompt_tokens: number;
+  schema_tokens: number;
+  fixed_tokens: number;
+  usable_tokens: number;
+  headroom_tokens: number;
+  baseline_fixed_tokens: number;
+  baseline_headroom_tokens: number;
+  headroom_delta: number;
+  headroom_shrink_ratio: number;
+  fits: boolean;
+}
+
+export interface PromptRedactionReport {
+  demo_count: number;
+  by_redaction_mode: Partial<Record<PromptRedactionMode, number>>;
+}
+
+/** 列表接口省略 Prompt 正文与 patches/demos，只有详情与 diff 才带。 */
+export interface PromptArtifactSummary {
+  id: number;
+  compilation_id: number;
+  optimization_run_id: number | null;
+  baseline_tagger_version_id: number;
+  gold_set_version_id: number | null;
+  parent_artifact_id: number | null;
+  candidate_tagger_version_id: number | null;
+  compiler: PromptPatchOrigin;
+  compiler_version: string;
+  metric_version: string;
+  status: PromptArtifactStatus;
+  prompt_token_estimate: number;
+  accepted_patch_ids: string[];
+  input_budget_report: PromptInputBudgetReport;
+  redaction_report: PromptRedactionReport;
+  artifact_checksum: string;
+  created_at: string;
+}
+
+export interface PromptArtifact extends PromptArtifactSummary {
+  baseline_prompt: string;
+  rendered_prompt: string;
+  patches: PromptPatch[];
+  demos: PromptDemo[];
+}
+
+export interface PromptArtifactDiff {
+  artifact_id: number;
+  status: PromptArtifactStatus;
+  baseline_prompt: string;
+  candidate_prompt: string;
+  patches: PromptPatch[];
+  demos: PromptDemo[];
+  accepted_patch_ids: string[];
+  /** 候选 Prompt 的策略正文估算，不含系统包装与 schema——不可与固定开销相减。 */
+  prompt_token_estimate: number;
+  /**
+   * 候选与基线的单次固定开销之差（同口径：均含系统包装与 schema）。
+   *
+   * 正数表示候选更贵。预算未测量时为 null，而不是 0——「没测过」与「没变化」不是
+   * 一回事，后者才配显示成绿色。
+   */
+  fixed_token_delta: number | null;
+  input_budget_report: PromptInputBudgetReport;
+  redaction_report: PromptRedactionReport;
+}
+
+export interface PromptGradient {
+  id: number;
+  artifact_id: number;
+  patch_id: string;
+  iteration: number;
+  source_badcase_id: number | null;
+  tag_key: string | null;
+  failure_stage: string | null;
+  failure_mode: string | null;
+  gradient_text: string;
+  proposed_edit: string;
+  decision: PromptGradientDecision;
+  decided_by: number | null;
+  decided_at: string | null;
+  decision_note: string | null;
+  /**
+   * builtin 编译器目前只写 source_badcase_count。渲染必须能处理未知 key，
+   * 也绝不能在没有指标时假装有指标。
+   */
+  evaluation: Record<string, unknown>;
+}
+
+export interface PromptCompilerConfig {
+  compiler: PromptCompilerName;
+  max_patches: number;
+  min_cluster_support: number;
+  instruction_candidates: number;
+  textgrad_iterations: number;
+  demo_count: 0 | 2 | 4;
+  redaction_mode: PromptRedactionMode;
+  max_prompt_tokens: number;
+  efficiency_policy: PromptEfficiencyPolicy;
+  seed: number;
+}
+
+/** 四个字段都是上限（cap），不是预估花费。 */
+export interface PromptCompileBudget {
+  max_provider_calls: number;
+  max_provider_tokens: number;
+  max_cost_microunits: number;
+  max_wall_seconds: number;
+}
+
+export interface CreatePromptCompilationRequest {
+  baseline_tagger_version_id: number;
+  gold_set_version_id?: number;
+  compiler: PromptCompilerConfig;
+  budget: PromptCompileBudget;
+}
+
+export interface CreatePromptCompilationResponse {
+  compilation_id: number;
+  job_id: number;
+}
+
+export interface PromptPatchDecisionItem {
+  patch_id: string;
+  decision: "accepted" | "rejected";
+  note?: string;
+}
+
+/**
+ * decisions 表达的是「最终采纳集」而非「本次改动」：未列出的补丁会被服务端的
+ * rematerialize 当成拒绝而移除。提交时必须把未变更的补丁按现状一并重放。
+ */
+export interface PromptPatchDecisionBatch {
+  decisions: PromptPatchDecisionItem[];
+  dropped_demo_ids: string[];
+}
+
+export type PromptArtifactListResponse =
+  TagGovernanceListResponse<PromptArtifactSummary>;
+export type PromptGradientListResponse =
+  TagGovernanceListResponse<PromptGradient>;

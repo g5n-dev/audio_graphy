@@ -7,6 +7,16 @@
 
 import { httpClient } from "./client";
 import type {
+  CreatePromptCompilationRequest,
+  CreatePromptCompilationResponse,
+  PromptArtifact,
+  PromptArtifactDiff,
+  PromptArtifactListResponse,
+  PromptArtifactStatus,
+  PromptGradientDecision,
+  PromptGradientListResponse,
+  PromptLabReadiness,
+  PromptPatchDecisionBatch,
   ExploreResponse,
   EntityDetailResponse,
   MeResponse,
@@ -1282,5 +1292,76 @@ export async function resumeTagDeployment(
 export async function listTagAuditEvents(): Promise<TagAuditEventListResponse> {
   const { data } =
     await httpClient.get<TagAuditEventListResponse>("/tag-audit-events");
+  return data;
+}
+
+// ============================================================
+// Prompt lab — offline prompt compilation review
+// ============================================================
+
+export async function getPromptLabReadiness(): Promise<PromptLabReadiness> {
+  const { data } = await httpClient.get<PromptLabReadiness>(
+    "/prompt-lab/readiness",
+  );
+  return data;
+}
+
+export async function listPromptArtifacts(params?: {
+  status?: PromptArtifactStatus;
+  limit?: number;
+}): Promise<PromptArtifactListResponse> {
+  const { data } = await httpClient.get<PromptArtifactListResponse>(
+    "/prompt-lab/artifacts",
+    { params },
+  );
+  return data;
+}
+
+export async function getPromptArtifact(id: number): Promise<PromptArtifact> {
+  const { data } = await httpClient.get<PromptArtifact>(
+    `/prompt-lab/artifacts/${id}`,
+  );
+  return data;
+}
+
+export async function getPromptArtifactDiff(
+  id: number,
+): Promise<PromptArtifactDiff> {
+  const { data } = await httpClient.get<PromptArtifactDiff>(
+    `/prompt-lab/artifacts/${id}/diff`,
+  );
+  return data;
+}
+
+/** artifact_id 在类型上不可选：后端把它声明为必填查询参数。 */
+export async function listPromptGradients(params: {
+  artifact_id: number;
+  decision?: PromptGradientDecision;
+}): Promise<PromptGradientListResponse> {
+  const { data } = await httpClient.get<PromptGradientListResponse>(
+    "/prompt-lab/gradients",
+    { params },
+  );
+  return data;
+}
+
+export async function createPromptCompilation(
+  body: CreatePromptCompilationRequest,
+): Promise<CreatePromptCompilationResponse> {
+  const { data } = await httpClient.post<CreatePromptCompilationResponse>(
+    "/prompt-lab/compilations",
+    body,
+  );
+  return data;
+}
+
+export async function decidePromptPatches(
+  artifactId: number,
+  body: PromptPatchDecisionBatch,
+): Promise<PromptArtifact> {
+  const { data } = await httpClient.post<PromptArtifact>(
+    `/prompt-lab/artifacts/${artifactId}/decisions`,
+    body,
+  );
   return data;
 }

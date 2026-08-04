@@ -284,37 +284,7 @@
   letter-spacing: 0.08em;
 }
 
-.ag-governance-status {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  min-height: 24px;
-  padding: 2px 9px;
-  color: #315bb8;
-  background: #edf4ff;
-  border: 1px solid #d4e2ff;
-  border-radius: 999px;
-  font-size: 14px;
-  font-weight: 700;
-}
-
-.ag-governance-status.is-success {
-  color: #08785a;
-  background: #ecfbf5;
-  border-color: #c8eee0;
-}
-
-.ag-governance-status.is-warning {
-  color: #996200;
-  background: #fff8e8;
-  border-color: #f1dfad;
-}
-
-.ag-governance-status.is-danger {
-  color: #bd3d48;
-  background: #fff0f1;
-  border-color: #f2cbd0;
-}
+/* .ag-governance-status 已移至 src/components/governance/statusChip.css，随 StatusChip 组件走。 */
 
 .ag-schema-summary {
   display: grid;
@@ -787,34 +757,8 @@
   padding: 15px 18px;
 }
 
-.ag-quality-metric > span {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  color: #61708a;
-  font-size: 14px;
-}
-
-.ag-quality-metric > span b {
-  color: #243654;
-  font-size: 14px;
-}
-
-.ag-quality-metric__track {
-  display: block;
-  height: 6px;
-  margin-top: 7px;
-  overflow: hidden;
-  background: #edf1f6;
-  border-radius: 999px;
-}
-
-.ag-quality-metric__track > span {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-}
+/* .ag-quality-metric* 已移至 src/components/governance/metric.css，随 Metric 组件走。
+   .ag-quality-grid 留在这里：它是评估卡片的页面栅格，不属于组件。 */
 
 .ag-gate-badge {
   flex: 0 0 auto;
@@ -2995,4 +2939,19 @@
     align-items: stretch;
     flex-direction: column;
   }
+}
+
+/* 自进化面板通往提示词实验室的入口。 */
+.ag-plab-entry {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 14px;
+  color: #2f6bff;
+  background: #edf4ff;
+  border: 1px solid #d4e2ff;
+  border-radius: 4px;
+  font-size: 14px;
+  font-weight: 700;
+  text-decoration: none;
 }

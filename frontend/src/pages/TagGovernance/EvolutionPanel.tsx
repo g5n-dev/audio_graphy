@@ -861,18 +861,28 @@ export function EvolutionPanel({
             与灰度，生产由管理员批准。
           </span>
         </div>
-        {isAdmin && (
-          <button
-            type="button"
-            onClick={() => {
-              setSuccess(null);
-              createMutation.reset();
-              setDialogOpen(true);
-            }}
-          >
-            <IconThunderbolt aria-hidden="true" /> 启动优化
-          </button>
-        )}
+        <div className="ag-panel-toolbar__actions">
+          {/*
+            有界搜索只调超参；提示词本身的编译在实验室里做。
+            用原生 a + hash 链接而不是 <Link>：本面板由 props 驱动、可脱离 Router
+            单独渲染，它的测试就是这么做的——引入路由依赖会把这个性质弄丢。
+          */}
+          <a href="#/prompt-lab?tab=compile" className="ag-plab-entry">
+            提示词实验室
+          </a>
+          {isAdmin && (
+            <button
+              type="button"
+              onClick={() => {
+                setSuccess(null);
+                createMutation.reset();
+                setDialogOpen(true);
+              }}
+            >
+              <IconThunderbolt aria-hidden="true" /> 启动优化
+            </button>
+          )}
+        </div>
       </div>
       {success && (
         <p className="ag-inline-feedback is-success" role="status">

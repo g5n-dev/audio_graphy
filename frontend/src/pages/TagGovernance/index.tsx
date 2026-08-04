@@ -57,6 +57,14 @@ import type {
   TaggerVersion,
 } from "@/types/api";
 import { PanelState } from "@/components/PanelState";
+import {
+  compactPercent,
+  formatDate,
+  numericMetric,
+  statusLabel,
+} from "@/components/governance/format";
+import { Metric } from "@/components/governance/Metric";
+import { StatusChip } from "@/components/governance/StatusChip";
 import { useAuthStore } from "@/stores/auth";
 import { getErrorMessage, getErrorStatus } from "@/utils/errors";
 import { EvolutionPanel } from "./EvolutionPanel";
@@ -120,27 +128,6 @@ function canResumeDriftDeployment(deployment: TagDeployment): boolean {
   );
 }
 
-function compactPercent(value: number | null | undefined): string {
-  if (value === null || value === undefined || !Number.isFinite(value)) {
-    return "—";
-  }
-  return `${new Intl.NumberFormat("zh-CN", {
-    maximumFractionDigits: 1,
-  }).format(value * 100)}%`;
-}
-
-function numericMetric(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-function formatDate(value?: string | null): string {
-  if (!value) return "—";
-  const timestamp = Date.parse(value);
-  return Number.isFinite(timestamp)
-    ? new Date(timestamp).toLocaleString("zh-CN", { hour12: false })
-    : value;
-}
-
 function parseOptimizationCohort(
   value: string | null,
 ): TagOptimizationSourceCohort | null {
@@ -159,48 +146,6 @@ function parseOptimizationCohort(
   } catch {
     return null;
   }
-}
-
-function statusLabel(status: string): string {
-  const labels: Record<string, string> = {
-    draft: "草稿",
-    validating: "校验中",
-    evaluating: "评估中",
-    qualified: "已达标",
-    rejected: "未达标",
-    validated: "已校验",
-    published: "已发布",
-    deprecated: "已停用",
-    queued: "排队中",
-    running: "运行中",
-    retry_wait: "等待重试",
-    completed: "已完成",
-    failed: "失败",
-    shadow: "影子验证",
-    canary_5: "5% 灰度",
-    canary_25: "25% 灰度",
-    awaiting_admin: "等待管理员审批",
-    production: "生产",
-    rolled_back: "已回滚",
-    retired: "已退役",
-  };
-  return labels[status] ?? status;
-}
-
-function StatusChip({ status }: { status: string }) {
-  const tone =
-    status === "published" || status === "production" || status === "completed"
-      ? "success"
-      : status === "failed" || status === "rolled_back"
-        ? "danger"
-        : status === "awaiting_admin" || status.includes("canary")
-          ? "warning"
-          : "info";
-  return (
-    <span className={`ag-governance-status is-${tone}`}>
-      {statusLabel(status)}
-    </span>
-  );
 }
 
 function CreateSchemaDialog({
@@ -916,36 +861,6 @@ function TaggersPanel({
         />
       )}
     </>
-  );
-}
-
-function Metric({
-  label,
-  value,
-  inverse = false,
-}: {
-  label: string;
-  value: number | undefined;
-  inverse?: boolean;
-}) {
-  const safeValue = Math.min(Math.max(value ?? 0, 0), 1);
-  const tone = inverse ? 1 - safeValue : safeValue;
-  return (
-    <div className="ag-quality-metric">
-      <span>
-        <strong>{label}</strong>
-        <b>{compactPercent(value)}</b>
-      </span>
-      <span className="ag-quality-metric__track" aria-hidden="true">
-        <span
-          style={{
-            width: `${safeValue * 100}%`,
-            background:
-              tone >= 0.9 ? "#00a870" : tone >= 0.75 ? "#2f6bff" : "#e5a100",
-          }}
-        />
-      </span>
-    </div>
   );
 }
 
