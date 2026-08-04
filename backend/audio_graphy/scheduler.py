@@ -96,7 +96,15 @@ class PipelineWorker:
         # settings and the key that encrypts vectors at rest.
         self._settings = settings
         self._audio_crypto = audio_crypto
-        self._worker_id = worker_id or f"pipeline-{uuid.uuid4().hex}"
+        # Deployment-prefixed for attribution, mirroring tag_worker's
+        # hostname:pid convention: with two stacks on one database a bare uuid
+        # answers nothing about WHICH stack claimed a lease. Attribution only —
+        # a foreign claim still fails loudly at the first VAD stage because the
+        # audio lives on the other stack's volume, which is the desired outcome.
+        deployment = (
+            getattr(settings, "deployment_id", "audiography") if settings else "audiography"
+        )
+        self._worker_id = worker_id or f"{deployment}:pipeline-{uuid.uuid4().hex[:12]}"
         self._lease_seconds = lease_seconds
         self._lock = asyncio.Lock()
 
