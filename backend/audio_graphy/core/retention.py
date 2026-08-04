@@ -297,6 +297,22 @@ class RetentionEnforcer:
                     )
                 except OSError as exc:
                     raise OSError(f"failed to unlink retained audio {audio_path}") from exc
+            else:
+                # The no-op is deliberate and load-bearing — the unlink runs before
+                # the DB transaction, so a transient DB failure leaves audio-gone/
+                # row-present and only converges on retry because a missing file
+                # is not an error. But silent tolerance also swallows the case
+                # where the file lives on ANOTHER deployment's working_dir volume
+                # (two stacks sharing one database): the row is deleted, the sweep
+                # reports success, and the audio survives where nothing can find
+                # it by. Record the absence so an operator can tell the two apart.
+                logger.warning(
+                    "Retention: audio path %s for recording %d was already absent "
+                    "(expected on retry; on a multi-deployment database this can "
+                    "mean the file lives on another stack's volume)",
+                    audio_path,
+                    rec.id,
+                )
 
         # 3. DB rows — explicit deletes for auditability.
         async with self._session_factory() as session:

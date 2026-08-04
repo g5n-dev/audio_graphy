@@ -597,6 +597,22 @@ class ErasureOutboxProcessor:
             if not candidate.is_absolute():
                 candidate = self._working_dir / candidate
             if not candidate.exists():
+                # Tolerated on purpose: erasure retries after partial failure, and
+                # a file removed by the previous attempt must be a no-op or the
+                # outbox row can never reach `succeeded`. But the same branch also
+                # covers audio sitting on a DIFFERENT deployment's working_dir
+                # volume (two stacks, one database) — the DSAR is then recorded as
+                # fulfilled while the audio survives elsewhere. Log which worker
+                # and which working_dir made the call, so the audit trail can tell
+                # a benign retry from an orphaned file.
+                logger.warning(
+                    "DSAR erasure: audio path %s already absent (worker=%s, "
+                    "working_dir=%s). Expected on retry; on a multi-deployment "
+                    "database this can mean the file lives on another stack's volume.",
+                    candidate,
+                    self._worker_id,
+                    self._working_dir,
+                )
                 continue
             if not candidate.is_file():
                 raise ValueError("recording audio target is not a regular file")

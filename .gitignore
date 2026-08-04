@@ -115,3 +115,6 @@ Thumbs.db
 ehthumbs.db
 Desktop.ini
 $RECYCLE.BIN/
+
+# Workflow agent worktrees (session-local, never versioned)
+.claude/worktrees/

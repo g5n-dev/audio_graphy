@@ -460,3 +460,37 @@ async def test_async_factory_loads_cold_graph_and_cleanup_survives_reload(
     await reloaded.load()
     assert "exclusive" not in reloaded.graph
     assert _str_to_list(reloaded.graph.nodes["shared"]["recording_ids"]) == ["2"]
+
+
+@pytest.mark.asyncio
+async def test_absent_audio_is_a_warned_noop_not_a_silent_one(
+    rg_factory: async_sessionmaker[AsyncSession],
+    rg_crypto: AudioCrypto,
+    rg_audit: AuditWriter,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A missing file must stay tolerated — and must stop being invisible.
+
+    The no-op is load-bearing: the unlink runs before the DB transaction, so a
+    transient DB failure leaves audio-gone/row-present, and the retry only
+    converges because the missing file is not an error. But the same branch also
+    covers a file that lives on ANOTHER deployment's working_dir volume (two
+    stacks, one database): the row is deleted, the sweep reports success, and
+    the audio survives where nothing can find it by. Same outcome, opposite
+    meaning — the log line is what lets an operator tell them apart.
+    """
+    missing = tmp_path / "never-written.wav"
+    await _seed(rg_factory, days_ago=400, path=str(missing))
+
+    enforcer = RetentionEnforcer(
+        rg_factory, rg_crypto, rg_audit, _noop_graph_factory, retention_days=90
+    )
+    with caplog.at_level("WARNING", logger="audio_graphy.core.retention"):
+        report = await enforcer.run_sweep()
+
+    # Still a success — the deletion contract is unchanged.
+    assert report.deleted == 1
+    assert report.errors == []
+    # ...but no longer a silent one.
+    assert any("already absent" in r.message for r in caplog.records)
