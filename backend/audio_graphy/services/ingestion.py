@@ -737,6 +737,30 @@ class IngestionService:
                 )
         return recording
 
+    async def latest_pipeline_run_id(self, recording_id: int, tenant_id: str) -> int | None:
+        """The newest pipeline run for a recording, running or finished.
+
+        ``Recording.active_pipeline_run_id`` cannot serve this: its only writer
+        (``indexing._activate_run``) sets it in the same statement that moves the
+        recording to ``indexed``/``ready_no_speech``, so a non-null pointer means
+        the run is already DONE. A caller that wants to watch a run in progress —
+        which is the entire point of a progress panel — has to find it by
+        generation instead.
+        """
+
+        async with self._session_factory() as session:
+            return (
+                await session.execute(
+                    select(RecordingPipelineRun.id)
+                    .where(
+                        RecordingPipelineRun.tenant_id == tenant_id,
+                        RecordingPipelineRun.recording_id == recording_id,
+                    )
+                    .order_by(RecordingPipelineRun.generation.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+
     async def get_recording_detail(
         self,
         recording_id: int,

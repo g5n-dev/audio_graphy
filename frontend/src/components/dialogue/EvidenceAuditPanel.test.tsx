@@ -176,6 +176,7 @@ describe("EvidenceAuditPanel", () => {
             },
           ],
         }}
+        onSeekEvidence={vi.fn()}
         onViewAuditChain={onViewAuditChain}
       />,
     );

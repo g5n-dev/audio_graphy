@@ -272,6 +272,7 @@ async def get_recording_status(
         status=cast(RecordingStatusValue, recording.status),
         pipeline_state=recording.pipeline_state,
         indexed_at=recording.indexed_at,
+        latest_pipeline_run_id=await svc.latest_pipeline_run_id(recording.id, tenant_id),
         active_pipeline_run_id=recording.active_pipeline_run_id,
     )
 

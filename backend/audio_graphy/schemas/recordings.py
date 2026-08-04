@@ -106,6 +106,14 @@ class RecordingStatusResponse(BaseModel):
     pipeline_state: str
     indexed_at: datetime | None = None
     active_pipeline_run_id: int | None = None
+    latest_pipeline_run_id: int | None = Field(
+        default=None,
+        description=(
+            "Newest pipeline run, running or finished. Use this to watch progress: "
+            "active_pipeline_run_id is only set once the run has already completed, "
+            "so it can never identify a run in flight."
+        ),
+    )
 
 
 class ReindexRequest(BaseModel):

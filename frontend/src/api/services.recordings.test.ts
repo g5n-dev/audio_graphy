@@ -62,6 +62,9 @@ describe("getRecordingStatus", () => {
       status: "processing",
       pipeline_state: "asr",
       indexed_at: null,
+      // In flight: the active pointer is stale-by-design, the latest one is
+      // what identifies the run actually being watched.
+      latest_pipeline_run_id: 21,
       active_pipeline_run_id: 12,
     };
     mockedGet.mockResolvedValue({ data: status });

@@ -34,6 +34,7 @@ import {
 import {
   getRecording,
   getRecordingProcessingRun,
+  getRecordingStatus,
   getSegments,
   getTags,
   reindexRecording,
@@ -208,19 +209,39 @@ export default function RecordingDetailPage() {
     },
   });
 
-  const activeRunId = recording?.active_pipeline_run_id ?? null;
+  // NOT active_pipeline_run_id: its only writer sets it in the same statement
+  // that moves the recording to indexed/ready_no_speech, so a non-null pointer
+  // means the run already finished. Gating the progress panel on
+  // "pointer set AND status is queued/processing/failed" was therefore
+  // unsatisfiable — the panel could never render. latest_pipeline_run_id is
+  // ordered by generation and identifies a run in flight.
+  const { data: recordingStatus } = useQuery({
+    queryKey: ["recording", recordingId, "status"],
+    queryFn: () => getRecordingStatus(recordingId),
+    enabled: !!recordingId,
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      return status === "queued" || status === "processing" ? 5000 : false;
+    },
+  });
+
+  const latestRunId = recordingStatus?.latest_pipeline_run_id ?? null;
   const pipelineRelevant =
     recording?.status === "queued" ||
     recording?.status === "processing" ||
     recording?.status === "failed";
 
   const { data: pipelineRun } = useQuery({
-    queryKey: ["recording", recordingId, "processing-run", activeRunId],
-    queryFn: () => getRecordingProcessingRun(recordingId, activeRunId as number),
-    enabled: !!recordingId && activeRunId !== null && pipelineRelevant,
+    queryKey: ["recording", recordingId, "processing-run", latestRunId],
+    queryFn: () => getRecordingProcessingRun(recordingId, latestRunId as number),
+    enabled: !!recordingId && latestRunId !== null && pipelineRelevant,
+    retry: false,
     refetchInterval: (query) => {
+      // Only a known-active state keeps polling. `undefined` used to qualify,
+      // so a failing request re-fired every 4s forever with nothing on screen
+      // to say the fetch was failing.
       const state = query.state.data?.state;
-      return state === undefined || RUN_ACTIVE_STATES.has(state) ? 4000 : false;
+      return state !== undefined && RUN_ACTIVE_STATES.has(state) ? 4000 : false;
     },
   });
 

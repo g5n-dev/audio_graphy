@@ -129,6 +129,12 @@ export interface RecordingStatusResponse {
   pipeline_state: string;
   indexed_at: string | null;
   active_pipeline_run_id: number | null;
+  /**
+   * Newest run, running or finished — use this to watch progress.
+   * `active_pipeline_run_id` is only written in the same statement that marks
+   * the recording indexed, so it can never identify a run in flight.
+   */
+  latest_pipeline_run_id: number | null;
 }
 
 /** GET /recordings/{id}/processing-runs/{run_id} — durable pipeline run. */

@@ -21,6 +21,7 @@ import type {
 vi.mock("@/api/services", () => ({
   getRecording: vi.fn(),
   getRecordingProcessingRun: vi.fn(),
+  getRecordingStatus: vi.fn(),
   getSegments: vi.fn(),
   getTags: vi.fn(),
   reindexRecording: vi.fn(),
@@ -29,6 +30,7 @@ vi.mock("@/api/services", () => ({
 import {
   getRecording,
   getRecordingProcessingRun,
+  getRecordingStatus,
   getSegments,
   getTags,
   reindexRecording,
@@ -38,6 +40,7 @@ const mockedGetRecording = getRecording as unknown as ReturnType<typeof vi.fn>;
 const mockedGetRun = getRecordingProcessingRun as unknown as ReturnType<
   typeof vi.fn
 >;
+const mockedGetStatus = getRecordingStatus as unknown as ReturnType<typeof vi.fn>;
 const mockedGetSegments = getSegments as unknown as ReturnType<typeof vi.fn>;
 const mockedGetTags = getTags as unknown as ReturnType<typeof vi.fn>;
 const mockedReindex = reindexRecording as unknown as ReturnType<typeof vi.fn>;
@@ -57,7 +60,10 @@ const RECORDING: RecordingResponse = {
   segments_count: 0,
   chunks_count: 0,
   current_tags: [],
-  active_pipeline_run_id: 12,
+  // null, as the real system always has it for a non-terminal recording: the
+  // pointer's only writer sets it in the same statement that marks the
+  // recording indexed. The run is found through the status endpoint instead.
+  active_pipeline_run_id: null,
 };
 
 const FAILED_RUN: PipelineRunResponse = {
@@ -126,11 +132,21 @@ function renderPage() {
 beforeEach(() => {
   mockedGetRecording.mockReset();
   mockedGetRun.mockReset();
+  mockedGetStatus.mockReset();
   mockedGetSegments.mockReset();
   mockedGetTags.mockReset();
   mockedReindex.mockReset();
   mockedGetRecording.mockResolvedValue(RECORDING);
   mockedGetRun.mockResolvedValue(FAILED_RUN);
+  mockedGetStatus.mockResolvedValue({
+    id: 7,
+    agent_user_id: null,
+    status: "failed",
+    pipeline_state: "failed",
+    indexed_at: null,
+    active_pipeline_run_id: null,
+    latest_pipeline_run_id: 12,
+  });
   mockedGetSegments.mockResolvedValue(SEGMENTS);
   mockedGetTags.mockResolvedValue(TAGS);
   setUser("admin");
