@@ -5,6 +5,8 @@ Covers: api/health.py readiness checks (DB, adapters, graph_store, file_index).
 
 from __future__ import annotations
 
+import re
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -138,3 +140,75 @@ class TestHealthHappyPath:
         assert resp.status_code == 200
         body = resp.json()
         assert "message" in body or "version" in body
+
+
+class TestReadinessChecksTheSchema:
+    """Reachable is not the same as migrated.
+
+    `alembic upgrade head` runs in the container command before uvicorn. A
+    clean-clone acceptance caught it no-opping against an empty database: the
+    process started, `/health` and `/health/readiness` both returned 200, and
+    every request answered "table doesn't exist" — including login. Liveness
+    cannot see that, and readiness could not either, so a deployment serving
+    nothing looked correct.
+    """
+
+    def test_a_migrated_mysql_at_head_reports_ok(self) -> None:
+        """The value is read from alembic_version and compared to the head on disk."""
+        from audio_graphy.api.health import _expected_head
+
+        head = _expected_head()
+        assert head is not None, "the migration chain must have exactly one head"
+        # Parsed from the files, not via `alembic.script`: backend/alembic/
+        # shadows the installed distribution whenever the process runs from
+        # backend/, which is how the container runs.
+        assert re.fullmatch(r"\d{4}_\w+", head), f"unexpected head revision {head!r}"
+
+    def test_a_non_mysql_session_is_skipped_not_failed(self, test_client: TestClient) -> None:
+        """The suite builds its schema with create_all, so there is no version row.
+
+        Reporting that as an error would make readiness fail in every test and in
+        every SQLite dev run — a check that always fails is a check nobody reads.
+        """
+        body = test_client.get("/health/readiness").json()
+
+        assert body["status"] == "ready"
+        assert body["checks"]["migrations"].startswith("skipped:")
+
+    def test_an_unmigrated_mysql_fails_readiness(self, test_client: TestClient) -> None:
+        """The case that shipped: MySQL reachable, alembic_version absent."""
+        app = test_client.app
+        original = app.state.session_factory
+
+        class _MySQLDialect:
+            name = "mysql"
+
+        class _MySQLBind:
+            dialect = _MySQLDialect()
+
+        class _Result:
+            @staticmethod
+            def scalar_one_or_none() -> None:
+                return None
+
+        class _UnmigratedSession:
+            bind = _MySQLBind()
+
+            async def __aenter__(self) -> _UnmigratedSession:
+                return self
+
+            async def __aexit__(self, *exc: object) -> None:
+                return None
+
+            async def execute(self, *args: object, **kwargs: object) -> _Result:
+                # `SELECT 1` succeeds — the database really is reachable.
+                return _Result()
+
+        app.state.session_factory = _UnmigratedSession
+        try:
+            resp = test_client.get("/health/readiness")
+            body = resp.json()
+            assert resp.status_code == 503
+            assert body["checks"]["migrations"] == "error: schema has never been migrated"
+        finally:
+            app.state.session_factory = original

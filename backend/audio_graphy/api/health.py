@@ -5,11 +5,45 @@ See: docs/m3-prd.md §4.9, API-09.
 
 from __future__ import annotations
 
+import asyncio
 import os
+import re
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+
+
+def _expected_head() -> str | None:
+    """The revision no other migration supersedes. Blocking; callers thread it out.
+
+    Parsed from the files rather than through ``alembic.script``: the repository
+    ships its own ``backend/alembic/`` package, which shadows the installed
+    ``alembic`` distribution whenever the process runs from ``backend/`` — and
+    that is exactly how the container runs. Importing it here would make this
+    probe raise ModuleNotFoundError and report the schema as unreadable.
+
+    Returns None if the versions directory is missing or has more than one head;
+    the caller treats that as "cannot tell", not as a failure.
+    """
+
+    versions = Path(__file__).resolve().parents[2] / "alembic" / "versions"
+    if not versions.is_dir():
+        return None
+    revisions: set[str] = set()
+    parents: set[str] = set()
+    for script in versions.glob("*.py"):
+        text_content = script.read_text(encoding="utf-8")
+        revision = re.search(r'^revision(?::\s*str)?\s*=\s*["\']([^"\']+)', text_content, re.M)
+        down = re.search(r'^down_revision(?::[^=]*)?\s*=\s*["\']([^"\']+)', text_content, re.M)
+        if revision:
+            revisions.add(revision.group(1))
+        if down:
+            parents.add(down.group(1))
+    heads = revisions - parents
+    return heads.pop() if len(heads) == 1 else None
+
 
 router = APIRouter(prefix="/health", tags=["meta"])
 
@@ -45,6 +79,49 @@ async def readiness(request: Request) -> JSONResponse:
         db_status = f"error: {exc}"
         all_ok = False
     checks["database"] = db_status
+
+    # The schema must actually be at head, not merely reachable.
+    #
+    # `alembic upgrade head` runs in the container command before uvicorn, and a
+    # clean-clone acceptance caught it no-opping against an empty database: the
+    # process started, every probe passed, and every request answered "table
+    # doesn't exist" — including login. Liveness cannot see that and neither
+    # could readiness, so the deployment looked correct while serving nothing.
+    migrations_status = "ok"
+    try:
+        from sqlalchemy import text
+
+        factory = getattr(request.app.state, "session_factory", None)
+        if factory is None:
+            migrations_status = "unknown: session factory not initialized"
+            all_ok = False
+        else:
+            async with factory() as session:
+                bind = session.bind
+                dialect = bind.dialect.name if bind is not None else "unknown"
+                if dialect != "mysql":
+                    # Test and dev databases build their schema with create_all and
+                    # have no alembic_version. Reporting that as a failure would make
+                    # the probe fail everywhere it is exercised, which is how a check
+                    # stops being read.
+                    migrations_status = f"skipped: {dialect} is not migrated"
+                    applied = None
+                else:
+                    result = await session.execute(text("SELECT version_num FROM alembic_version"))
+                    applied = result.scalar_one_or_none()
+                    expected = await asyncio.to_thread(_expected_head)
+                    if applied is None:
+                        migrations_status = "error: schema has never been migrated"
+                        all_ok = False
+                    elif expected is not None and applied != expected:
+                        migrations_status = f"error: at {applied}, expected {expected}"
+                        all_ok = False
+    except Exception as exc:
+        # A missing alembic_version table raises here, which is the same failure
+        # as "never migrated" and must not read as a probe malfunction.
+        migrations_status = f"error: {exc}"
+        all_ok = False
+    checks["migrations"] = migrations_status
 
     # Check adapter bundle
     adapters_status: dict[str, str] = {}
