@@ -4,9 +4,10 @@
 
 **场景化对话智能引擎**
 
-*Turn conversations into scene-aware, evidence-grounded business intelligence.*
+把一次接待的零散录音，变成带时间码和原话依据的业务事实：走到哪个阶段、客户要什么、
+卡在哪个异议、下一步该做什么——每条结论都能点回它来自的那句话。
 
-**给谁** 门店销售运营与对话数据团队 · **输入** 一次接待的多段或长录音 · **输出** 带证据与时间码的阶段 / 意图 / 异议 / 下一步，以及可查询的关系图谱
+*Turn scattered recordings of one customer visit into evidence-bound business facts.*
 
 [![CI](https://github.com/g5n-dev/audio_graphy/actions/workflows/ci.yml/badge.svg)](https://github.com/g5n-dev/audio_graphy/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2f65ff.svg)](./LICENSE)
@@ -55,13 +56,16 @@ flowchart LR
 
 ## 一个引擎，多种切分语义
 
-| 场景 | 业务过程如何切分 | 典型转译结果 | 状态 |
+同一套引擎，换一组场景资产就换一种切分语义：
+
+| 场景 | 阶段模型 | 典型转译结果 | 状态 |
 |---|---|---|---|
-| 汽车销售 | 迎宾 → 需求 → 车型介绍 → 报价 → 金融 → 置换 → 试驾 → 异议 → 预约下订 → 交付售后 → 成交 | 车型偏好、预算、竞品、试驾意向、金融方案 | 已交付场景基线 |
-| 金店零售（珠宝） | 迎宾 → 需求 → 选购试戴 → 商品讲解 → 价格与促销 → 异议议价 → 付款 → 售后 → 成交 | 商品偏好、价格敏感度、购买信号、复访动作 | 已交付场景基线 |
-| 其他零售导购 | 沿用金店阶段模型，或自定义阶段与跳转 | 同金店零售 | 可通过自定义场景扩展 |
-| 外贸洽谈 | 询盘 → 规格 → 报价 → 贸易条款 → 交期 → 议价 → 订单推进 | MOQ、Incoterms、付款条件、交期风险、下一步 | 下一阶段场景包 |
-| 自定义场景 | 自定义阶段、允许跳转与回退 | 自定义标签键、值域、证据要求和质量门禁 | 持续增强 |
+| 汽车销售 | 11 阶段，含金融与置换分支 | 车型偏好、预算、竞品、试驾意向 | 已交付 |
+| 金店零售（珠宝） | 9 阶段，含试戴与议价 | 商品偏好、价格敏感度、购买信号 | 已交付 |
+| 其他零售导购 | 沿用金店模型或自定义 | 同上 | 可扩展 |
+| 外贸洽谈 | 7 阶段，含条款与交期 | MOQ、Incoterms、交期风险 | 规划中 |
+
+阶段定义在 `core/dialogue_segmentation.py`，跳转与回退由阶段序自动判定。
 
 场景并不是一组页面文案。它由四类可版本化资产共同决定：
 
@@ -201,9 +205,6 @@ docker compose --profile bootstrap run --rm bootstrap-admin
 
 命令可重复执行：租户或用户已存在时只会提示并跳过，`--reset-password` 是改动既有账号的唯一方式。本地不用 Docker 时等价命令是 `python backend/scripts/bootstrap_admin.py --email you@example.com`（不传密码则交互式询问）。
 
-> [!WARNING]
-> 同一台机器上已经跑着一套 AudioGraphy？`docker compose -p 别名` **不能**隔离两套栈——网络与卷名冲突是静默的，第二套栈会连上第一套的数据库、上面这条命令会把账号写进那边。先看 [部署指南](./docs/deployment.md) 的「在同一台主机上运行第二套栈」。
-
 | 服务 | 地址 |
 |---|---|
 | Web | `http://127.0.0.1:5173` |
@@ -212,29 +213,61 @@ docker compose --profile bootstrap run --rm bootstrap-admin
 | Prometheus | `http://127.0.0.1:8000/metrics` |
 | Adminer | `http://127.0.0.1:8081` |
 
-登录后界面是空的：还需要导入录音，接入真实模型则要配置密钥和 Adapter。Mock 模式下各环节的真假边界见下表。
+登录后界面是空的——先导入一条录音，再决定要不要接真实模型。
 
-### Mock 模式下哪些是真的
+### 换成真实模型：一条命令，不需要 GPU
 
-Mock profile 的目的是让整条链路跑起来，不是产出可信结论。默认配置里：
+上面的 `mock` profile 是给「先看看长什么样」用的，它的模型全是假的。真实模型也都在
+compose 里，CPU 就能跑：
 
-| 环节 | 默认 | 说明 |
-|---|---|---|
-| 数据库、迁移、多租户 | ✅ 真实 | — |
-| JWT 鉴权、RBAC、审计 | ✅ 真实 | 生产需替换 `JWT_SECRET` |
-| 音频静态加密（PIPL） | ✅ 真实 | 主密钥由 `master-key-init` 一次性任务生成 |
-| 图存储 | ✅ 真实算法 | 但输入来自下面的 mock 抽取结果 |
-| Leiden 聚类、双时态边 | ❌ 默认不激活 | 需 `ENABLE_ADVANCED_GRAPH=true`；默认管线写入的边不带双时态字段 |
-| 接待时间线与分段编辑 | ✅ 真实 | 物理拼接与剪辑播放依赖 ffmpeg（Docker 镜像已内置；本地裸跑缺失时相关接口报错） |
-| VAD | ❌ mock | 按文件大小推算切分点，与语音内容无关 |
-| ASR | ❌ mock | 从固定话术池中按哈希取一条 |
-| LLM（强/弱） | ❌ mock | 固定模板，抽取出的实体与录音无关 |
-| 文本 Embedding | ❌ mock | 伪随机向量，相似度无语义 |
-| 声纹 / CLAP | ❌ 默认关闭 | 需 `ENABLE_VOICEPRINT` / `ENABLE_CLAP` |
-| 流式实时转写 | ❌ 路由不注册 | 需 `ENABLE_STREAMING=true` |
-| 高级图 HTTP 接口 | ❌ 路由不注册 | 需 `ENABLE_ADVANCED_GRAPH=true` |
+```bash
+# 在 .env 里打开真实 Adapter
+ADAPTER_ASR_MODE=real
+ADAPTER_EMBED_MODE=real
+ADAPTER_VOICEPRINT_MODE=real
+ENABLE_VOICEPRINT=true
+ADAPTER_LLM_MODE=real
+OPENAI_BASE_URL_STRONG=http://ollama:11434/v1
+OPENAI_BASE_URL_WEAK=http://ollama:11434/v1
+LLM_STRONG_MODEL=qwen2.5:7b
+LLM_WEAK_MODEL=qwen2.5:7b
+OPENAI_API_KEY=ollama
+```
 
-也就是说：**mock 模式下问答页返回的是固定文案，不是对你的问题的回答**。要得到真实结论，必须给 LLM 一个真实后端：无 GPU 用 `--profile models-cpu-llm`（内置 Ollama，CPU 推理，速度有限），有 GPU 按 [部署指南](./docs/deployment.md) 选 `models-single-gpu` / `models-multi-gpu`。注意 `models-cpu` 只含 ASR/Embedding/声纹模型，**不含任何 LLM**——只切它，抽取和问答仍然是 mock。
+```bash
+docker compose --profile models-cpu --profile models-cpu-llm up -d --wait
+docker exec $(docker compose ps -q ollama) ollama pull qwen2.5:7b
+```
+
+首次启动会下载模型权重（约 10 GB），之后走缓存卷。有 GPU 就换
+`models-single-gpu` / `models-multi-gpu`，vLLM 替掉 Ollama，其余不变。
+
+### 各环节由谁提供
+
+| 环节 | `mock` | `models-cpu` + `models-cpu-llm` | 说明 |
+|---|---|---|---|
+| 数据库、迁移、多租户 | ✅ 真实 | ✅ 真实 | — |
+| JWT 鉴权、RBAC、审计 | ✅ 真实 | ✅ 真实 | 生产需替换 `JWT_SECRET` |
+| 音频静态加密（PIPL） | ✅ 真实 | ✅ 真实 | 主密钥由 `master-key-init` 生成 |
+| 接待时间线与分段编辑 | ✅ 真实 | ✅ 真实 | 物理拼接依赖 ffmpeg，镜像已内置 |
+| 图存储与检索 | ✅ 真实算法 | ✅ 真实算法 | mock 下输入来自假抽取，结论不可信 |
+| **ASR 转写** | ❌ 固定话术池 | ✅ **funASR** | `funasr` 容器 |
+| **LLM 抽取与问答** | ❌ 固定模板 | ✅ **Qwen2.5-7B** | `ollama` 容器；GPU 下换 vLLM |
+| **文本 Embedding** | ❌ 伪随机向量 | ✅ **BGE-M3** | `bge-m3-cpu` 容器 |
+| **声纹与说话人合并** | ❌ 关闭 | ✅ **CAM++** | `campplus-service` 容器 |
+| VAD 语音端点检测 | ❌ 按文件大小推算 | ⚠️ **仍是 mock** | 见下方说明——这是唯一没有自带容器的环节 |
+| CLAP 音频嵌入 | ❌ 关闭 | ❌ 需 GPU | CLAP 服务强制 CUDA，CPU profile 不含 |
+| 流式实时转写 | ❌ 路由不注册 | ❌ 路由不注册 | 需 `ENABLE_STREAMING=true` |
+| Leiden 聚类、双时态边 | ❌ 不激活 | ❌ 不激活 | 需 `ENABLE_ADVANCED_GRAPH=true` |
+
+> [!IMPORTANT]
+> **VAD 是唯一一个 compose 没有自带服务的环节。** `SileroVADAdapter` 走 HTTP，
+> 指向社区镜像 `jetresearch/silero-vad-server`，本仓库不打包、不代为审计它——
+> 要用请自行部署并设 `SILERO_VAD_URL` 与 `ADAPTER_VAD_MODE=real`。
+> 保持 mock 时，切分点按文件大小推算，转写内容仍然是 funASR 的真实结果，
+> 但**段落边界与语音停顿无关**，会影响对话单元的切分质量。
+
+一句话记住：**`models-cpu` 只有 ASR / Embedding / 声纹，不含 LLM**，所以两个 profile 要一起开，问答页才不是固定文案。完整的部署矩阵与显存规划见 [部署指南](./docs/deployment.md)。
 
 常用命令：
 
