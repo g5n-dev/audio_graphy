@@ -194,3 +194,36 @@ class TestAdapterContract:
         from audio_graphy.adapters.real import vad_silero
 
         assert svc._INFER_TIMEOUT_SEC < vad_silero._DEFAULT_TIMEOUT
+
+
+class TestDegradesHonestlyWithoutTheModel:
+    """The operator supplies the ONNX file; a missing one must say so.
+
+    This is the state a fresh deployment is in before anyone runs the documented
+    curl. Silently returning zero segments would look like "this recording has
+    no speech" — indistinguishable from a real answer, and the pipeline would
+    happily index an empty transcript.
+    """
+
+    async def test_health_reports_degraded_and_names_the_cause(self) -> None:
+        from fastapi import FastAPI
+
+        # No model file (and no onnxruntime in the test image): exactly what a
+        # deployment that skipped the download looks like.
+        async with svc.lifespan(FastAPI()):
+            health = await svc.health()
+
+        assert health["status"] == "degraded"
+        assert health["model_loaded"] is False
+        assert health["error"], "an unloadable model must explain itself"
+
+    async def test_requests_are_refused_with_503_not_an_empty_answer(self) -> None:
+        from fastapi import FastAPI, HTTPException
+
+        async with svc.lifespan(FastAPI()):
+            with pytest.raises(HTTPException) as caught:
+                svc._require_session()
+
+        assert caught.value.status_code == 503
+        # The detail carries the load error, so the caller's log says which file.
+        assert "unavailable" in str(caught.value.detail)
