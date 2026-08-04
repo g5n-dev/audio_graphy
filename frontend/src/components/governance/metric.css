@@ -1,0 +1,35 @@
+/**
+ * Metric 的视觉。随组件离开 tagGovernance.css，理由同 statusChip.css。
+ *
+ * `.ag-quality-grid` 刻意留在 tagGovernance.css：它是评估卡片的两列栅格，属于页面
+ * 布局而不是这个组件的一部分。
+ */
+
+.ag-quality-metric > span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: #61708a;
+  font-size: 14px;
+}
+
+.ag-quality-metric > span b {
+  color: #243654;
+  font-size: 14px;
+}
+
+.ag-quality-metric__track {
+  display: block;
+  height: 6px;
+  margin-top: 7px;
+  overflow: hidden;
+  background: #edf1f6;
+  border-radius: 999px;
+}
+
+.ag-quality-metric__track > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+}

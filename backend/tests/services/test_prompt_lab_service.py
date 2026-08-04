@@ -1,0 +1,611 @@
+"""Policy the prompt-lab service enforces on behalf of callers.
+
+Two of these matter more than the rest. Applying review decisions must be idempotent
+or a double-clicked submit mints a second candidate that nobody approved twice. And
+verbatim customer speech must be refused before it is stored, because once a prompt
+is copied into an immutable TaggerVersion there is no route back out.
+"""
+
+from __future__ import annotations
+
+from collections.abc import AsyncIterator
+from typing import Any
+
+import pytest
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import StaticPool
+
+from audio_graphy.models import Base
+from audio_graphy.models.prompt_lab import (
+    TagPromptArtifact,
+    TagPromptDemoSource,
+    TagPromptGradient,
+)
+from audio_graphy.optimizers.artifacts import (
+    CompiledPromptArtifact,
+    PromptDemo,
+    PromptPatch,
+)
+from audio_graphy.services.prompt_lab import (
+    PatchDecision,
+    PromptLabPrivacyError,
+    PromptLabService,
+)
+
+_TENANT = "chang_an"
+
+
+@pytest.fixture
+async def lab_factory() -> AsyncIterator[async_sessionmaker[AsyncSession]]:
+    engine = create_async_engine(
+        "sqlite+aiosqlite://",
+        poolclass=StaticPool,
+        connect_args={"check_same_thread": False},
+    )
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    yield async_sessionmaker(engine, expire_on_commit=False)
+    # Without this the connection is closed by the garbage collector, which raises a
+    # ResourceWarning that `filterwarnings = ["error"]` turns into a test failure --
+    # attributed to whichever test happened to trigger the collection.
+    await engine.dispose()
+
+
+def _patch(patch_id: str, *, ordinal: int, body: str) -> PromptPatch:
+    return PromptPatch(
+        patch_id=patch_id,
+        kind="rule_clarification",
+        origin="builtin",
+        ordinal=ordinal,
+        body=body,
+        rationale=f"cluster {patch_id}",
+        target_tag_keys=("intent",),
+    )
+
+
+def _demo(demo_id: str, *, mode: str = "synthetic") -> PromptDemo:
+    return PromptDemo(
+        demo_id=demo_id,
+        gold_label_id=1,
+        subject_type="dialogue_unit",
+        subject_id=42,
+        rendered_text=f"示例 {demo_id}",
+        redaction_mode=mode,  # type: ignore[arg-type]
+        source_checksum="a" * 64,
+        reception_id=7,
+        segment_ids=(1, 2),
+    )
+
+
+def _artifact(**overrides: Any) -> CompiledPromptArtifact:
+    defaults: dict[str, Any] = {
+        "baseline_prompt": "基线规则",
+        "header": "基线规则",
+        "compiler": "builtin",
+        "compiler_version": "builtin-proposer-v1",
+        "metric_version": "prompt-lab-metric-v1",
+        "patches": (
+            _patch("p1", ordinal=1, body="规则一"),
+            _patch("p2", ordinal=2, body="规则二"),
+        ),
+        "demos": (_demo("d1"),),
+        "accepted_patch_ids": frozenset({"p1", "p2"}),
+    }
+    return CompiledPromptArtifact(**(defaults | overrides))
+
+
+async def _persist(service: PromptLabService, artifact: CompiledPromptArtifact) -> Any:
+    return await service.persist_artifact(
+        tenant_id=_TENANT,
+        compilation_id=1,
+        artifact=artifact,
+        baseline_tagger_version_id=1,
+        gold_set_version_id=None,
+        actor_user_id=9,
+        gradients=[
+            {
+                "patch_id": patch.patch_id,
+                "tag_key": "intent",
+                "failure_stage": "tag_reasoning",
+                "gradient_text": f"诊断 {patch.patch_id}",
+                "proposed_edit": patch.body,
+                "evaluation": {"support": 6},
+            }
+            for patch in artifact.patches
+        ],
+    )
+
+
+@pytest.mark.asyncio
+async def test_persisting_the_same_artifact_twice_reuses_the_row(
+    lab_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    service = PromptLabService(lab_factory)
+
+    first = await _persist(service, _artifact())
+    second = await _persist(service, _artifact())
+
+    assert first.id == second.id
+    async with lab_factory() as session:
+        rows = (await session.execute(select(TagPromptArtifact))).scalars().all()
+    assert len(rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_demo_provenance_is_recorded_for_every_inlined_example(
+    lab_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Erasure needs a route from a served prompt back to the source conversation."""
+
+    service = PromptLabService(lab_factory)
+    artifact = await _persist(service, _artifact())
+
+    async with lab_factory() as session:
+        sources = (
+            (
+                await session.execute(
+                    select(TagPromptDemoSource).where(
+                        TagPromptDemoSource.artifact_id == artifact.id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    assert [source.demo_id for source in sources] == ["d1"]
+    assert sources[0].reception_id == 7
+    assert sources[0].segment_ids == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_verbatim_demos_are_refused_before_they_can_be_stored(
+    lab_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    service = PromptLabService(lab_factory)
+
+    with pytest.raises(PromptLabPrivacyError, match="verbatim"):
+        await _persist(service, _artifact(demos=(_demo("d1", mode="verbatim"),)))
+
+    async with lab_factory() as session:
+        rows = (await session.execute(select(TagPromptArtifact))).scalars().all()
+    assert rows == [], "nothing may be persisted when the privacy check fails"
+
+
+@pytest.mark.asyncio
+async def test_rejecting_a_patch_creates_a_child_and_supersedes_the_parent(
+    lab_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    service = PromptLabService(lab_factory)
+    parent = await _persist(service, _artifact())
+
+    child = await service.apply_patch_decisions(
+        tenant_id=_TENANT,
+        artifact_id=parent.id,
+        decisions=[
+            PatchDecision(patch_id="p1", accepted=True),
+            PatchDecision(patch_id="p2", accepted=False, note="会与总则冲突"),
+        ],
+        actor_user_id=9,
+    )
+
+    assert child.id != parent.id
+    assert child.parent_artifact_id == parent.id
+    assert "规则一" in child.rendered_prompt
+    assert "规则二" not in child.rendered_prompt
+
+    async with lab_factory() as session:
+        refreshed = await session.get(TagPromptArtifact, parent.id)
+        gradients = (
+            (
+                await session.execute(
+                    select(TagPromptGradient).where(TagPromptGradient.artifact_id == parent.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert refreshed is not None
+    assert refreshed.status == "superseded"
+    decisions = {row.patch_id: row.decision for row in gradients}
+    assert decisions == {"p1": "accepted", "p2": "rejected"}
+    assert next(row.decision_note for row in gradients if row.patch_id == "p2")
+
+
+@pytest.mark.asyncio
+async def test_resubmitting_the_same_decisions_is_idempotent(
+    lab_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A double-clicked submit must not mint a second candidate."""
+
+    service = PromptLabService(lab_factory)
+    parent = await _persist(service, _artifact())
+    decisions = [
+        PatchDecision(patch_id="p1", accepted=True),
+        PatchDecision(patch_id="p2", accepted=False),
+    ]
+
+    first = await service.apply_patch_decisions(
+        tenant_id=_TENANT,
+        artifact_id=parent.id,
+        decisions=decisions,
+        actor_user_id=9,
+    )
+    # The parent is superseded now, so resubmitting has to go through the child.
+    second = await service.apply_patch_decisions(
+        tenant_id=_TENANT,
+        artifact_id=first.id,
+        decisions=[PatchDecision(patch_id="p1", accepted=True)],
+        actor_user_id=9,
+    )
+
+    assert second.id == first.id, "an unchanged accepted set must resolve to the same row"
+    async with lab_factory() as session:
+        rows = (await session.execute(select(TagPromptArtifact))).scalars().all()
+    assert len(rows) == 2, "one compile plus one review, not three"
+
+
+@pytest.mark.asyncio
+async def test_a_superseded_artifact_refuses_further_decisions(
+    lab_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    from audio_graphy.services.tag_governance import GovernanceConflictError
+
+    service = PromptLabService(lab_factory)
+    parent = await _persist(service, _artifact())
+    await service.apply_patch_decisions(
+        tenant_id=_TENANT,
+        artifact_id=parent.id,
+        decisions=[PatchDecision(patch_id="p1", accepted=True)],
+        actor_user_id=9,
+    )
+
+    with pytest.raises(GovernanceConflictError, match="draft or review"):
+        await service.apply_patch_decisions(
+            tenant_id=_TENANT,
+            artifact_id=parent.id,
+            decisions=[PatchDecision(patch_id="p2", accepted=True)],
+            actor_user_id=9,
+        )
+
+
+@pytest.mark.asyncio
+async def test_an_artifact_from_another_tenant_is_not_reachable(
+    lab_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    service = PromptLabService(lab_factory)
+    artifact = await _persist(service, _artifact())
+
+    from audio_graphy.services.prompt_lab import PromptLabError
+
+    with pytest.raises(PromptLabError, match="not found"):
+        await service.get_artifact(tenant_id="other_tenant", artifact_id=artifact.id)
+
+
+async def _seed_baseline(
+    factory: async_sessionmaker[AsyncSession],
+    *,
+    gold_set_status: str = "frozen",
+) -> tuple[int, int]:
+    """Create the minimum a compilation needs to point at: a baseline and a gold set."""
+
+    from datetime import UTC, datetime
+
+    from audio_graphy.models.tag_governance import (
+        TaggerVersion,
+        TagGoldSet,
+        TagGoldSetVersion,
+        TagSchema,
+        TagSchemaVersion,
+    )
+
+    async with factory() as session, session.begin():
+        schema = TagSchema(tenant_id=_TENANT, key="sales", name="Sales", created_by=9)
+        session.add(schema)
+        await session.flush()
+        schema_version = TagSchemaVersion(
+            tenant_id=_TENANT,
+            schema_id=schema.id,
+            version=1,
+            definitions=[{"key": "intent"}],
+            checksum="c" * 64,
+            created_by=9,
+        )
+        session.add(schema_version)
+        await session.flush()
+        tagger = TaggerVersion(
+            tenant_id=_TENANT,
+            schema_version_id=schema_version.id,
+            version="baseline-v1",
+            model_version="weak-v1",
+            config_checksum="d" * 64,
+            created_by=9,
+        )
+        gold_set = TagGoldSet(
+            tenant_id=_TENANT,
+            schema_version_id=schema_version.id,
+            key="gold",
+            name="gold",
+            created_by=9,
+        )
+        session.add_all([tagger, gold_set])
+        await session.flush()
+        gold_version = TagGoldSetVersion(
+            tenant_id=_TENANT,
+            gold_set_id=gold_set.id,
+            version=1,
+            status=gold_set_status,
+            frozen_at=datetime.now(UTC) if gold_set_status == "frozen" else None,
+        )
+        session.add(gold_version)
+        await session.flush()
+        return int(tagger.id), int(gold_version.id)
+
+
+@pytest.mark.asyncio
+async def test_a_compilation_is_queued_not_executed(
+    lab_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The service records intent; the worker does the compiling."""
+
+    from audio_graphy.models.tag_governance import TagExtractionJob
+
+    service = PromptLabService(lab_factory)
+    baseline_id, gold_version_id = await _seed_baseline(lab_factory)
+
+    result = await service.create_compilation(
+        tenant_id=_TENANT,
+        baseline_tagger_version_id=baseline_id,
+        gold_set_version_id=gold_version_id,
+        compiler_config={"compiler": "builtin", "max_patches": 4},
+        budget={"max_provider_calls": 120, "max_provider_tokens": 1_500_000},
+        actor_user_id=9,
+    )
+
+    async with lab_factory() as session:
+        job = await session.get(TagExtractionJob, result["job_id"])
+    assert job is not None
+    assert job.job_type == "prompt_compile"
+    assert job.scope["compilation_id"] == result["compilation_id"]
+    assert job.scope["budget"]["max_provider_calls"] == 120
+
+
+@pytest.mark.asyncio
+async def test_an_identical_compilation_request_reuses_its_job(
+    lab_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    service = PromptLabService(lab_factory)
+    baseline_id, gold_version_id = await _seed_baseline(lab_factory)
+    request: dict[str, Any] = {
+        "tenant_id": _TENANT,
+        "baseline_tagger_version_id": baseline_id,
+        "gold_set_version_id": gold_version_id,
+        "compiler_config": {"compiler": "builtin"},
+        "budget": {"max_provider_calls": 10},
+        "actor_user_id": 9,
+    }
+
+    first = await service.create_compilation(**request)
+    second = await service.create_compilation(**request)
+
+    assert first == second
+
+
+@pytest.mark.asyncio
+async def test_an_unimplemented_compiler_is_refused_instead_of_downgraded(
+    lab_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The schema names compilers that do not exist yet; queueing one must fail.
+
+    Silently compiling with ``builtin`` would stamp the artifact ``compiler:
+    dspy_mipro`` while the patches came from the template proposer -- and every
+    later comparison between compilers would be reading a lie.
+    """
+
+    from audio_graphy.models.tag_governance import TagExtractionJob
+    from audio_graphy.services.prompt_lab import PromptLabError
+
+    service = PromptLabService(lab_factory)
+    baseline_id, _ = await _seed_baseline(lab_factory)
+
+    with pytest.raises(PromptLabError, match="尚未实现"):
+        await service.create_compilation(
+            tenant_id=_TENANT,
+            baseline_tagger_version_id=baseline_id,
+            gold_set_version_id=None,
+            compiler_config={"compiler": "dspy_mipro"},
+            budget={},
+            actor_user_id=9,
+        )
+
+    # 拒绝要发生在入队之前，否则队列里会留下一个注定失败的任务。
+    async with lab_factory() as session:
+        queued = await session.scalar(
+            select(func.count())
+            .select_from(TagExtractionJob)
+            .where(TagExtractionJob.job_type == "prompt_compile")
+        )
+    assert queued == 0
+
+
+@pytest.mark.asyncio
+async def test_a_compilation_must_read_a_frozen_gold_set(
+    lab_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Compiling against a mutable gold set would make the run unreproducible."""
+
+    from audio_graphy.services.prompt_lab import PromptLabError
+
+    service = PromptLabService(lab_factory)
+    baseline_id, gold_version_id = await _seed_baseline(lab_factory, gold_set_status="draft")
+
+    with pytest.raises(PromptLabError, match="frozen"):
+        await service.create_compilation(
+            tenant_id=_TENANT,
+            baseline_tagger_version_id=baseline_id,
+            gold_set_version_id=gold_version_id,
+            compiler_config={"compiler": "builtin"},
+            budget={},
+            actor_user_id=9,
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_compilation_cannot_point_at_another_tenants_baseline(
+    lab_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    from audio_graphy.services.prompt_lab import PromptLabError
+
+    service = PromptLabService(lab_factory)
+    baseline_id, _ = await _seed_baseline(lab_factory)
+
+    with pytest.raises(PromptLabError, match="baseline tagger version not found"):
+        await service.create_compilation(
+            tenant_id="other_tenant",
+            baseline_tagger_version_id=baseline_id,
+            gold_set_version_id=None,
+            compiler_config={"compiler": "builtin"},
+            budget={},
+            actor_user_id=9,
+        )
+
+
+@pytest.mark.asyncio
+async def test_only_actionable_badcases_reach_the_compiler(
+    lab_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Resolved cases and holdout-lane cases are not evidence for a prompt change."""
+
+    from datetime import UTC, datetime
+
+    from audio_graphy.models.tag_governance import TagBadcase
+
+    now = datetime.now(UTC)
+    async with lab_factory() as session, session.begin():
+        session.add_all(
+            [
+                TagBadcase(
+                    tenant_id=_TENANT,
+                    # A badcase must trace to the evidence that produced it.
+                    source_feedback_event_id=index,
+                    subject_type="dialogue_unit",
+                    subject_id=index,
+                    tag_key="intent",
+                    failure_stage="tag_reasoning",
+                    failure_mode="correct:missed",
+                    signature_hash=f"{index}" * 8,
+                    dataset_split=split,
+                    status=status,
+                    root_cause={"reason_code": "missed", "upstream_routed": False},
+                    occurrence_count=3,
+                    first_seen_at=now,
+                    last_seen_at=now,
+                )
+                for index, (status, split) in enumerate(
+                    [
+                        ("open", "train"),
+                        ("reopened", "validation"),
+                        ("resolved", "train"),
+                        ("open", "holdout"),
+                    ],
+                    start=1,
+                )
+            ]
+        )
+
+    rows = await PromptLabService(lab_factory).badcase_rows_for_compile(tenant_id=_TENANT)
+
+    assert sorted(row["id"] for row in rows) == [1, 2]
+    assert all(row["occurrence_count"] == 3 for row in rows)
+
+
+@pytest.mark.asyncio
+async def test_gradients_and_artifacts_can_be_listed_and_filtered(
+    lab_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    service = PromptLabService(lab_factory)
+    parent = await _persist(service, _artifact())
+
+    all_gradients = await service.list_gradients(tenant_id=_TENANT, artifact_id=parent.id)
+    assert {row.patch_id for row in all_gradients} == {"p1", "p2"}
+
+    await service.apply_patch_decisions(
+        tenant_id=_TENANT,
+        artifact_id=parent.id,
+        decisions=[PatchDecision(patch_id="p1", accepted=True)],
+        actor_user_id=9,
+    )
+
+    accepted = await service.list_gradients(
+        tenant_id=_TENANT,
+        artifact_id=parent.id,
+        decision="accepted",
+    )
+    assert [row.patch_id for row in accepted] == ["p1"]
+
+    drafts = await service.list_artifacts(tenant_id=_TENANT, status="draft")
+    superseded = await service.list_artifacts(tenant_id=_TENANT, status="superseded")
+    assert len(drafts) == 1
+    assert [row.id for row in superseded] == [parent.id]
+
+
+@pytest.mark.asyncio
+async def test_readiness_counts_reviewed_labels_and_ignores_silver(
+    lab_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Silver rows are visible so the gap is legible, but they never close it."""
+
+    from audio_graphy.models.prompt_lab import TagSilverLabel
+
+    async with lab_factory() as session, session.begin():
+        session.add_all(
+            [
+                TagSilverLabel(
+                    tenant_id=_TENANT,
+                    subject_type="dialogue_unit",
+                    subject_id=index,
+                    tag_key="intent",
+                    evidence_refs=[],
+                    truth_state="present",
+                    truth_tier="t1",
+                    split="train",
+                    teacher_model_tier="strong",
+                    agreement_count=3,
+                    source="strong_critic",
+                )
+                for index in range(1, 41)
+            ]
+        )
+
+    readiness = await PromptLabService(lab_factory).readiness(tenant_id=_TENANT)
+
+    (domain,) = readiness.domains
+    assert domain.domain == "dialogue_unit:intent"
+    assert domain.silver_count == 40
+    assert domain.gold_count == 0
+    assert domain.feedback_count == 0
+    assert domain.meets_threshold is False
+    assert "domain_support_below_30:dialogue_unit:intent" in readiness.blockers
+    # 30 missing subjects at five minutes each.
+    assert readiness.annotation_hours_remaining == 2.5
+
+
+@pytest.mark.asyncio
+async def test_readiness_names_the_gap_and_prices_it_in_human_hours(
+    lab_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """An empty tenant should say what is missing, not merely that it is not ready."""
+
+    service = PromptLabService(lab_factory)
+
+    readiness = await service.readiness(tenant_id=_TENANT)
+
+    assert readiness.ready is False
+    assert "reviewed_feedback_below_200" in readiness.blockers
+    assert "no_reviewed_domains" in readiness.blockers
+    assert "no_frozen_gold_set" in readiness.blockers
+    assert readiness.gold_label_total == 0
+    payload = readiness.as_payload()
+    assert payload["annotation_hours_remaining"] == 0.0
+    assert payload["domains"] == []

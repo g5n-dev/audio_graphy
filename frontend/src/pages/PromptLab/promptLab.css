@@ -1,0 +1,596 @@
+/**
+ * 提示词实验室。页面外壳、卡片、表格等复用 TagGovernance/tagGovernance.css，
+ * 这里只写本页特有的部分。
+ */
+
+.ag-prompt-lab-page .ag-governance-tabs button strong {
+  white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------- 就绪度 */
+
+.ag-plab-readiness {
+  display: grid;
+  gap: 16px;
+}
+
+.ag-plab-threshold-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+  padding: 15px 18px;
+}
+
+.ag-plab-threshold__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.ag-plab-threshold progress {
+  width: 100%;
+  height: 8px;
+}
+
+.ag-plab-threshold__value {
+  display: block;
+  margin-top: 6px;
+  color: #61708a;
+  font-size: 14px;
+}
+
+.ag-plab-matrix-wrap {
+  padding: 15px 18px;
+  overflow-x: auto;
+}
+
+.ag-plab-matrix {
+  display: grid;
+  gap: 4px;
+  min-width: max-content;
+}
+
+.ag-plab-matrix__row {
+  display: grid;
+  grid-template-columns: minmax(140px, auto) repeat(var(--ag-plab-cols), minmax(76px, 1fr));
+  gap: 4px;
+}
+
+.ag-plab-matrix__corner,
+.ag-plab-matrix__head {
+  display: flex;
+  align-items: center;
+  padding: 6px 8px;
+  color: #61708a;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.ag-plab-matrix__cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  border-radius: 4px;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.ag-plab-matrix__cell.is-cold {
+  color: #bd3d48;
+  background: #fff0f1;
+}
+
+.ag-plab-matrix__cell.is-warm {
+  color: #996200;
+  background: #fff8e8;
+}
+
+.ag-plab-matrix__cell.is-ready {
+  color: #08785a;
+  background: #ecfbf5;
+}
+
+.ag-plab-matrix__cell.is-empty {
+  color: #9aa7bd;
+  background: #f6f8fb;
+}
+
+.ag-plab-matrix__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin: 12px 0 0;
+  padding: 0;
+  color: #61708a;
+  font-size: 13px;
+  list-style: none;
+}
+
+.ag-plab-matrix__legend li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ag-plab-matrix__swatch {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+}
+
+.ag-plab-matrix__swatch.is-cold {
+  background: #fff0f1;
+  border: 1px solid #f2cbd0;
+}
+
+.ag-plab-matrix__swatch.is-warm {
+  background: #fff8e8;
+  border: 1px solid #f1dfad;
+}
+
+.ag-plab-matrix__swatch.is-ready {
+  background: #ecfbf5;
+  border: 1px solid #c8eee0;
+}
+
+.ag-plab-blocker-list {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 15px 18px 15px 36px;
+}
+
+.ag-plab-blocker-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 10px;
+  color: #243654;
+  font-size: 14px;
+}
+
+.ag-plab-coldstart__cost {
+  margin: 0;
+  padding: 0 18px 16px;
+  color: #61708a;
+  font-size: 14px;
+}
+
+/* ---------------------------------------------------------------- 编译 */
+
+.ag-plab-inline-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #61708a;
+  font-size: 14px;
+}
+
+.ag-plab-cost-estimate {
+  padding: 12px 14px;
+  background: #f6f8fb;
+  border-radius: 6px;
+}
+
+.ag-plab-cost-estimate dl,
+.ag-plab-cost-bar dl {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+  margin: 10px 0 0;
+}
+
+.ag-plab-cost-estimate dt,
+.ag-plab-cost-bar dt {
+  color: #61708a;
+  font-size: 13px;
+}
+
+.ag-plab-cost-estimate dd,
+.ag-plab-cost-bar dd {
+  margin: 2px 0 0;
+  color: #243654;
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.ag-plab-artifact-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ag-plab-artifact-card {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+  padding: 14px 16px;
+  text-align: left;
+  background: #fff;
+  border: 1px solid #e5e6eb;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.ag-plab-artifact-card.is-selected {
+  border-color: #2f6bff;
+  box-shadow: 0 0 0 1px #2f6bff inset;
+}
+
+.ag-plab-artifact-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.ag-plab-artifact-card__meta {
+  color: #61708a;
+  font-size: 13px;
+}
+
+/* ---------------------------------------------------------------- 差异 */
+
+.ag-plab-diff-panel {
+  display: grid;
+  gap: 16px;
+}
+
+.ag-plab-cost-bar {
+  padding: 14px 16px;
+  background: #fff;
+  border: 1px solid #e5e6eb;
+  border-radius: 6px;
+}
+
+.is-better {
+  color: #08785a;
+}
+
+.is-worse {
+  color: #bd3d48;
+}
+
+.ag-plab-diff {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  max-height: 620px;
+  overflow: auto;
+}
+
+.ag-plab-diff__pane {
+  min-width: 0;
+}
+
+.ag-plab-diff__pane h3 {
+  position: sticky;
+  top: 0;
+  margin: 0 0 8px;
+  padding: 6px 0;
+  background: #fff;
+  color: #243654;
+  font-size: 14px;
+}
+
+.ag-plab-diff__hunk {
+  position: relative;
+}
+
+.ag-plab-diff__lines {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ag-plab-diff__line {
+  display: flex;
+  gap: 8px;
+  min-height: 22px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.ag-plab-diff__line.is-insert {
+  background: #ecfbf5;
+}
+
+.ag-plab-diff__line.is-delete {
+  background: #fff0f1;
+}
+
+.ag-plab-diff__line.is-spacer {
+  background: #f6f8fb;
+}
+
+.ag-plab-diff__gutter {
+  flex: 0 0 auto;
+  width: 34px;
+  color: #9aa7bd;
+  text-align: right;
+  user-select: none;
+}
+
+.ag-plab-diff__span.is-changed {
+  padding: 0 1px;
+  background: #ffe9a8;
+  border-radius: 2px;
+}
+
+.ag-plab-hunk-chip {
+  display: inline-flex;
+  margin: 4px 0;
+  padding: 1px 8px;
+  color: #315bb8;
+  background: #edf4ff;
+  border: 1px solid #d4e2ff;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.ag-plab-hunk-chip.is-ambiguous {
+  color: #996200;
+  background: #fff8e8;
+  border-color: #f1dfad;
+}
+
+.ag-plab-demo-list {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 15px 18px;
+  list-style: none;
+}
+
+.ag-plab-demo-item {
+  padding: 12px 14px;
+  background: #f9fafc;
+  border-radius: 6px;
+}
+
+.ag-plab-demo-item.is-dropped {
+  opacity: 0.55;
+  text-decoration: line-through;
+}
+
+.ag-plab-demo-item__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ag-plab-demo-item blockquote {
+  margin: 8px 0;
+  padding-left: 10px;
+  border-left: 3px solid #d7dee9;
+  color: #243654;
+  font-size: 14px;
+}
+
+.ag-plab-demo-item__source {
+  margin: 0;
+  color: #61708a;
+  font-size: 13px;
+}
+
+.ag-plab-staged-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 18px;
+  background: #edf4ff;
+  border-radius: 6px;
+  color: #243654;
+  font-size: 14px;
+}
+
+.ag-plab-empty {
+  display: grid;
+  justify-items: start;
+  gap: 12px;
+  padding: 28px 18px;
+  color: #61708a;
+  font-size: 14px;
+}
+
+/* ---------------------------------------------------------------- 梯度 */
+
+.ag-plab-gradients {
+  display: grid;
+  gap: 14px;
+}
+
+.ag-plab-gradient-list {
+  display: grid;
+  gap: 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ag-plab-gradient-card {
+  padding: 14px 16px;
+  background: #fff;
+  border: 1px solid #e5e6eb;
+  border-radius: 6px;
+}
+
+.ag-plab-gradient-card.is-staged-accepted {
+  border-color: #08785a;
+}
+
+.ag-plab-gradient-card.is-staged-rejected {
+  border-color: #bd3d48;
+}
+
+.ag-plab-gradient-card__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.ag-plab-kind {
+  color: #61708a;
+  font-size: 13px;
+}
+
+.ag-plab-gradient-stages {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ag-plab-gradient-card__stage {
+  position: relative;
+  padding: 10px 12px;
+  background: #f9fafc;
+  border-radius: 6px;
+}
+
+/* 箭头用纯 CSS，不引图形库。 */
+.ag-plab-gradient-card__stage:not(:last-child)::after {
+  position: absolute;
+  top: 50%;
+  right: -10px;
+  color: #b6c0d0;
+  content: "→";
+  transform: translateY(-50%);
+}
+
+.ag-plab-gradient-card__stage h4 {
+  margin: 0 0 8px;
+  color: #243654;
+  font-size: 14px;
+}
+
+.ag-plab-gradient-card__stage blockquote {
+  margin: 0;
+  color: #243654;
+  font-size: 14px;
+}
+
+.ag-plab-gradient-card__stage pre {
+  margin: 0;
+  color: #243654;
+  font-size: 13px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.ag-plab-evaluation,
+.ag-plab-side-effects dl {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+
+.ag-plab-evaluation div,
+.ag-plab-side-effects div {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.ag-plab-side-effects {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed #d7dee9;
+}
+
+.ag-plab-gradient-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.ag-plab-note {
+  display: grid;
+  flex: 1 1 260px;
+  gap: 4px;
+  color: #61708a;
+  font-size: 13px;
+}
+
+.ag-plab-target-tags {
+  margin: 8px 0 0;
+  color: #61708a;
+  font-size: 13px;
+}
+
+/* ---------------------------------------------------------------- 回放 */
+
+.ag-plab-replay {
+  display: grid;
+  gap: 16px;
+}
+
+.ag-plab-flip-list {
+  padding: 0 18px 16px;
+}
+
+.ag-plab-flip-list details {
+  margin-bottom: 10px;
+  padding: 8px 12px;
+  border-radius: 6px;
+}
+
+.ag-plab-flip-list details.is-regression {
+  background: #fff5f5;
+  border-left: 3px solid #f2cbd0;
+}
+
+.ag-plab-flip-list details.is-improvement {
+  background: #f3fbf7;
+  border-left: 3px solid #c8eee0;
+}
+
+.ag-plab-flip-list summary {
+  color: #243654;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.ag-plab-flip-list ul {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ag-plab-flip-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 14px;
+}
+
+@media (max-width: 1100px) {
+  .ag-plab-diff {
+    grid-template-columns: 1fr;
+  }
+
+  .ag-plab-gradient-card__stage:not(:last-child)::after {
+    content: none;
+  }
+}

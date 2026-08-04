@@ -1,0 +1,38 @@
+/**
+ * StatusChip 的视觉。随组件一起离开 tagGovernance.css，这样共享组件不会依赖某个
+ * 页面是否引入了那张样式表——PanelState.css 的头注释记录过这个坑。
+ *
+ * `is-info` 没有单独规则：基础样式就是信息态。
+ */
+
+.ag-governance-status {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  min-height: 24px;
+  padding: 2px 9px;
+  color: #315bb8;
+  background: #edf4ff;
+  border: 1px solid #d4e2ff;
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.ag-governance-status.is-success {
+  color: #08785a;
+  background: #ecfbf5;
+  border-color: #c8eee0;
+}
+
+.ag-governance-status.is-warning {
+  color: #996200;
+  background: #fff8e8;
+  border-color: #f1dfad;
+}
+
+.ag-governance-status.is-danger {
+  color: #bd3d48;
+  background: #fff0f1;
+  border-color: #f2cbd0;
+}
