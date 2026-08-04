@@ -908,8 +908,16 @@ function EntityRelationshipPanel() {
               {isFocused ? (
                 <>
                   聚焦 {centreLabel} · {focusHops} 跳邻域{" "}
-                  {activeData.total_nodes.toLocaleString("zh-CN")} 节点 ·{" "}
-                  {renderedEdgeCount(activeData).toLocaleString("zh-CN")} 关系
+                  {activeData.total_nodes.toLocaleString("zh-CN")} 节点
+                  {/* 邻域大于 limit 时后端只返回一页（就近保留），必须说出来，
+                      否则截断后的画布看起来就是这个实体的全部邻居。 */}
+                  {activeData.nodes.length < activeData.total_nodes && (
+                    <>
+                      （已渲染最近的{" "}
+                      {activeData.nodes.length.toLocaleString("zh-CN")} 个）
+                    </>
+                  )}{" "}
+                  · {renderedEdgeCount(activeData).toLocaleString("zh-CN")} 关系
                   {describeEdgeTruncation(activeData, "可减少跳数缩小范围")}
                 </>
               ) : (

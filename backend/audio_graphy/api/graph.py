@@ -263,9 +263,14 @@ async def get_subgraph(
     if not g.has_node(entity):
         raise EntityNotFoundError(detail={"entity_name": entity})
 
-    # BFS to find nodes within max_hops
+    # BFS to find nodes within max_hops. Kept in discovery order -- nearest hop
+    # first, then sorted within a hop -- because that order survives truncation:
+    # slicing an unordered set drops nodes by hash, so a 1-hop neighbour could
+    # vanish in favour of a 3-hop one, and the survivors changed between
+    # processes under hash randomisation.
     visited: set[str] = {entity}
-    frontier: set[str] = {entity}
+    ordered: list[str] = [entity]
+    frontier: list[str] = [entity]
 
     for _ in range(max_hops):
         next_frontier: set[str] = set()
@@ -277,10 +282,10 @@ async def get_subgraph(
                 if source not in visited:
                     next_frontier.add(source)
         visited.update(next_frontier)
-        frontier = next_frontier
+        frontier = sorted(next_frontier)
+        ordered.extend(frontier)
 
-    # Apply limit
-    node_list = list(visited)[:limit]
+    node_list = ordered[:limit]
     node_set = set(node_list)
 
     nodes = []
@@ -302,7 +307,11 @@ async def get_subgraph(
     return ExploreResponse(
         nodes=nodes,
         edges=edges,
-        total_nodes=len(nodes),
+        # The neighborhood size, not the page: `limit` caps what is rendered, and
+        # reporting the capped count made every truncated focus view claim the
+        # entity had exactly `limit` neighbours. total_edges beside it already
+        # reports the true count.
+        total_nodes=len(visited),
         total_edges=edge_window.total,
         edge_window=GraphEdgeWindowResponse(
             total=edge_window.total,

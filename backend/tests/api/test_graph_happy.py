@@ -165,6 +165,46 @@ class TestGraphHappyPath:
         assert body["total_nodes"] >= 1
         assert body["total_edges"] >= 0
 
+    def test_subgraph_reports_the_neighborhood_size_not_the_page(
+        self, test_client: TestClient, auth_headers: dict
+    ) -> None:
+        """`limit` caps what is rendered; total_nodes must still say how many there are.
+
+        Reporting the capped count made every truncated focus view claim the
+        entity had exactly `limit` neighbours — and the graph page prints that
+        number beside total_edges, which does report the true count. The two
+        numbers in one sentence meant different things.
+        """
+        _seed_star(test_client, spokes=6)
+        resp = test_client.get(
+            "/api/v1/graph/subgraph?entity=枢纽&max_hops=1&limit=3",
+            headers=auth_headers["admin_t1"],
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert len(body["nodes"]) == 3
+        assert body["total_nodes"] == 7, "6 spokes plus the centre"
+
+    def test_subgraph_truncation_keeps_the_nearest_hops(
+        self, test_client: TestClient, auth_headers: dict
+    ) -> None:
+        """Slicing an unordered set dropped nodes by hash, not by distance.
+
+        A 1-hop neighbour could be discarded in favour of a 3-hop one, and which
+        ones survived changed between processes under hash randomisation — the
+        same focus view, refreshed, showed a different neighborhood.
+        """
+        _seed_star(test_client, spokes=4, rim=True)
+        resp = test_client.get(
+            "/api/v1/graph/subgraph?entity=枢纽&max_hops=2&limit=5",
+            headers=auth_headers["admin_t1"],
+        )
+        assert resp.status_code == 200
+        returned = {node["id"] for node in resp.json()["nodes"]}
+        assert returned == {"枢纽", "辐条0", "辐条1", "辐条2", "辐条3"}, (
+            "the centre and its 1-hop ring, never a 2-hop rim node"
+        )
+
     def test_subgraph_missing_entity(self, test_client: TestClient, auth_headers: dict) -> None:
         """GET /graph/subgraph without entity param returns 422."""
         resp = test_client.get(
@@ -210,3 +250,37 @@ class TestGraphHappyPath:
             headers=auth_headers["admin_t1"],
         )
         assert resp.status_code == 404
+
+
+def _seed_star(test_client, *, spokes: int, rim: bool = False) -> None:
+    """A hub with `spokes` neighbours, optionally each carrying a 2-hop rim node."""
+
+    import networkx as nx
+
+    from audio_graphy.core.types import _list_to_str
+
+    seed_graph(test_client)  # ensures the tenant's store exists
+    store = test_client.app.state.graph_stores["chang_an"]
+    g: nx.MultiDiGraph = store._graph
+    g.clear()
+
+    def _add(name: str) -> None:
+        g.add_node(
+            name,
+            name=name,
+            type="产品",
+            description=name,
+            degree=1,
+            source_ids=_list_to_str(["seg_1"]),
+            recording_ids=_list_to_str(["1"]),
+        )
+
+    _add("枢纽")
+    for index in range(spokes):
+        spoke = f"辐条{index}"
+        _add(spoke)
+        g.add_edge("枢纽", spoke, key="关联", relation="关联", weight=1.0)
+        if rim:
+            far = f"外围{index}"
+            _add(far)
+            g.add_edge(spoke, far, key="关联", relation="关联", weight=1.0)
