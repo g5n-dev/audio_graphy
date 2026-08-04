@@ -72,6 +72,19 @@ export interface RecordingListItem {
   recorded_at: string | null;
   indexed_at: string | null;
   prompt_version: string | null;
+  /** Durable pipeline run currently attached to this recording, if any. */
+  active_pipeline_run_id: number | null;
+}
+
+/** POST /recordings request body — registers a server-side audio file. */
+export interface RecordingCreateRequest {
+  store_id: string;
+  /** Server-side path (relative to the backend working directory / volume). */
+  path: string;
+  agent_name?: string;
+  customer_hash?: string;
+  recorded_at?: string;
+  prompt_version?: string;
 }
 
 export interface TagSummary {
@@ -97,6 +110,8 @@ export interface RecordingResponse {
   segments_count: number;
   chunks_count: number;
   current_tags: TagSummary[];
+  /** Durable pipeline run currently attached to this recording, if any. */
+  active_pipeline_run_id: number | null;
 }
 
 export interface RecordingListResponse {
@@ -104,6 +119,44 @@ export interface RecordingListResponse {
   total: number;
   page: number;
   page_size: number;
+}
+
+/** GET /recordings/{id}/status lightweight polling response. */
+export interface RecordingStatusResponse {
+  id: number;
+  agent_user_id: number | null;
+  status: RecordingStatus;
+  pipeline_state: string;
+  indexed_at: string | null;
+  active_pipeline_run_id: number | null;
+}
+
+/** GET /recordings/{id}/processing-runs/{run_id} — durable pipeline run. */
+export interface PipelineRunResponse {
+  id: number;
+  recording_id: number;
+  generation: number;
+  state: string;
+  attempt_count: number;
+  required_projections: string[];
+  completed_projections: string[];
+  error_code: string | null;
+  error_message: string | null;
+  lease_expires_at: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  activated_at: string | null;
+}
+
+/** POST /recordings/{id}/reindex response (202). */
+export interface ReindexResponse {
+  id: number;
+  status: RecordingStatus;
+  pipeline_state: string;
+  operation_id: number;
+  generation: number;
+  operation_state: string;
+  message: string;
 }
 
 // ============================================================

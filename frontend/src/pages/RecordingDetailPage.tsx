@@ -11,11 +11,13 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams, useSearchParams } from "react-router-dom";
 import {
+  Button,
   Descriptions,
   Card,
+  Message,
   Table,
   Tabs,
   Tag,
@@ -24,27 +26,216 @@ import {
 } from "@arco-design/web-react";
 import {
   IconBranch,
+  IconCheckCircleFill,
   IconClockCircle,
   IconMessage,
   IconUser,
 } from "@arco-design/web-react/icon";
-import { getRecording, getSegments, getTags } from "@/api/services";
-import type { SegmentResponse } from "@/types/api";
+import {
+  getRecording,
+  getRecordingProcessingRun,
+  getSegments,
+  getTags,
+  reindexRecording,
+} from "@/api/services";
+import type { PipelineRunResponse, SegmentResponse } from "@/types/api";
 import { OutLinkCard } from "@/components/OutLinkCard";
+import { useAuthStore } from "@/stores/auth";
+import { getErrorMessage } from "@/utils/errors";
 import { parseAtParam, buildFocusParam } from "@/utils/urlParams";
 
 const { Title } = Typography;
 const { TabPane } = Tabs;
 
+// Human-readable names for pipeline projections (required vs completed).
+const projectionLabelMap: Record<string, string> = {
+  file_index: "文件索引",
+  vector: "向量索引",
+  graph: "图谱投影",
+};
+
+// Pipeline run states that mean the run is still moving forward.
+const RUN_ACTIVE_STATES = new Set([
+  "queued",
+  "claimed",
+  "vad",
+  "asr",
+  "segments",
+  "chunks",
+  "projections",
+  "verifying",
+]);
+
+// Pipeline run states that mean the run stopped without producing an index.
+const RUN_FAILED_STATES = new Set([
+  "partial",
+  "failed_retryable",
+  "failed_terminal",
+]);
+
+const runStateLabelMap: Record<string, string> = {
+  queued: "排队中",
+  claimed: "已认领",
+  vad: "语音检测",
+  asr: "语音识别",
+  segments: "分段",
+  chunks: "切块",
+  projections: "投影写入",
+  verifying: "校验中",
+  ready: "完成",
+  ready_no_speech: "完成（无语音）",
+  partial: "部分完成",
+  failed_retryable: "失败（可重试）",
+  failed_terminal: "失败（终止）",
+  superseded: "已被取代",
+};
+
+/**
+ * Pipeline progress panel — visible whenever the recording has an active
+ * or failed run, so the operator can see which stage the ingest is at and
+ * why it failed instead of staring at a status word.
+ */
+function PipelinePanel({
+  run,
+  recordingStatus,
+  isAdmin,
+  onRetry,
+  retryPending,
+}: {
+  run: PipelineRunResponse;
+  recordingStatus: string;
+  isAdmin: boolean;
+  onRetry: (force: boolean) => void;
+  retryPending: boolean;
+}) {
+  const failed = RUN_FAILED_STATES.has(run.state) || recordingStatus === "failed";
+  const active = !failed && RUN_ACTIVE_STATES.has(run.state);
+  const required = run.required_projections;
+  const completed = new Set(run.completed_projections);
+
+  return (
+    <Card
+      style={{ marginBottom: 16 }}
+      title={failed ? "处理失败" : "处理进行中"}
+      extra={
+        isAdmin ? (
+          failed ? (
+            <Button
+              size="small"
+              type="primary"
+              status="danger"
+              loading={retryPending}
+              onClick={() => onRetry(false)}
+            >
+              重试处理
+            </Button>
+          ) : active ? (
+            <Button
+              size="small"
+              type="outline"
+              loading={retryPending}
+              // force=true breaks a stale lease so a stuck run can requeue.
+              onClick={() => onRetry(true)}
+            >
+              强制重跑
+            </Button>
+          ) : null
+        ) : null
+      }
+    >
+      <div role={failed ? "alert" : "status"}>
+        <div style={{ marginBottom: 12 }}>
+          <Tag color={failed ? "red" : "blue"}>
+            {runStateLabelMap[run.state] ?? run.state}
+          </Tag>
+          <span style={{ marginLeft: 8, color: "#86909c", fontSize: 13 }}>
+            第 {run.generation} 代 · 第 {run.attempt_count} 次尝试
+          </span>
+        </div>
+        <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+          {required.map((projection) => {
+            const done = completed.has(projection);
+            return (
+              <span
+                key={projection}
+                style={{ color: done ? "#00b42a" : "#86909c", fontSize: 13 }}
+              >
+                {done ? (
+                  <IconCheckCircleFill style={{ marginRight: 4 }} />
+                ) : (
+                  <IconClockCircle style={{ marginRight: 4 }} />
+                )}
+                {projectionLabelMap[projection] ?? projection}
+              </span>
+            );
+          })}
+        </div>
+        {failed && (
+          <div style={{ marginTop: 12 }}>
+            <Typography.Text type="error">
+              错误代码：{run.error_code ?? "未知"}
+            </Typography.Text>
+            <Typography.Paragraph
+              type="error"
+              style={{ marginTop: 4, marginBottom: 0 }}
+            >
+              {run.error_message ?? "后端未返回错误详情，请查看服务端日志。"}
+            </Typography.Paragraph>
+          </div>
+        )}
+      </div>
+    </Card>
+  );
+}
+
 export default function RecordingDetailPage() {
   const { id } = useParams<{ id: string }>();
   const [searchParams] = useSearchParams();
   const recordingId = Number(id);
+  const queryClient = useQueryClient();
+  const user = useAuthStore((s) => s.user);
+  const isAdmin = user?.role === "admin";
 
   const { data: recording, isLoading: loadingRec } = useQuery({
     queryKey: ["recording", recordingId],
     queryFn: () => getRecording(recordingId),
     enabled: !!recordingId,
+    // While the pipeline is still working, refresh so the page flips to
+    // indexed (and the panel disappears) without a manual reload.
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      return status === "queued" || status === "processing" ? 5000 : false;
+    },
+  });
+
+  const activeRunId = recording?.active_pipeline_run_id ?? null;
+  const pipelineRelevant =
+    recording?.status === "queued" ||
+    recording?.status === "processing" ||
+    recording?.status === "failed";
+
+  const { data: pipelineRun } = useQuery({
+    queryKey: ["recording", recordingId, "processing-run", activeRunId],
+    queryFn: () => getRecordingProcessingRun(recordingId, activeRunId as number),
+    enabled: !!recordingId && activeRunId !== null && pipelineRelevant,
+    refetchInterval: (query) => {
+      const state = query.state.data?.state;
+      return state === undefined || RUN_ACTIVE_STATES.has(state) ? 4000 : false;
+    },
+  });
+
+  const reindexMutation = useMutation({
+    mutationFn: (force: boolean) => reindexRecording(recordingId, { force }),
+    onSuccess: () => {
+      Message.success("已重新排队处理");
+      // Refresh both the list and this detail so polling restarts on the
+      // new run immediately.
+      void queryClient.invalidateQueries({ queryKey: ["recordings"] });
+      void queryClient.invalidateQueries({ queryKey: ["recording", recordingId] });
+    },
+    onError: (error) => {
+      Message.error(getErrorMessage(error, "重新处理失败"));
+    },
   });
 
   const { data: segments, isLoading: loadingSeg } = useQuery({
@@ -116,6 +307,15 @@ export default function RecordingDetailPage() {
       </header>
 
       <div style={{ padding: 24 }}>
+      {pipelineRun && pipelineRelevant && (
+        <PipelinePanel
+          run={pipelineRun}
+          recordingStatus={recording.status}
+          isAdmin={isAdmin}
+          onRetry={(force) => reindexMutation.mutate(force)}
+          retryPending={reindexMutation.isPending}
+        />
+      )}
       <Card style={{ marginBottom: 16 }}>
         <Descriptions
           column={3}
@@ -249,11 +449,13 @@ export default function RecordingDetailPage() {
             </span>
           }
         >
+          {/* 接待列表暂无按录音筛选的服务端能力，直接带录音焦点跳转会落在
+              一个无法生效的筛选上；改为带门店焦点进入队列，由录制时间定位。 */}
           <OutLinkCard
             icon={<IconMessage />}
             title="接待"
-            description="跳转到此录音所属的接待工作台，查看完整接待流程与状态路径分析。"
-            to={`/receptions?focus=${buildFocusParam("录音", recording.id)}`}
+            description={`接待队列暂不支持按录音直接筛选。点击后将进入门店 ${recording.store_id} 的接待队列，请结合录制时间定位此录音所属的接待。`}
+            to={`/receptions?focus=${buildFocusParam("门店", recording.store_id)}`}
           />
         </TabPane>
 

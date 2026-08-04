@@ -22,10 +22,14 @@ import type {
   MeResponse,
   PromptListResponse,
   PromptResponse,
+  PipelineRunResponse,
   QueryResponse,
+  RecordingCreateRequest,
   RecordingListResponse,
   RecordingResponse,
   RecordingStatus,
+  RecordingStatusResponse,
+  ReindexResponse,
   SegmentListResponse,
   StatsResponse,
   TagsListResponse,
@@ -150,6 +154,50 @@ export async function listRecordings(params?: {
 
 export async function getRecording(id: number): Promise<RecordingResponse> {
   const { data } = await httpClient.get<RecordingResponse>(`/recordings/${id}`);
+  return data;
+}
+
+/** Register a server-side audio file for pipeline processing (admin only). */
+export async function createRecording(
+  body: RecordingCreateRequest,
+): Promise<RecordingResponse> {
+  const { data } = await httpClient.post<RecordingResponse>(
+    "/recordings",
+    body,
+  );
+  return data;
+}
+
+/** Lightweight status endpoint used for progress polling. */
+export async function getRecordingStatus(
+  id: number,
+): Promise<RecordingStatusResponse> {
+  const { data } = await httpClient.get<RecordingStatusResponse>(
+    `/recordings/${id}/status`,
+  );
+  return data;
+}
+
+/** Durable pipeline-run detail (stage checklist + failure diagnostics). */
+export async function getRecordingProcessingRun(
+  recordingId: number,
+  runId: number,
+): Promise<PipelineRunResponse> {
+  const { data } = await httpClient.get<PipelineRunResponse>(
+    `/recordings/${recordingId}/processing-runs/${runId}`,
+  );
+  return data;
+}
+
+/** Re-queue a recording for indexing (admin only; force skips hash check). */
+export async function reindexRecording(
+  id: number,
+  body: { force?: boolean } = {},
+): Promise<ReindexResponse> {
+  const { data } = await httpClient.post<ReindexResponse>(
+    `/recordings/${id}/reindex`,
+    { force: body.force ?? false },
+  );
   return data;
 }
 
