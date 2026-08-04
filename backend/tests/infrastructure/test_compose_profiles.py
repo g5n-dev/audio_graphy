@@ -373,3 +373,41 @@ def test_streaming_vad_override_mounts_local_model_read_only() -> None:
     ]
     assert len(model_mounts) == 1
     assert model_mounts[0]["read_only"] is True
+
+
+class TestMigrationsCanRunAsTheApplicationUser:
+    """The shipped MySQL config must let the shipped migrations complete.
+
+    Migrations 0020, 0022 and 0023 create append-only guard triggers. MySQL 8
+    refuses CREATE TRIGGER from a non-SUPER account while binary logging is on
+    (ER_BINLOG_UNSAFE_ROUTINE, 1419), and the application account deliberately
+    has none. Without `log_bin_trust_function_creators`, `alembic upgrade head`
+    died partway through 0020 on a fresh volume, leaving a half-built schema —
+    and because the retry then hit "Table 'tag_schemas' already exists", it
+    could never recover. The backend started anyway, reported healthy, and
+    answered every request with "table doesn't exist".
+
+    Nothing caught it: the suite builds its schema with `create_all` on SQLite
+    or against an already-migrated database, and CI's compose job runs
+    `docker compose config`, which starts no server. It took a clean clone.
+    """
+
+    def test_trigger_creation_is_permitted_for_a_non_super_account(self) -> None:
+        config = (PROJECT_ROOT / "mysql" / "conf.d" / "audiography.cnf").read_text(encoding="utf-8")
+        assert "log_bin_trust_function_creators = 1" in config, (
+            "mysql/conf.d/audiography.cnf must set log_bin_trust_function_creators, "
+            "or `alembic upgrade head` cannot create the append-only triggers"
+        )
+
+    def test_every_migration_that_creates_a_trigger_is_still_covered(self) -> None:
+        """If triggers ever disappear, the setting above can go with them."""
+        versions = PROJECT_ROOT / "backend" / "alembic" / "versions"
+        with_triggers = sorted(
+            path.name
+            for path in versions.glob("*.py")
+            if "CREATE TRIGGER" in path.read_text(encoding="utf-8")
+        )
+        assert with_triggers, (
+            "no migration creates a trigger any more — drop "
+            "log_bin_trust_function_creators from mysql/conf.d/audiography.cnf"
+        )

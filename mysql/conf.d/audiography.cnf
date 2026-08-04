@@ -31,6 +31,20 @@ slow_query_log_file = /var/lib/mysql/slow.log
 long_query_time = 1
 log_queries_not_using_indexes = OFF
 
+# --- Triggers under binary logging -------------------------------------
+# Migrations 0020, 0022 and 0023 create append-only guard triggers. MySQL 8
+# refuses CREATE TRIGGER from a non-SUPER account while binary logging is on
+# (ER_BINLOG_UNSAFE_ROUTINE, 1419), and the application account deliberately
+# has no SUPER — so without this `alembic upgrade head` dies partway through
+# 0020, leaving the schema half-built. The backend then starts anyway and
+# answers every request with "table doesn't exist".
+#
+# The safety this relaxes is about statement-based replication of routines
+# whose body is non-deterministic. These triggers only RAISE — they are
+# `SIGNAL SQLSTATE '45000'` guards that reject UPDATE/DELETE on immutable
+# audit rows — so they write nothing to replicate.
+log_bin_trust_function_creators = 1
+
 # --- SQL mode (strict, but permissive of zero-date) -------------------
 sql_mode = STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION
 
