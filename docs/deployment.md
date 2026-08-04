@@ -99,9 +99,18 @@ ADAPTER_EMBED_MODE=real
 ADAPTER_VOICEPRINT_MODE=real
 ENABLE_VOICEPRINT=true
 
+ADAPTER_VAD_MODE=real
+
 ADAPTER_LLM_MODE=mock
-ADAPTER_VAD_MODE=mock
 ADAPTER_AUDIO_EMBED_MODE=mock
+```
+
+`ADAPTER_VAD_MODE=real` 需要那 2 MB 的 ONNX 就位，否则 VAD 容器会一直
+unhealthy——先取一次，三个 models profile 共用同一个文件（见 5.1）：
+
+```bash
+mkdir -p models && curl -Lo models/silero_vad.onnx \
+  https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx
 ```
 
 然后启动：
@@ -152,7 +161,7 @@ ADAPTER_AUDIO_EMBED_MODE=real
 ADAPTER_VOICEPRINT_MODE=real
 ENABLE_CLAP=true
 ENABLE_VOICEPRINT=true
-ADAPTER_VAD_MODE=mock
+ADAPTER_VAD_MODE=real
 
 OPENAI_BASE_URL_STRONG=http://vllm-strong:8000/v1
 OPENAI_BASE_URL_WEAK=http://vllm-strong:8000/v1
@@ -160,7 +169,12 @@ LLM_STRONG_MODEL=qwen3.6-27b
 LLM_WEAK_MODEL=qwen3.6-27b
 ```
 
+同样需要先取 VAD 的 ONNX（见 3.2 / 5.1）：
+
 ```bash
+mkdir -p models && curl -Lo models/silero_vad.onnx \
+  https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx
+
 docker compose --profile models-single-gpu up -d
 docker compose --profile models-single-gpu ps
 ```
@@ -188,13 +202,18 @@ ADAPTER_AUDIO_EMBED_MODE=real
 ADAPTER_VOICEPRINT_MODE=real
 ENABLE_CLAP=true
 ENABLE_VOICEPRINT=true
-ADAPTER_VAD_MODE=mock
+ADAPTER_VAD_MODE=real
 
 OPENAI_BASE_URL_STRONG=http://vllm-strong:8000/v1
 OPENAI_BASE_URL_WEAK=http://vllm-weak:8000/v1
 ```
 
+同样需要先取 VAD 的 ONNX（见 3.2 / 5.1）：
+
 ```bash
+mkdir -p models && curl -Lo models/silero_vad.onnx \
+  https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx
+
 docker compose --profile models-multi-gpu up -d
 docker compose --profile models-multi-gpu ps
 ```
@@ -282,18 +301,35 @@ COMPOSE_PRIVATE_BIND_HOST=127.0.0.1
 
 ### 5.1 Batch VAD
 
-旧 Compose 使用的 `jetresearch/silero-vad-server:latest` 无法验证公开版本和
-镜像来源，已从拓扑移除。不要用虚构 tag 代替可审计供应链。
+`silero-vad-service` 随三个 models profile 一起启动，镜像由本仓库的
+`docker/silero-vad-service/Dockerfile` 构建。这里曾经指向
+`jetresearch/silero-vad-server:latest`——一个无法验证来源的 tag，当时的处置是
+把它从拓扑里删掉并让用户自备外部服务。现在不需要了：不用虚构 tag 的正确解法
+是自己构建，而不是把这一段流水线永久留在 mock 上。
 
-Batch VAD 默认保持：
+模型权重仍由操作者提供，和流式那条用的是同一个文件。~2 MB、MIT 许可，本仓库
+不代为分发、也不为一个自己不构建的模型二进制背书：
 
-```dotenv
-ADAPTER_VAD_MODE=mock
-SILERO_VAD_URL=http://silero-vad.invalid:8000
+```bash
+mkdir -p models && curl -Lo models/silero_vad.onnx \
+  https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx
 ```
 
-如需真实 batch VAD，用户必须提供经过审计、兼容以下契约的外部服务，并将
-`SILERO_VAD_URL` 指向它：
+放好后开启真实 VAD：
+
+```dotenv
+ADAPTER_VAD_MODE=real
+SILERO_VAD_MODEL_FILE=./models/silero_vad.onnx
+```
+
+文件缺失时容器会一直 unhealthy 并在 `/health` 里说明原因，不会静默返回空
+segments——那种退化和「这段录音没有人说话」在下游无法区分。
+
+**保持 mock 的后果**：切分点由文件大小推算，与语音内容无关。后面的 ASR、
+说话人聚类、标签抽取全部建立在这组切分之上，所以这不是「精度略低」，是整条
+流水线的输入是假的。
+
+沿用外部 VAD 服务同样支持——把 `SILERO_VAD_URL` 指向它即可，契约是：
 
 - `POST /v1/vad/segment`
 - multipart 字段 `audio`、`min_segment_sec`、`max_segment_sec`

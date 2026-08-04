@@ -223,6 +223,7 @@ ADAPTER_ASR_MODE=real
 ADAPTER_EMBED_MODE=real
 ADAPTER_VOICEPRINT_MODE=real
 ENABLE_VOICEPRINT=true
+ADAPTER_VAD_MODE=real
 ADAPTER_LLM_MODE=real
 OPENAI_BASE_URL_STRONG=http://ollama:11434/v1
 OPENAI_BASE_URL_WEAK=http://ollama:11434/v1
@@ -232,6 +233,10 @@ OPENAI_API_KEY=ollama
 ```
 
 ```bash
+# VAD 容器的 2 MB 权重要先就位，否则它一直 unhealthy，--wait 会一直等下去
+mkdir -p models && curl -Lo models/silero_vad.onnx \
+  https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx
+
 docker compose --profile models-cpu --profile models-cpu-llm up -d --wait
 docker exec $(docker compose ps -q ollama) ollama pull qwen2.5:7b
 ```
@@ -252,20 +257,16 @@ docker exec $(docker compose ps -q ollama) ollama pull qwen2.5:7b
 | **LLM 抽取与问答** | ❌ 固定模板 | ✅ **Qwen2.5-7B** | `ollama` 容器；GPU 下换 vLLM |
 | **文本 Embedding** | ❌ 伪随机向量 | ✅ **BGE-M3** | `bge-m3-cpu` 容器 |
 | **声纹与说话人合并** | ❌ 关闭 | ✅ **CAM++** | `campplus-service` 容器 |
-| **VAD 语音端点检测** | ❌ 按文件大小推算 | ✅ **Silero VAD** | `silero-vad-service` 容器；需自备 2 MB 模型文件，见下 |
+| **VAD 语音端点检测** | ❌ 按文件大小推算 | ✅ **Silero VAD** | `silero-vad-service` 容器；模型文件即上面那条 `curl` |
 | CLAP 音频嵌入 | ❌ 关闭 | ❌ 需 GPU | CLAP 服务强制 CUDA，CPU profile 不含 |
 | 流式实时转写 | ❌ 路由不注册 | ❌ 路由不注册 | 需 `ENABLE_STREAMING=true` |
 | Leiden 聚类、双时态边 | ❌ 不激活 | ❌ 不激活 | 需 `ENABLE_ADVANCED_GRAPH=true` |
 
 > [!IMPORTANT]
-> VAD 容器不打包模型权重。Silero 的 ONNX 只有 2 MB 且是 MIT，但本仓库不代为
-> 分发、也不为一个自己不构建的模型二进制背书——和流式那条用的是同一个文件：
-> ```bash
-> mkdir -p models && curl -Lo models/silero_vad.onnx \
->   https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx
-> ```
-> 放好后设 `ADAPTER_VAD_MODE=real`。文件缺失时容器会报 unhealthy 并在
-> `/health` 里说明原因，而不是静默退化。
+> VAD 容器不打包模型权重——就是上面那条 `curl`。Silero 的 ONNX 只有 2 MB 且是
+> MIT，但本仓库不代为分发、也不为一个自己不构建的模型二进制背书；流式那条用的
+> 是同一个文件。缺失时容器会一直 unhealthy 并在 `/health` 里说明原因，而不是
+> 静默返回空 segments——那种退化和「这段录音没有人说话」在下游无法区分。
 
 一句话记住：**`models-cpu` 只有 ASR / Embedding / 声纹，不含 LLM**，所以两个 profile 要一起开，问答页才不是固定文案。完整的部署矩阵与显存规划见 [部署指南](./docs/deployment.md)。
 
