@@ -40,6 +40,7 @@ import argparse
 import asyncio
 import logging
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 # Make `audio_graphy` importable when run as a plain script (python scripts/...).
@@ -49,11 +50,98 @@ if str(BACKEND_DIR) not in sys.path:
 
 from audio_graphy.config import build_adapters, get_settings  # noqa: E402
 from audio_graphy.eval.metrics.voiceprint import (  # noqa: E402
+    EERResult,
     parse_trial_file,
     voiceprint_eer_from_trials,
 )
 
 logger = logging.getLogger(__name__)
+
+#: Above this EER the trials carry no usable identity signal, so no threshold is
+#: recommended at all.
+#:
+#: The equal-error point and ``threshold_at_far`` remain arithmetically defined at
+#: any EER — with cosines that separate no better than a coin flip, the sweep still
+#: finds *a* crossing and still finds *a* threshold meeting a FAR target. Printing
+#: those under "Recommended settings" is the failure this guards: measured on the
+#: identity-blind mock the numbers come out as 0.0137 and 0.1558 from a run whose
+#: own far_at_eer is 0.456, and an operator pastes them into a config that then
+#: merges strangers.
+#:
+#: 0.5 is chance. A deployable voiceprint system sits at 0.01-0.10. 0.30 is well
+#: past unusable in either direction, which is the point: this is a refusal
+#: boundary, not a quality target, and it is deliberately loose so that only
+#: genuinely meaningless corpora hit it.
+MAX_USABLE_EER = 0.30
+
+
+@dataclass(frozen=True, slots=True)
+class ThresholdRecommendation:
+    """What to tell the operator, and why."""
+
+    cosine_threshold: float | None
+    ambiguous_threshold: float | None
+    inverted: bool
+    refusal: str | None
+
+    @property
+    def usable(self) -> bool:
+        return self.cosine_threshold is not None
+
+
+def recommend_thresholds(
+    result: EERResult,
+    *,
+    max_far: float,
+    max_usable_eer: float = MAX_USABLE_EER,
+) -> ThresholdRecommendation:
+    """Turn a measurement into a recommendation, or into a refusal.
+
+    Split out of ``_run`` so the refusal path is reachable from a test: the
+    measurement is a property of the corpus, but what to *do* about it is policy,
+    and policy that only exists inside a CLI cannot be verified.
+    """
+
+    if result.eer > max_usable_eer:
+        return ThresholdRecommendation(
+            cosine_threshold=None,
+            ambiguous_threshold=None,
+            inverted=False,
+            refusal=(
+                f"EER {result.eer:.4f} exceeds {max_usable_eer:.2f}: these trials carry "
+                "no usable identity signal, so any threshold derived from them would "
+                "be arithmetic rather than evidence. Fix the corpus or the adapter "
+                "before calibrating."
+            ),
+        )
+
+    unambiguous = result.threshold_at_far(max_far)
+    eer_threshold = result.threshold
+
+    # Settings reject cosine_threshold > ambiguous_threshold, so a
+    # recommendation in that order is one a user cannot apply. It happens
+    # whenever the data separates well: the FAR target is then met *below*
+    # the equal-error point. Clamp the merge floor to the stricter value and
+    # say so, rather than printing a pair that makes the service refuse to
+    # start.
+    inverted = eer_threshold is not None and unambiguous is not None and eer_threshold > unambiguous
+    if inverted:
+        assert eer_threshold is not None and unambiguous is not None
+        eer_threshold = unambiguous
+    # Never recommend a value the validator rejects outright.
+    if eer_threshold is not None and not 0.0 <= eer_threshold <= 1.0:
+        eer_threshold = None
+    if eer_threshold is None:
+        # Half a recommendation is worse than none: applying only the
+        # AMBIGUOUS value leaves it paired with the existing merge floor,
+        # which Settings may then reject as inverted.
+        unambiguous = None
+    return ThresholdRecommendation(
+        cosine_threshold=eer_threshold,
+        ambiguous_threshold=unambiguous,
+        inverted=inverted,
+        refusal=None if eer_threshold is not None else "no equal-error point",
+    )
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -136,27 +224,10 @@ async def _run(args: argparse.Namespace) -> int:
         )
         return 1
 
-    unambiguous = result.threshold_at_far(args.max_far)
-    eer_threshold = result.threshold
-
-    # Settings reject cosine_threshold > ambiguous_threshold, so a
-    # recommendation in that order is one a user cannot apply. It happens
-    # whenever the data separates well: the FAR target is then met *below*
-    # the equal-error point. Clamp the merge floor to the stricter value and
-    # say so, rather than printing a pair that makes the service refuse to
-    # start.
-    inverted = eer_threshold is not None and unambiguous is not None and eer_threshold > unambiguous
-    if inverted:
-        assert eer_threshold is not None and unambiguous is not None
-        eer_threshold = unambiguous
-    # Never recommend a value the validator rejects outright.
-    if eer_threshold is not None and not 0.0 <= eer_threshold <= 1.0:
-        eer_threshold = None
-    if eer_threshold is None:
-        # Half a recommendation is worse than none: applying only the
-        # AMBIGUOUS value leaves it paired with the existing merge floor,
-        # which Settings may then reject as inverted.
-        unambiguous = None
+    recommendation = recommend_thresholds(result, max_far=args.max_far)
+    unambiguous = recommendation.ambiguous_threshold
+    eer_threshold = recommendation.cosine_threshold
+    inverted = recommendation.inverted
 
     lines = [
         "",
@@ -178,11 +249,14 @@ async def _run(args: argparse.Namespace) -> int:
         "",
         "Recommended settings:",
     ]
-    lines.append(
-        f"  VOICEPRINT_COSINE_THRESHOLD={eer_threshold:.2f}"
-        if eer_threshold is not None
-        else "  VOICEPRINT_COSINE_THRESHOLD=<undefined: no equal-error point>"
-    )
+    if eer_threshold is not None:
+        lines.append(f"  VOICEPRINT_COSINE_THRESHOLD={eer_threshold:.2f}")
+    else:
+        lines += [
+            "  (none — see below)",
+            "",
+            f"  {recommendation.refusal}",
+        ]
     if unambiguous is not None:
         lines.append(f"  VOICEPRINT_AMBIGUOUS_THRESHOLD={unambiguous:.2f}")
         if inverted:

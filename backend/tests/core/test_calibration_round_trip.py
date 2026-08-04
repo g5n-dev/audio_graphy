@@ -30,6 +30,7 @@ if str(BACKEND_DIR / "scripts") not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR / "scripts"))
 
 from build_voiceprint_trials import main as build_trials  # noqa: E402
+from calibrate_voiceprint_thresholds import recommend_thresholds  # noqa: E402
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
@@ -155,7 +156,19 @@ class TestCalibrationRoundTrip:
         result = await voiceprint_eer_from_trials(parse_trial_file(trials), blind)
 
         assert result.eer > 0.3, "unrecognisable speakers must not score well"
-        assert result.threshold is None or result.threshold_at_far(0.01) is None
+
+        # Asserted on the recommendation, not on EERResult. The equal-error point
+        # and threshold_at_far stay arithmetically defined at any EER — with these
+        # cosines the sweep still returns 0.0137 and 0.1558 — and that is correct
+        # for a *measurement*. What must refuse is the step that turns a
+        # measurement into two numbers an operator pastes into a config.
+        recommendation = recommend_thresholds(result, max_far=0.01)
+
+        assert recommendation.usable is False
+        assert recommendation.cosine_threshold is None
+        assert recommendation.ambiguous_threshold is None
+        assert recommendation.refusal is not None
+        assert "no usable identity signal" in recommendation.refusal
 
     async def test_trial_file_survives_the_round_trip_verbatim(
         self,
