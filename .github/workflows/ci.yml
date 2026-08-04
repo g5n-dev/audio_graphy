@@ -139,6 +139,54 @@ jobs:
           done
           docker compose -f docker-compose.yml -f docker-compose.streaming-vad.yml --env-file .env.example --profile models-single-gpu config --quiet
 
+      # A second stack must be able to run beside the first. Compose prefixes
+      # objects with the project name — but this file names its network, its
+      # volumes and its containers explicitly, which is project-independent.
+      # Networks and volumes collide SILENTLY (docker only warns): that is how
+      # one stack once wrote into another's database. Isolation is keyed on
+      # COMPOSE_RESOURCE_PREFIX, not on `-p`: render twice with two prefixes
+      # and require every named object to differ.
+      - name: Two prefixes must yield two disjoint stacks
+        run: |
+          python3 - <<'EOF'
+          import json, os, subprocess, sys
+          PROFILES = ["mock", "cache-redis", "bootstrap", "prompt-lab", "models-cpu",
+                      "models-cpu-llm", "models-single-gpu", "models-multi-gpu"]
+          FILESETS = [["-f", "docker-compose.yml"],
+                      ["-f", "docker-compose.yml", "-f", "docker-compose.streaming-vad.yml"]]
+          A, B = "isoprobea", "isoprobeb"
+
+          def render(prefix, files, profile):
+              env = dict(os.environ, COMPOSE_RESOURCE_PREFIX=prefix)
+              out = subprocess.run(
+                  ["docker", "compose", *files, "--env-file", ".env.example",
+                   "--profile", profile, "config", "--format", "json"],
+                  capture_output=True, text=True, check=True, env=env).stdout
+              doc = json.loads(out)
+              named = {"project": doc.get("name")}
+              for net, body in (doc.get("networks") or {}).items():
+                  named[f"network {net}"] = (body or {}).get("name")
+              for vol, body in (doc.get("volumes") or {}).items():
+                  named[f"volume {vol}"] = (body or {}).get("name")
+              for svc, body in (doc.get("services") or {}).items():
+                  if (body or {}).get("container_name"):
+                      named[f"container {svc}"] = body["container_name"]
+              return named
+
+          shared = {}
+          for files in FILESETS:
+              for profile in PROFILES:
+                  a, b = render(A, files, profile), render(B, files, profile)
+                  for key, value in a.items():
+                      if value is not None and b.get(key) == value:
+                          shared.setdefault(key, value)
+
+          for key, value in sorted(shared.items()):
+              print(f"::error::{key} renders as '{value}' under both "
+                    f"COMPOSE_RESOURCE_PREFIX values; a second stack would share this object")
+          sys.exit(1 if shared else 0)
+          EOF
+
       # `config` does not stat bind sources, so an overlay can validate cleanly
       # and still fail at `up` on a path that does not exist. Two kinds of source
       # are legitimately absent from a clone and are not failures: ones compose

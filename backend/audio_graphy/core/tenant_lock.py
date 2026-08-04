@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 _MAX_LOCK_NAME = 64
 
 
-def _lock_name(purpose: str, tenant_id: str) -> str:
+def _lock_name(purpose: str, tenant_id: str, deployment_id: str = "audiography") -> str:
     """Build a lock name that stays inside MySQL's 64-byte cap without colliding.
 
     Truncating ``ag:{purpose}:{tenant_id}`` is what this used to do, and it means
@@ -38,14 +38,24 @@ def _lock_name(purpose: str, tenant_id: str) -> str:
     latency coupling rather than a wrong answer -- B acquires once A releases --
     which is exactly why it would be diagnosed late.
 
+    ``deployment_id`` is in the name because ``GET_LOCK`` is scoped to a MySQL
+    SERVER, not a schema: two deployments sharing one MySQL — even in separate
+    databases — would otherwise contend on each other's locks, and after the
+    timeout both proceed unserialized, which is the duplicate-speaker window
+    this lock exists to close. Both stacks default to tenant code "default",
+    so the tenant id alone cannot tell them apart.
+
     Short names are left readable so a ``SHOW PROCESSLIST`` still says which
-    tenant is holding what; only over-long ones fall back to a digest.
+    tenant is holding what; only over-long ones fall back to a digest — which
+    hashes deployment and tenant TOGETHER, because the prefix shrinks the
+    inline budget and a deployment-blind digest would resurrect the collision
+    for long tenant codes.
     """
 
-    name = f"ag:{purpose}:{tenant_id}"
+    name = f"ag:{deployment_id}:{purpose}:{tenant_id}"
     if len(name.encode("utf-8")) <= _MAX_LOCK_NAME:
         return name
-    digest = hashlib.sha256(tenant_id.encode("utf-8")).hexdigest()[:32]
+    digest = hashlib.sha256(f"{deployment_id}:{tenant_id}".encode()).hexdigest()[:32]
     hashed = f"ag:{purpose}:h:{digest}"
     # A purpose long enough to overflow even the digest form is a bug in the
     # caller, not operator input; truncating here keeps the name legal.
@@ -59,6 +69,7 @@ async def tenant_advisory_lock(
     purpose: str,
     tenant_id: str,
     timeout_sec: int = 30,
+    deployment_id: str = "audiography",
 ) -> AsyncIterator[bool]:
     """Hold a named per-tenant lock for the duration of the block.
 
@@ -68,7 +79,7 @@ async def tenant_advisory_lock(
     The lock lives on its own connection: MySQL releases ``GET_LOCK`` when
     that connection closes, so an abandoned worker cannot wedge the tenant.
     """
-    lock_name = _lock_name(purpose, tenant_id)
+    lock_name = _lock_name(purpose, tenant_id, deployment_id)
     session: AsyncSession | None = None
     acquired = False
     try:

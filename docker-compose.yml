@@ -10,7 +10,7 @@
 # Example: docker compose --profile mock up -d
 # ============================================================
 
-name: audiography
+name: ${COMPOSE_RESOURCE_PREFIX:-audiography}
 
 x-model-security: &model-security
   security_opt:
@@ -21,7 +21,7 @@ x-model-security: &model-security
 services:
   mysql:
     image: mysql:8.0.41
-    container_name: audiography-mysql
+    container_name: ${COMPOSE_RESOURCE_PREFIX:-audiography}-mysql
     restart: unless-stopped
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
@@ -64,7 +64,7 @@ services:
   # bounded process-local cache whenever this profile is absent/unhealthy.
   redis:
     image: redis:8.8.0-alpine
-    container_name: audiography-redis
+    container_name: ${COMPOSE_RESOURCE_PREFIX:-audiography}-redis
     profiles: ["cache-redis"]
     restart: unless-stopped
     command:
@@ -98,7 +98,7 @@ services:
 
   adminer:
     image: adminer:5.3.0
-    container_name: audiography-adminer
+    container_name: ${COMPOSE_RESOURCE_PREFIX:-audiography}-adminer
     profiles: ["mock"]
     restart: unless-stopped
     depends_on:
@@ -137,7 +137,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: audiography-backend
+    container_name: ${COMPOSE_RESOURCE_PREFIX:-audiography}-backend
     restart: unless-stopped
     env_file:
       - path: .env
@@ -158,8 +158,8 @@ services:
       OPENAI_BASE_URL_STRONG: ${OPENAI_BASE_URL_STRONG:-http://vllm-strong:8000/v1}
       OPENAI_BASE_URL_WEAK: ${OPENAI_BASE_URL_WEAK:-http://vllm-weak:8000/v1}
       HF_TOKEN: ${HF_TOKEN:-}
-      MYSQL_HOST: mysql
-      MYSQL_PORT: 3306
+      MYSQL_HOST: ${MYSQL_HOST:-mysql}
+      MYSQL_PORT: ${MYSQL_PORT:-3306}
       LLM_HOT_CACHE_BACKEND: ${LLM_HOT_CACHE_BACKEND:-auto}
       REDIS_URL: ${REDIS_URL:-}
       WORKING_DIR: /data/working_dir
@@ -212,8 +212,8 @@ services:
       - path: .env
         required: false
     environment:
-      MYSQL_HOST: mysql
-      MYSQL_PORT: 3306
+      MYSQL_HOST: ${MYSQL_HOST:-mysql}
+      MYSQL_PORT: ${MYSQL_PORT:-3306}
       WORKING_DIR: /data/working_dir
       BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-}
       BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
@@ -238,7 +238,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: audiography-tag-worker
+    container_name: ${COMPOSE_RESOURCE_PREFIX:-audiography}-tag-worker
     restart: unless-stopped
     env_file:
       - path: .env
@@ -254,8 +254,8 @@ services:
       OPENAI_BASE_URL_STRONG: ${OPENAI_BASE_URL_STRONG:-http://vllm-strong:8000/v1}
       OPENAI_BASE_URL_WEAK: ${OPENAI_BASE_URL_WEAK:-http://vllm-weak:8000/v1}
       HF_TOKEN: ${HF_TOKEN:-}
-      MYSQL_HOST: mysql
-      MYSQL_PORT: 3306
+      MYSQL_HOST: ${MYSQL_HOST:-mysql}
+      MYSQL_PORT: ${MYSQL_PORT:-3306}
       LLM_HOT_CACHE_BACKEND: ${LLM_HOT_CACHE_BACKEND:-auto}
       REDIS_URL: ${REDIS_URL:-}
       WORKING_DIR: /data/working_dir
@@ -287,7 +287,7 @@ services:
       dockerfile: Dockerfile
       args:
         EXTRAS: ${OPTIMIZER_EXTRAS:-}
-    container_name: audiography-optimizer-worker
+    container_name: ${COMPOSE_RESOURCE_PREFIX:-audiography}-optimizer-worker
     profiles: ["prompt-lab"]
     restart: unless-stopped
     env_file:
@@ -298,8 +298,8 @@ services:
       ADAPTER_LLM_MODE: ${ADAPTER_LLM_MODE:-mock}
       OPENAI_BASE_URL_STRONG: ${OPENAI_BASE_URL_STRONG:-http://vllm-strong:8000/v1}
       OPENAI_BASE_URL_WEAK: ${OPENAI_BASE_URL_WEAK:-http://vllm-weak:8000/v1}
-      MYSQL_HOST: mysql
-      MYSQL_PORT: 3306
+      MYSQL_HOST: ${MYSQL_HOST:-mysql}
+      MYSQL_PORT: ${MYSQL_PORT:-3306}
       LLM_HOT_CACHE_BACKEND: ${LLM_HOT_CACHE_BACKEND:-auto}
       REDIS_URL: ${REDIS_URL:-}
       WORKING_DIR: /data/working_dir
@@ -323,7 +323,7 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       target: dev
-    container_name: audiography-frontend
+    container_name: ${COMPOSE_RESOURCE_PREFIX:-audiography}-frontend
     restart: unless-stopped
     environment:
       # The browser keeps same-origin /api/v1; only Vite resolves this
@@ -376,7 +376,7 @@ services:
     # this file: two operators running the documented command months apart get
     # different runtimes, and there is no record of which one produced a result.
     image: ollama/ollama:0.12.12
-    container_name: audiography-ollama
+    container_name: ${COMPOSE_RESOURCE_PREFIX:-audiography}-ollama
     profiles: ["models-cpu-llm"]
     restart: unless-stopped
     environment:
@@ -400,7 +400,7 @@ services:
   vllm-strong:
     <<: *model-security
     image: vllm/vllm-openai:v0.7.2
-    container_name: audiography-vllm-strong
+    container_name: ${COMPOSE_RESOURCE_PREFIX:-audiography}-vllm-strong
     profiles: ["models-single-gpu", "models-multi-gpu"]
     restart: unless-stopped
     environment:
@@ -440,7 +440,7 @@ services:
   vllm-weak:
     <<: *model-security
     image: vllm/vllm-openai:v0.7.2
-    container_name: audiography-vllm-weak
+    container_name: ${COMPOSE_RESOURCE_PREFIX:-audiography}-vllm-weak
     profiles: ["models-multi-gpu"]
     restart: unless-stopped
     environment:
@@ -495,7 +495,7 @@ services:
   bge-m3-cpu:
     <<: *model-security
     image: ${BGE_M3_CPU_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:cpu-1.8.2}
-    container_name: audiography-bge-m3-cpu
+    container_name: ${COMPOSE_RESOURCE_PREFIX:-audiography}-bge-m3-cpu
     profiles: ["models-cpu"]
     restart: unless-stopped
     # TEI cannot fetch bge-m3's 2.2GB external-data blob itself (no resume — see
@@ -568,7 +568,7 @@ services:
   bge-m3-cache-init:
     <<: *model-security
     image: ${BGE_M3_CACHE_INIT_IMAGE:-python:3.12-slim}
-    container_name: audiography-bge-m3-cache-init
+    container_name: ${COMPOSE_RESOURCE_PREFIX:-audiography}-bge-m3-cache-init
     profiles: ["models-cpu", "models-single-gpu", "models-multi-gpu"]
     restart: "no"
     environment:
@@ -596,7 +596,7 @@ services:
   bge-m3-gpu:
     <<: *model-security
     image: ghcr.io/huggingface/text-embeddings-inference:cuda-1.8.2
-    container_name: audiography-bge-m3-gpu
+    container_name: ${COMPOSE_RESOURCE_PREFIX:-audiography}-bge-m3-gpu
     profiles: ["models-single-gpu", "models-multi-gpu"]
     restart: unless-stopped
     # Same tei_cache, same no-resume downloader — warm the cache first.
@@ -651,7 +651,7 @@ services:
       dockerfile: ../docker/paraformer-service/Dockerfile
       additional_contexts:
         model_files: ./docker
-    container_name: audiography-funasr
+    container_name: ${COMPOSE_RESOURCE_PREFIX:-audiography}-funasr
     profiles: ["models-cpu", "models-single-gpu", "models-multi-gpu"]
     restart: unless-stopped
     environment:
@@ -705,7 +705,7 @@ services:
       dockerfile: ../docker/clap-service/Dockerfile
       additional_contexts:
         model_files: ./docker
-    container_name: audiography-clap-service
+    container_name: ${COMPOSE_RESOURCE_PREFIX:-audiography}-clap-service
     profiles: ["models-single-gpu", "models-multi-gpu"]
     restart: unless-stopped
     environment:
@@ -744,7 +744,7 @@ services:
       dockerfile: ../docker/campplus-service/Dockerfile
       additional_contexts:
         model_files: ./docker
-    container_name: audiography-campplus-service
+    container_name: ${COMPOSE_RESOURCE_PREFIX:-audiography}-campplus-service
     profiles: ["models-cpu", "models-single-gpu", "models-multi-gpu"]
     restart: unless-stopped
     environment:
@@ -792,28 +792,28 @@ services:
 
 volumes:
   ollama_models:
-    name: audiography_ollama_models
+    name: ${COMPOSE_RESOURCE_PREFIX:-audiography}_ollama_models
   mysql_data:
-    name: audiography_mysql_data
+    name: ${COMPOSE_RESOURCE_PREFIX:-audiography}_mysql_data
   working_dir:
-    name: audiography_working_dir
+    name: ${COMPOSE_RESOURCE_PREFIX:-audiography}_working_dir
   master_key:
-    name: audiography_master_key
+    name: ${COMPOSE_RESOURCE_PREFIX:-audiography}_master_key
   # M4 — model cache volumes for real-adapter services.
   vllm_cache:
-    name: audiography_vllm_cache
+    name: ${COMPOSE_RESOURCE_PREFIX:-audiography}_vllm_cache
   tei_cache:
-    name: audiography_tei_cache
+    name: ${COMPOSE_RESOURCE_PREFIX:-audiography}_tei_cache
   # M5 — funASR model cache.
   funasr_cache:
-    name: audiography_funasr_cache
+    name: ${COMPOSE_RESOURCE_PREFIX:-audiography}_funasr_cache
   # M7 — CLAP / CAM++ model caches.
   clap_cache:
-    name: audiography_clap_cache
+    name: ${COMPOSE_RESOURCE_PREFIX:-audiography}_clap_cache
   campplus_cache:
-    name: audiography_campplus_cache
+    name: ${COMPOSE_RESOURCE_PREFIX:-audiography}_campplus_cache
 
 networks:
   audiography_net:
-    name: audiography_net
+    name: ${COMPOSE_RESOURCE_PREFIX:-audiography}_net
     driver: bridge

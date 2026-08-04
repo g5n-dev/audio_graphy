@@ -197,6 +197,9 @@ docker compose --profile bootstrap run --rm bootstrap-admin
 
 命令可重复执行：租户或用户已存在时只会提示并跳过，`--reset-password` 是改动既有账号的唯一方式。本地不用 Docker 时等价命令是 `python backend/scripts/bootstrap_admin.py --email you@example.com`（不传密码则交互式询问）。
 
+> [!WARNING]
+> 同一台机器上已经跑着一套 AudioGraphy？`docker compose -p 别名` **不能**隔离两套栈——网络与卷名冲突是静默的，第二套栈会连上第一套的数据库、上面这条命令会把账号写进那边。先看 [部署指南](./docs/deployment.md) 的「在同一台主机上运行第二套栈」。
+
 | 服务 | 地址 |
 |---|---|
 | Web | `http://127.0.0.1:5173` |

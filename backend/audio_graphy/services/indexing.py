@@ -876,6 +876,7 @@ class IndexingService:
                 purpose="speaker_link",
                 tenant_id=str(recording.tenant_id),
                 timeout_sec=_SPEAKER_LOCK_TIMEOUT_SEC,
+                deployment_id=settings.deployment_id,
             ):
                 # Another worker may have linked some of these speakers while
                 # we were sampling; re-check per label under the lock.

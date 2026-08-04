@@ -29,9 +29,41 @@ def test_two_long_tenant_ids_sharing_a_prefix_get_different_locks() -> None:
 
 
 def test_ordinary_tenant_ids_keep_a_readable_name() -> None:
-    """SHOW PROCESSLIST should still say which tenant holds what."""
+    """SHOW PROCESSLIST should still say which deployment and tenant hold what."""
 
-    assert _lock_name("speaker_link", "chang_an") == "ag:speaker_link:chang_an"
+    assert _lock_name("speaker_link", "chang_an") == "ag:audiography:speaker_link:chang_an"
+
+
+def test_two_deployments_on_one_mysql_get_different_locks() -> None:
+    """GET_LOCK is scoped to a SERVER, not a schema.
+
+    Two stacks sharing one MySQL — even with separate databases — used to
+    compute identical lock names, contend for 30s, then both proceed
+    unserialized: the duplicate-speaker window this lock exists to close.
+    Both stacks default to tenant code "default", so the tenant id alone
+    cannot tell them apart.
+    """
+
+    a = _lock_name("speaker_link", "default", deployment_id="audiography")
+    b = _lock_name("speaker_link", "default", deployment_id="accept")
+
+    assert a != b
+    assert len(a.encode("utf-8")) <= 64 and len(b.encode("utf-8")) <= 64
+
+
+def test_long_tenant_digest_is_not_deployment_blind() -> None:
+    """The overflow digest must hash deployment and tenant together.
+
+    The deployment prefix shrinks the inline budget, pushing long tenant codes
+    into the digest path more often — a digest over the tenant alone would
+    resurrect the cross-deployment collision exactly there.
+    """
+
+    tenant = "t" * 60
+    a = _lock_name("speaker_link", tenant, deployment_id="audiography")
+    b = _lock_name("speaker_link", tenant, deployment_id="accept")
+
+    assert a != b
 
 
 def test_a_multibyte_tenant_id_stays_within_the_byte_cap() -> None:

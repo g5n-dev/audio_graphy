@@ -41,11 +41,32 @@ UID/GID `10001` 的非 root 用户；模型服务统一启用
 只给 `/tmp` 和模型缓存卷写权限。
 
 录音主密钥不写入镜像、仓库或环境变量。Compose 会先运行一次性的
-`master-key-init`，在独立 `audiography_master_key` 卷中生成或校验 0600
+`master-key-init`，在独立 `${COMPOSE_RESOURCE_PREFIX:-audiography}_master_key` 卷中生成或校验 0600
 Fernet 密钥；backend 仅以只读方式挂载该卷，并在启动时立即校验。密钥缺失或
 损坏时服务失败关闭，不会退回明文录音。该卷必须与音频数据分开备份，删除它会
 使既有密文不可恢复。Kubernetes/生产编排应改为外部 KMS 或 Secret 挂载同一路径，
 并移除本地初始化器。
+
+### 在同一台主机上运行第二套栈
+
+`docker compose -p <名字>` **不足以隔离，从来都不够**：本 compose 文件显式命名了
+网络、全部数据卷和容器。容器名冲突会报错，但**网络名和卷名的冲突是静默的**——
+docker 只打一行警告，两套栈照常启动，然后共用同一个网络（`mysql` 这个主机名会
+解析到两台数据库并轮询）和同一组卷（包括主密钥卷）。曾经就是这样，一套验收栈把
+数据写进了另一套的生产数据库。
+
+正确做法，三件事缺一不可，全部写在**第二套栈自己的** `.env` 里：
+
+1. `COMPOSE_RESOURCE_PREFIX=<名字>` —— 隔离项目名、网络、卷、容器；
+2. 所有 `*_HOST_PORT` 换成空闲端口 —— 端口是故意不参数化的，冲突会响亮地失败，
+   这是最后一道保险；
+3. `DEPLOYMENT_ID=<同一名字>` —— MySQL 的 `GET_LOCK` 是服务器级而非库级，
+   两套栈即使分库也会争抢对方的锁，超时后双双失去序列化保护。
+
+设置前缀等于选择**一整套独立数据**：带前缀的栈从空数据库和新主密钥启动，卷不会
+迁移。绝不要在主栈上设置它——数据会"看起来消失"（其实还在 `audiography_*` 卷里，
+只是没有任何东西挂载它们），而此时最本能的清理命令 `docker compose down -v`
+（前缀未设时）会真正删掉它们。
 
 Backend 还在 ASGI 入口同时校验 `Content-Length` 和分块累计字节，默认拒绝超过
 16 MiB 的 HTTP 请求体，防止合法但超大的标签快照在 Pydantic 解析前占满内存；
@@ -395,9 +416,10 @@ CPU/GPU 两个服务通过网络别名统一为 `bge-m3`。
 
 ### 模型缓存每次重下
 
-检查 `audiography_vllm_cache`、`audiography_tei_cache`、
-`audiography_funasr_cache`、`audiography_clap_cache` 和
-`audiography_campplus_cache` 是否存在。不要执行
+用 `docker volume ls` 检查各模型缓存卷是否存在——`vllm_cache`、`tei_cache`、
+`funasr_cache`、`clap_cache`、`campplus_cache`，卷名以
+`${COMPOSE_RESOURCE_PREFIX:-audiography}_` 为前缀（默认 `audiography_`），
+只有对应 profile 启动过的卷才会存在。不要执行
 `docker compose down -v`，该命令会删除模型与数据库卷。
 
 ### CLAP/CAM++ 权限错误

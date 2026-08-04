@@ -50,6 +50,18 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    # --- Deployment identity ---
+    # Which stack this process belongs to, for resources scoped to a SERVER
+    # rather than a schema: MySQL GET_LOCK advisory locks are server-global, so
+    # two deployments sharing one MySQL would contend on (and time out against)
+    # each other's locks unless the name carries this. Defaulted, never
+    # required (a required field would fail validation in every worker the
+    # moment this file loads); operators running a second stack set it in that
+    # stack's .env alongside COMPOSE_RESOURCE_PREFIX. Deliberately NOT derived
+    # from the database name — compose pins MYSQL_DATABASE identically for
+    # every stack, so that would compute the same value for both.
+    deployment_id: str = "audiography"
+
     # --- Adapter mode ---
     # Legacy global default — retained for M3 back-compat; does NOT drive mode
     # resolution (Q5 locked: per-adapter fields below are the sole source of truth).

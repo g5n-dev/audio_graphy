@@ -140,6 +140,7 @@ async def link_recording_speakers(
         purpose="speaker_link",
         tenant_id=tenant_id,
         timeout_sec=LOCK_TIMEOUT_SEC,
+        deployment_id=getattr(settings, "deployment_id", "audiography"),
     ):
         # Re-read under the lock: another path may have linked some or all of
         # these speakers while we were diarizing. Skipping per label rather
