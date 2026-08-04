@@ -203,6 +203,54 @@ def prompt_input_budget_report(
     )
 
 
+def rescaled_input_budget_report(
+    stored: Mapping[str, Any],
+    *,
+    prompt_content: str,
+) -> dict[str, Any]:
+    """Re-derive a stored report for a prompt rewritten against the same schema.
+
+    A re-materialized artifact keeps its parent's tag definitions and per-call
+    budget and changes only the policy text, so ``schema_tokens``,
+    ``usable_tokens`` and both baseline figures carry over unchanged and
+    everything else follows from the new prompt. Copying the parent's report
+    wholesale instead — as this used to — prices the accepted subset using the
+    rejected superset's headroom, right beside a token count recomputed from the
+    child.
+
+    Returns the input unchanged if it is missing any field this needs; a partial
+    report is not worth guessing at, and the caller has nothing better to store.
+    """
+
+    required = ("schema_tokens", "usable_tokens", "baseline_fixed_tokens")
+    if any(not isinstance(stored.get(key), int) for key in required):
+        return dict(stored)
+
+    schema_tokens = int(stored["schema_tokens"])
+    usable_tokens = int(stored["usable_tokens"])
+    baseline_fixed = int(stored["baseline_fixed_tokens"])
+    baseline_headroom = int(stored.get("baseline_headroom_tokens", usable_tokens - baseline_fixed))
+
+    prompt_tokens = estimate_prompt_tokens(TagExtractor._system_prompt(prompt_content))
+    fixed_tokens = prompt_tokens + schema_tokens
+    headroom = usable_tokens - fixed_tokens
+    headroom_delta = headroom - baseline_headroom
+    return {
+        "prompt_tokens": prompt_tokens,
+        "schema_tokens": schema_tokens,
+        "fixed_tokens": fixed_tokens,
+        "usable_tokens": usable_tokens,
+        "headroom_tokens": headroom,
+        "baseline_fixed_tokens": baseline_fixed,
+        "baseline_headroom_tokens": baseline_headroom,
+        "headroom_delta": headroom_delta,
+        "headroom_shrink_ratio": (
+            -headroom_delta / baseline_headroom if baseline_headroom > 0 else 0.0
+        ),
+        "fits": fixed_tokens <= usable_tokens,
+    }
+
+
 class _TagOutputFormatError(AssignmentValidationError):
     """The model output cannot be decoded as the required JSON shape."""
 

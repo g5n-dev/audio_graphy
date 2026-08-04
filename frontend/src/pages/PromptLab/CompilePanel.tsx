@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { PanelState } from "@/components/PanelState";
 import { GovernanceDialog } from "@/components/governance/GovernanceDialog";
@@ -7,6 +7,7 @@ import { StatusChip } from "@/components/governance/StatusChip";
 import { compactCount, formatDate } from "@/components/governance/format";
 import {
   createPromptCompilation,
+  getTagJob,
   listPromptArtifacts,
   listTaggerVersions,
 } from "@/api/services";
@@ -16,10 +17,19 @@ import type {
   PromptArtifactSummary,
   PromptCompilerName,
   PromptLabReadiness,
+  TagJobStatus,
 } from "@/types/api";
 import { getErrorMessage } from "@/utils/errors";
 
 import { PROMPT_LAB_STATUS_LABELS } from "./labels";
+
+/** 任务不会再变的状态。轮询到这里就停，横幅从此说的是结论而不是「进行中」。 */
+const TERMINAL_JOB_STATUSES: TagJobStatus[] = [
+  "succeeded",
+  "completed",
+  "failed",
+  "cancelled",
+];
 
 const COMPILERS: { id: PromptCompilerName; label: string; note: string }[] = [
   { id: "builtin", label: "内置（无模型）", note: "按错误簇套用固定句式，不消耗 Provider 预算" },
@@ -234,7 +244,11 @@ export function CompilePanel({
   const [dialogOpen, setDialogOpen] = useState(false);
   const [form, setForm] = useState<CompilerForm>(INITIAL_FORM);
   const [formError, setFormError] = useState<string | null>(null);
-  const [awaited, setAwaited] = useState<number[]>([]);
+  // 跟任务而不是跟产物：编译失败时永远不会有产物落库，只盯产物的话横幅会一直转，
+  // 而失败原因只存在于任务行里——UI 没有任何别的途径能知道它失败了。
+  const [pending, setPending] = useState<{ compilationId: number; jobId: number } | null>(
+    null,
+  );
 
   const artifacts = useQuery({
     queryKey: ["prompt-lab", "artifacts", statusFilter],
@@ -243,15 +257,19 @@ export function CompilePanel({
         statusFilter === "all" ? { limit: 50 } : { status: statusFilter, limit: 50 },
       ),
     retry: false,
-    // 编译是异步的：POST 只返回 compilation_id，产物由 worker 落库。轮到它出现为止。
-    // 谓词一定会终止——不像「只要有 draft 就轮询」那样会永久轮下去（draft 是终态）。
+  });
+
+  // 编译是异步的：POST 只返回 compilation_id，产物由 worker 落库。轮询任务行，
+  // 它一定会走到终态（succeeded / failed / cancelled），所以轮询一定会停。
+  const job = useQuery({
+    queryKey: ["tag-jobs", pending?.jobId],
+    queryFn: () => getTagJob(pending!.jobId),
+    enabled: pending !== null,
+    retry: false,
     refetchInterval: (query) =>
-      awaited.length > 0 &&
-      !awaited.every((id) =>
-        query.state.data?.items.some((item) => item.compilation_id === id),
-      )
-        ? 3_000
-        : false,
+      query.state.data && TERMINAL_JOB_STATUSES.includes(query.state.data.status)
+        ? false
+        : 3_000,
   });
 
   const taggers = useQuery({
@@ -265,7 +283,7 @@ export function CompilePanel({
   const compile = useMutation({
     mutationFn: createPromptCompilation,
     onSuccess: (result) => {
-      setAwaited((previous) => [...previous, result.compilation_id]);
+      setPending({ compilationId: result.compilation_id, jobId: result.job_id });
       setDialogOpen(false);
       setForm(INITIAL_FORM);
       void queryClient.invalidateQueries({ queryKey: ["prompt-lab", "artifacts"] });
@@ -273,9 +291,16 @@ export function CompilePanel({
   });
 
   const items = artifacts.data?.items ?? [];
-  const stillWaiting = awaited.filter(
-    (id) => !items.some((item) => item.compilation_id === id),
-  );
+  const jobStatus = job.data?.status;
+  const artifactLanded =
+    pending !== null && items.some((item) => item.compilation_id === pending.compilationId);
+
+  // 产物一落库就拉一次列表，否则要等下一次手动刷新才看得到。
+  useEffect(() => {
+    if (jobStatus === "succeeded" || jobStatus === "completed") {
+      void queryClient.invalidateQueries({ queryKey: ["prompt-lab", "artifacts"] });
+    }
+  }, [jobStatus, queryClient]);
   const blockedReason = readiness && !readiness.ready
     ? "编译前置条件尚未满足，请先在「数据就绪」中查看还差什么。"
     : null;
@@ -330,9 +355,25 @@ export function CompilePanel({
       </div>
 
       {blockedReason && <p className="ag-compact-state">{blockedReason}</p>}
-      {stillWaiting.length > 0 && (
-        <p className="ag-inline-feedback is-success" role="status">
-          编译任务已入队，正在等待产物落库…
+      {pending !== null && !artifactLanded && (
+        <p
+          className={
+            jobStatus === "failed" || jobStatus === "cancelled"
+              ? "ag-inline-feedback is-error"
+              : "ag-inline-feedback is-success"
+          }
+          role={jobStatus === "failed" || jobStatus === "cancelled" ? "alert" : "status"}
+        >
+          {jobStatus === "failed"
+            ? `编译失败：${job.data?.last_error_message ?? "未记录原因"}`
+            : jobStatus === "cancelled"
+              ? "编译任务已被取消。"
+              : job.error
+                ? `编译任务已入队（#${pending.jobId}），但状态查询失败：${getErrorMessage(
+                    job.error,
+                    "接口暂不可用",
+                  )}`
+                : "编译任务已入队，正在等待产物落库…"}
         </p>
       )}
       {compile.isError && !dialogOpen && (
@@ -443,18 +484,23 @@ export function CompilePanel({
               }
             />
           </label>
+          {/*
+            两个控件都禁用：本版本没有任何编译器会产出 demo（两个 proposer 都写死
+            demos=()），后端现在也会直接拒绝 demo_count>0。留着可选就是让用户
+            提交一个必然被拒的请求，或者——在后端加守卫之前——拿到一个静默忽略了
+            他选择的产物。等编译器真的能产出示例时，去掉 disabled 即可。
+          */}
           <label>
             内联示例条数
             <select
               aria-label="内联示例条数"
               value={form.demoCount}
+              disabled
               onChange={(event) =>
                 setForm({ ...form, demoCount: event.target.value as "0" | "2" | "4" })
               }
             >
-              <option value="0">0 条</option>
-              <option value="2">2 条</option>
-              <option value="4">4 条</option>
+              <option value="0">0 条（本版本编译器不产出示例）</option>
             </select>
           </label>
           <label>
@@ -463,6 +509,7 @@ export function CompilePanel({
             <select
               aria-label="示例脱敏方式"
               value={form.redactionMode}
+              disabled
               onChange={(event) =>
                 setForm({
                   ...form,

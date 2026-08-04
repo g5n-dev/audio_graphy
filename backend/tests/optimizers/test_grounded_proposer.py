@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from audio_graphy.optimizers.lm_bridge import LMBudgetExceededError
 from audio_graphy.optimizers.proposers import (
     GROUNDED_COMPILER_VERSION,
     BuiltinGroundedProposer,
@@ -254,3 +255,29 @@ def test_a_tag_without_a_value_list_still_gets_a_meta_prompt() -> None:
     )
 
     assert "合法取值" not in writer.prompts[0]
+
+
+def test_a_provider_failure_degrades_to_the_template_rule() -> None:
+    """The deliberate fallback: one flaky call must not lose the cluster."""
+
+    artifact = _propose(StubWriter(RuntimeError("provider 502")))
+
+    (patch,) = artifact.patches
+    assert "模型提案失败" in patch.rationale
+    assert artifact.compiler == "builtin_grounded"
+
+
+def test_exhausting_the_budget_stops_the_compile_instead_of_degrading() -> None:
+    """A policy stop is not a flaky provider, and must not be treated as one.
+
+    ``except Exception`` caught LMBudgetExceededError alongside genuine provider
+    failures, so a run that spent its budget on cluster 2 kept emitting template
+    bodies for clusters 3..N — byte-identical to what the free ``builtin``
+    compiler produces — while the artifact still recorded
+    ``compiler="builtin_grounded"``. A builtin-vs-grounded comparison would then
+    attribute a mostly-template artifact to the grounded compiler, and every
+    remaining cluster was going to hit the same wall anyway.
+    """
+
+    with pytest.raises(LMBudgetExceededError):
+        _propose(StubWriter(LMBudgetExceededError("call budget exhausted")))

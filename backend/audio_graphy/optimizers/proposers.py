@@ -29,6 +29,7 @@ from audio_graphy.optimizers.artifacts import (
     PromptPatch,
     build_patch_id,
 )
+from audio_graphy.optimizers.lm_bridge import LMBudgetExceededError
 
 logger = logging.getLogger(__name__)
 
@@ -461,6 +462,13 @@ class BuiltinGroundedProposer:
                 _grounded_prompt(cluster, definition, baseline_prompt=baseline_prompt),
                 system=_GROUNDED_SYSTEM,
             )
+        except LMBudgetExceededError:
+            # Not a provider failure: the run hit the budget the caller set, and
+            # every remaining cluster would hit it too. Falling back silently here
+            # produced artifacts that are mostly template rules while still
+            # labelled compiler="builtin_grounded" -- which is the one thing a
+            # builtin-vs-grounded comparison must not be lied to about.
+            raise
         except Exception:
             # A provider failure must not lose the cluster: the template rule is still
             # a correct statement about the evidence.

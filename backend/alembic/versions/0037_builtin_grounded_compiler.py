@@ -38,18 +38,36 @@ _NEW_COMPILERS = (
 )
 
 
+_GROUNDED_VERSION = "builtin-grounded-v1"
+
+
 def upgrade() -> None:
     op.execute(f"ALTER TABLE tag_prompt_artifacts DROP CHECK {_CONSTRAINT}")
     op.execute(
         f"ALTER TABLE tag_prompt_artifacts ADD CONSTRAINT {_CONSTRAINT} "
         f"CHECK (compiler IN ({_NEW_COMPILERS}))"
     )
+    # Restore anything a previous downgrade relabelled. ``compiler`` is inside the
+    # payload ``artifact_checksum`` is computed over, so a row left saying 'builtin'
+    # after a rollback disagrees with its own checksum: recompiling the identical
+    # artifact then matches the stored row by checksum and reports the grounded
+    # result as produced by 'builtin', and re-materializing it feeds the wrong
+    # compiler into the child's checksum, breaking the documented "double submit
+    # resolves to the row that already exists" idempotency across the boundary.
+    # ``compiler_version`` is untouched by the downgrade, which is what makes this
+    # recoverable rather than merely regrettable.
+    op.execute(
+        "UPDATE tag_prompt_artifacts SET compiler = 'builtin_grounded' "
+        f"WHERE compiler = 'builtin' AND compiler_version = '{_GROUNDED_VERSION}'"
+    )
 
 
 def downgrade() -> None:
     # An artifact compiled by the grounded proposer would violate the old list, so it
-    # is relabelled to the compiler whose template body it degrades to. Nothing is
-    # lost: compiler_version still records that a model wrote the rules.
+    # is relabelled to the compiler whose template body it degrades to. The row is
+    # left disagreeing with its own artifact_checksum for as long as the downgrade
+    # holds; ``upgrade`` puts the label back from ``compiler_version``, which this
+    # deliberately does not touch.
     op.execute(
         "UPDATE tag_prompt_artifacts SET compiler = 'builtin' WHERE compiler = 'builtin_grounded'"
     )

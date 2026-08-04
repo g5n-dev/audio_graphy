@@ -5,12 +5,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/api/services", () => ({
   createPromptCompilation: vi.fn(),
+  getTagJob: vi.fn(),
   listPromptArtifacts: vi.fn(),
   listTaggerVersions: vi.fn(),
 }));
 
 import {
   createPromptCompilation,
+  getTagJob,
   listPromptArtifacts,
   listTaggerVersions,
 } from "@/api/services";
@@ -22,6 +24,7 @@ const mocks = {
   create: createPromptCompilation as unknown as ReturnType<typeof vi.fn>,
   list: listPromptArtifacts as unknown as ReturnType<typeof vi.fn>,
   taggers: listTaggerVersions as unknown as ReturnType<typeof vi.fn>,
+  job: getTagJob as unknown as ReturnType<typeof vi.fn>,
 };
 
 function artifact(overrides: Partial<PromptArtifactSummary> = {}): PromptArtifactSummary {
@@ -100,6 +103,7 @@ beforeEach(() => {
   mocks.taggers
     .mockReset()
     .mockResolvedValue({ items: [{ id: 12, version: "baseline-v1" }], total: 1 });
+  mocks.job.mockReset().mockResolvedValue({ id: 55, status: "queued" });
 });
 
 async function openDialog() {
@@ -132,14 +136,18 @@ describe("CompilePanel", () => {
     expect(options).not.toContain("verbatim");
   });
 
-  it("offers only the three demo counts the API accepts", async () => {
+  it("does not offer demo counts no compiler in this build can produce", async () => {
+    // 两个 proposer 都写死 demos=()，后端也已改成直接拒绝 demo_count>0。
+    // 可选就等于让用户提交一个必然被拒的请求。脱敏方式只对 demo 生效，同理。
     renderPanel();
     const dialog = await openDialog();
 
-    const select = within(dialog).getByLabelText("内联示例条数");
-    expect(within(select).getAllByRole("option").map((o) => o.getAttribute("value"))).toEqual(
-      ["0", "2", "4"],
+    const demos = within(dialog).getByLabelText("内联示例条数");
+    expect(within(demos).getAllByRole("option").map((o) => o.getAttribute("value"))).toEqual(
+      ["0"],
     );
+    expect(demos).toBeDisabled();
+    expect(within(dialog).getByLabelText("示例脱敏方式")).toBeDisabled();
   });
 
   // 每条都逐字对应 backend/audio_graphy/schemas/prompt_lab.py 的 Field 约束。
@@ -189,8 +197,6 @@ describe("CompilePanel", () => {
     const dialog = await openDialog();
 
     await userEvent.selectOptions(within(dialog).getByLabelText("基线抽取版本"), "12");
-    await userEvent.selectOptions(within(dialog).getByLabelText("内联示例条数"), "4");
-    await userEvent.selectOptions(within(dialog).getByLabelText("示例脱敏方式"), "masked");
     await userEvent.selectOptions(
       within(dialog).getByLabelText("效率封套"),
       "token_reduction_v1",
@@ -198,15 +204,19 @@ describe("CompilePanel", () => {
     const support = within(dialog).getByLabelText("最小簇支撑");
     await userEvent.clear(support);
     await userEvent.type(support, "5");
+    const patches = within(dialog).getByLabelText("补丁上限");
+    await userEvent.clear(patches);
+    await userEvent.type(patches, "12");
     await userEvent.click(within(dialog).getByRole("button", { name: "发起编译" }));
 
     await waitFor(() => expect(mocks.create).toHaveBeenCalled());
     expect(mocks.create.mock.calls[0][0]).toMatchObject({
       compiler: {
-        demo_count: 4,
-        redaction_mode: "masked",
+        max_patches: 12,
         min_cluster_support: 5,
         efficiency_policy: "token_reduction_v1",
+        // 不可选，所以只能是后端唯一接受的值。
+        demo_count: 0,
       },
     });
   });
@@ -316,5 +326,55 @@ describe("CompilePanel", () => {
     renderPanel();
 
     expect(await screen.findByText("尚无编译产物")).toBeInTheDocument();
+  });
+});
+
+describe("CompilePanel — 编译任务的结局", () => {
+  async function compileOnce() {
+    renderPanel();
+    const dialog = await openDialog();
+    await userEvent.selectOptions(within(dialog).getByLabelText("基线抽取版本"), "12");
+    await userEvent.click(within(dialog).getByRole("button", { name: "发起编译" }));
+    await waitFor(() => expect(mocks.create).toHaveBeenCalled());
+  }
+
+  it("says a compile failed instead of waiting for a product that never lands", async () => {
+    // 之前只盯产物列表里出没出现 compilation_id。编译失败时永远不会出现，于是
+    // 「正在等待产物落库…」会一直挂着、每 3 秒重拉一次，而失败原因只写在任务行里，
+    // UI 没有任何途径能读到——用户看到的是一个永不结束的成功态。
+    mocks.job.mockResolvedValue({
+      id: 55,
+      status: "failed",
+      last_error_message: "没有错误簇达到 min_cluster_support",
+    });
+
+    await compileOnce();
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("编译失败");
+    expect(alert).toHaveTextContent("没有错误簇达到 min_cluster_support");
+    expect(screen.queryByText(/正在等待产物落库/)).not.toBeInTheDocument();
+  });
+
+  it("keeps saying it is queued while the job is still running", async () => {
+    mocks.job.mockResolvedValue({ id: 55, status: "running" });
+
+    await compileOnce();
+
+    expect(await screen.findByText(/正在等待产物落库/)).toBeInTheDocument();
+  });
+
+  it("stops claiming to wait once the artifact is on screen", async () => {
+    mocks.job.mockResolvedValue({ id: 55, status: "succeeded" });
+    mocks.list.mockResolvedValue({
+      items: [artifact({ compilation_id: 9002 })],
+      total: 1,
+    });
+
+    await compileOnce();
+
+    await waitFor(() =>
+      expect(screen.queryByText(/正在等待产物落库/)).not.toBeInTheDocument(),
+    );
   });
 });

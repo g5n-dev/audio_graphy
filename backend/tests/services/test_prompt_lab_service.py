@@ -29,6 +29,7 @@ from audio_graphy.optimizers.artifacts import (
 )
 from audio_graphy.services.prompt_lab import (
     PatchDecision,
+    PromptLabError,
     PromptLabPrivacyError,
     PromptLabService,
 )
@@ -609,3 +610,204 @@ async def test_readiness_names_the_gap_and_prices_it_in_human_hours(
     payload = readiness.as_payload()
     assert payload["annotation_hours_remaining"] == 0.0
     assert payload["domains"] == []
+
+
+async def _seed_badcase(
+    factory: async_sessionmaker[AsyncSession],
+    *,
+    index: int,
+) -> None:
+    """One open, train-lane badcase — the kind a compile reads."""
+
+    from datetime import UTC, datetime
+
+    from audio_graphy.models.tag_governance import TagBadcase
+
+    now = datetime.now(UTC)
+    async with factory() as session, session.begin():
+        session.add(
+            TagBadcase(
+                tenant_id=_TENANT,
+                source_feedback_event_id=index,
+                subject_type="dialogue_unit",
+                subject_id=index,
+                tag_key="intent",
+                failure_stage="tag_reasoning",
+                failure_mode="correct:missed",
+                signature_hash=f"{index:08d}" * 8,
+                dataset_split="train",
+                status="open",
+                root_cause={"reason_code": "missed", "upstream_routed": False},
+                occurrence_count=3,
+                first_seen_at=now,
+                last_seen_at=now,
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_recompiling_after_new_feedback_is_a_new_compilation(
+    lab_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The corpus is an input, so it has to be inside the idempotency key.
+
+    It was not: compilation_id hashed only (tenant, baseline, gold set, compiler)
+    while the worker read whatever badcases were open at the moment it ran. After a
+    review round the identical request resolved to the already-finished job and
+    returned 202 with nothing left to run — and changing the budget to force a
+    re-run raised 409 instead, because the budget is in scope but not in the id.
+    Recompiling the same baseline was impossible by any route.
+    """
+
+    service = PromptLabService(lab_factory)
+    baseline_id, gold_version_id = await _seed_baseline(lab_factory)
+    request: dict[str, Any] = {
+        "tenant_id": _TENANT,
+        "baseline_tagger_version_id": baseline_id,
+        "gold_set_version_id": gold_version_id,
+        "compiler_config": {"compiler": "builtin"},
+        "budget": {"max_provider_calls": 10},
+        "actor_user_id": 9,
+    }
+
+    await _seed_badcase(lab_factory, index=1)
+    first = await service.create_compilation(**request)
+    # Same corpus, same request: still one job.
+    assert await service.create_compilation(**request) == first
+
+    await _seed_badcase(lab_factory, index=2)
+    second = await service.create_compilation(**request)
+
+    assert second["compilation_id"] != first["compilation_id"]
+    assert second["job_id"] != first["job_id"]
+
+
+@pytest.mark.asyncio
+async def test_asking_for_demos_no_compiler_emits_is_refused(
+    lab_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Same rule as an unimplemented compiler: refuse, do not silently ignore.
+
+    Both shipped proposers hardcode ``demos=()``. A request for four inline
+    examples under a masking policy compiled fine, produced zero demos, and
+    reported ``demo_count: 0`` — with nothing saying the request had been dropped
+    and the privacy control the schema advertises unable to ever fire.
+    """
+
+    service = PromptLabService(lab_factory)
+    baseline_id, gold_version_id = await _seed_baseline(lab_factory)
+
+    with pytest.raises(PromptLabError, match="demo_count"):
+        await service.create_compilation(
+            tenant_id=_TENANT,
+            baseline_tagger_version_id=baseline_id,
+            gold_set_version_id=gold_version_id,
+            compiler_config={"compiler": "builtin", "demo_count": 4},
+            budget={"max_provider_calls": 10},
+            actor_user_id=9,
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_child_artifact_carries_the_reasoning_for_its_surviving_patches(
+    lab_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Gradients follow the patches they argued for.
+
+    They were written once against the compiled parent and ``list_gradients``
+    filters strictly by artifact_id, so the tab for a re-materialized child came
+    back empty under the text "内置编译器只在存在错误簇时才产出建议" — false about a
+    child that carries those very patches. It also made a second review round
+    impossible: nothing to decide on the child, and 409 on the superseded parent.
+    """
+
+    service = PromptLabService(lab_factory)
+    parent = await _persist(service, _artifact())
+
+    child = await service.apply_patch_decisions(
+        tenant_id=_TENANT,
+        artifact_id=parent.id,
+        decisions=[
+            PatchDecision(patch_id="p1", accepted=True),
+            PatchDecision(patch_id="p2", accepted=False),
+        ],
+        actor_user_id=9,
+    )
+
+    parent_gradients = await service.list_gradients(tenant_id=_TENANT, artifact_id=parent.id)
+    child_gradients = await service.list_gradients(tenant_id=_TENANT, artifact_id=child.id)
+
+    # The parent keeps the audit trail of what was decided.
+    assert {g.patch_id: g.decision for g in parent_gradients} == {
+        "p1": "accepted",
+        "p2": "rejected",
+    }
+    # The child gets the reasoning for what it kept, open for a further round.
+    assert [g.patch_id for g in child_gradients] == ["p1"]
+    assert child_gradients[0].decision == "pending"
+    assert child_gradients[0].gradient_text == "诊断 p1"
+    assert child_gradients[0].iteration == 2
+
+
+@pytest.mark.asyncio
+async def test_a_child_artifact_is_priced_as_itself_not_as_its_parent(
+    lab_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The budget report must describe the prompt shipped beside it.
+
+    ``prompt_token_estimate`` was recomputed from the child while
+    ``input_budget_report`` was copied from the parent verbatim, so the review UI
+    priced an accepted one-patch prompt using the rejected three-patch prompt's
+    headroom — two numbers on one resource describing different prompts.
+    """
+
+    service = PromptLabService(lab_factory)
+    parent = await service.persist_artifact(
+        tenant_id=_TENANT,
+        compilation_id=1,
+        artifact=_artifact(
+            patches=(
+                _patch("p1", ordinal=1, body="规则一" * 40),
+                _patch("p2", ordinal=2, body="规则二" * 40),
+            ),
+            accepted_patch_ids=frozenset({"p1", "p2"}),
+        ),
+        baseline_tagger_version_id=1,
+        gold_set_version_id=None,
+        actor_user_id=9,
+        input_budget_report={
+            "prompt_tokens": 900,
+            "schema_tokens": 1_500,
+            "fixed_tokens": 2_400,
+            "usable_tokens": 4_000,
+            "headroom_tokens": 1_600,
+            "baseline_fixed_tokens": 1_800,
+            "baseline_headroom_tokens": 2_200,
+            "headroom_delta": -600,
+            "headroom_shrink_ratio": 0.27,
+            "fits": True,
+        },
+    )
+
+    child = await service.apply_patch_decisions(
+        tenant_id=_TENANT,
+        artifact_id=parent.id,
+        decisions=[
+            PatchDecision(patch_id="p1", accepted=True),
+            PatchDecision(patch_id="p2", accepted=False),
+        ],
+        actor_user_id=9,
+    )
+
+    report = dict(child.input_budget_report)
+    # Dropping a patch can only free headroom, never consume more.
+    assert report["prompt_tokens"] < 900
+    assert report["headroom_tokens"] > 1_600
+    assert report["headroom_delta"] > -600
+    # What the schema and the budget fix: carried over untouched.
+    assert report["schema_tokens"] == 1_500
+    assert report["usable_tokens"] == 4_000
+    assert report["baseline_headroom_tokens"] == 2_200
+    # And the derived fields stay consistent with each other.
+    assert report["fixed_tokens"] == report["prompt_tokens"] + 1_500
+    assert report["headroom_tokens"] == 4_000 - report["fixed_tokens"]

@@ -47,6 +47,7 @@ from audio_graphy.optimizers.proposers import (
     UnsupportedCompilerError,
     assert_compiler_supported,
 )
+from audio_graphy.services.tag_extractor import rescaled_input_budget_report
 from audio_graphy.services.tag_governance import (
     GovernanceConflictError,
     GovernanceError,
@@ -279,6 +280,16 @@ class PromptLabService:
         except UnsupportedCompilerError as exc:
             raise PromptLabError(str(exc)) from exc
 
+        # 同理：没有编译器会产出 demo（两个 proposer 都写死 demos=()），所以
+        # demo_count>0 会安静地编译出零 demo 的产物，而 redaction_mode 承诺的
+        # 脱敏策略只对 demo 生效——请求被忽略却没人被告知。要么实现，要么拒绝。
+        demo_count = compiler_config.get("demo_count", 0)
+        if isinstance(demo_count, int) and not isinstance(demo_count, bool) and demo_count > 0:
+            raise PromptLabError(
+                "no compiler in this build emits inline demonstrations; "
+                "compiler.demo_count must be 0"
+            )
+
         async with self._factory() as session:
             baseline = await session.get(TaggerVersion, baseline_tagger_version_id)
             if baseline is None or str(baseline.tenant_id) != tenant_id:
@@ -297,6 +308,15 @@ class PromptLabService:
                     "baseline": baseline_tagger_version_id,
                     "gold_set_version_id": gold_set_version_id,
                     "compiler": dict(compiler_config),
+                    # The corpus the worker will read, folded in because it moves.
+                    # Without it this id was a permanent idempotency key over inputs
+                    # that were only three quarters of the real ones: after another
+                    # 300 badcases were reviewed, an identical request resolved to
+                    # the finished job and returned 202 with nothing left to run --
+                    # and nudging the budget to force a re-run hit 409 instead,
+                    # because the budget is in scope but not in the id. Recompiling
+                    # the same baseline was impossible.
+                    "corpus": await self._compile_corpus_fingerprint(tenant_id),
                 }
             )[:12],
             16,
@@ -461,6 +481,7 @@ class PromptLabService:
             if existing is not None:
                 await self._record_decisions(
                     session,
+                    tenant_id=tenant_id,
                     artifact_id=parent.id,
                     decisions=decisions,
                     actor_user_id=actor_user_id,
@@ -485,7 +506,10 @@ class PromptLabService:
                 demos=[demo.as_payload() for demo in child.demos],
                 accepted_patch_ids=sorted(child.accepted_patch_ids),
                 prompt_token_estimate=child.prompt_token_estimate,
-                input_budget_report=dict(parent.input_budget_report or {}),
+                input_budget_report=rescaled_input_budget_report(
+                    parent.input_budget_report or {},
+                    prompt_content=child.render(),
+                ),
                 redaction_report=_redaction_report(child),
                 artifact_checksum=checksum,
                 created_by=actor_user_id,
@@ -515,9 +539,17 @@ class PromptLabService:
 
             await self._record_decisions(
                 session,
+                tenant_id=tenant_id,
                 artifact_id=parent.id,
                 decisions=decisions,
                 actor_user_id=actor_user_id,
+            )
+            await self._carry_gradients_forward(
+                session,
+                tenant_id=tenant_id,
+                parent_artifact_id=parent.id,
+                child_artifact_id=int(row.id),
+                patch_ids={patch.patch_id for patch in child.patches},
             )
             parent.status = "superseded"
             await session.flush()
@@ -569,6 +601,32 @@ class PromptLabService:
             return list(rows)
 
     # ------------------------------------------------------------ badcase feed
+
+    async def _compile_corpus_fingerprint(self, tenant_id: str) -> dict[str, int]:
+        """Cheap identity for the badcase set ``badcase_rows_for_compile`` will read.
+
+        Count plus the highest id and occurrence total: enough to change whenever
+        rows are added, reopened, closed or re-observed, and it costs one indexed
+        aggregate rather than reading the corpus twice. It does not have to match
+        the worker's snapshot exactly -- it only has to stop two requests made
+        either side of a review round from colliding on one idempotency key.
+        """
+
+        async with self._factory() as session:
+            row = (
+                await session.execute(
+                    select(
+                        func.count(TagBadcase.id),
+                        func.coalesce(func.max(TagBadcase.id), 0),
+                        func.coalesce(func.sum(TagBadcase.occurrence_count), 0),
+                    ).where(
+                        TagBadcase.tenant_id == tenant_id,
+                        TagBadcase.status.in_(["open", "reopened"]),
+                        TagBadcase.dataset_split.in_(["train", "validation"]),
+                    )
+                )
+            ).one()
+        return {"count": int(row[0]), "max_id": int(row[1]), "occurrences": int(row[2])}
 
     async def badcase_rows_for_compile(
         self,
@@ -629,9 +687,68 @@ class PromptLabService:
         return row
 
     @staticmethod
+    async def _carry_gradients_forward(
+        session: AsyncSession,
+        *,
+        tenant_id: str,
+        parent_artifact_id: int,
+        child_artifact_id: int,
+        patch_ids: set[str],
+    ) -> None:
+        """Copy the reasoning behind the surviving patches onto the child.
+
+        Gradients are written once, against the artifact the compiler produced,
+        and ``list_gradients`` filters strictly by artifact_id. Without this the
+        gradients tab for a re-materialized child is empty and tells the reviewer
+        the compiler found nothing worth suggesting -- while the child in fact
+        carries the very patches those gradients argued for. It also made a second
+        review round impossible: the child had nothing to decide on, and going
+        back to the parent 409s once it is superseded.
+
+        The parent's rows keep the decisions just recorded; the child's copies
+        start pending, because the child is a fresh draft whose patches are all
+        still open.
+        """
+
+        if not patch_ids:
+            return
+        rows = (
+            (
+                await session.execute(
+                    select(TagPromptGradient).where(
+                        TagPromptGradient.tenant_id == tenant_id,
+                        TagPromptGradient.artifact_id == parent_artifact_id,
+                        TagPromptGradient.patch_id.in_(sorted(patch_ids)),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for row in rows:
+            session.add(
+                TagPromptGradient(
+                    tenant_id=tenant_id,
+                    artifact_id=child_artifact_id,
+                    patch_id=row.patch_id,
+                    iteration=int(row.iteration) + 1,
+                    source_badcase_id=row.source_badcase_id,
+                    tag_key=row.tag_key,
+                    failure_stage=row.failure_stage,
+                    failure_mode=row.failure_mode,
+                    gradient_text=row.gradient_text,
+                    proposed_edit=row.proposed_edit,
+                    decision="pending",
+                    evaluation=dict(row.evaluation or {}),
+                    llm_logical_request_id=row.llm_logical_request_id,
+                )
+            )
+
+    @staticmethod
     async def _record_decisions(
         session: AsyncSession,
         *,
+        tenant_id: str,
         artifact_id: int,
         decisions: Sequence[PatchDecision],
         actor_user_id: int,
@@ -641,7 +758,13 @@ class PromptLabService:
         by_patch = {decision.patch_id: decision for decision in decisions}
         rows = (
             await session.execute(
+                # Tenant-scoped like list_gradients on the same model. Artifact ids
+                # are globally unique today, so nothing can currently collide; the
+                # house rule is that a tenant-scoped write carries the predicate
+                # regardless, because a restore or a tenant clone is exactly the
+                # kind of event that makes "currently" stop being true.
                 select(TagPromptGradient).where(
+                    TagPromptGradient.tenant_id == tenant_id,
                     TagPromptGradient.artifact_id == artifact_id,
                     TagPromptGradient.patch_id.in_(list(by_patch)),
                 )
