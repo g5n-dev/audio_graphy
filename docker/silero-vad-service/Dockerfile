@@ -56,7 +56,9 @@ COPY --chown=audiography:audiography audio_graphy/services/silero_vad_service.py
 ENV SILERO_VAD_MODEL_PATH=/models/silero_vad.onnx
 # One ONNX thread and one in-flight request. The graph is small and the loop is
 # sequential over 32 ms windows, so extra threads buy little; what they would
-# cost is unbounded memory when several long recordings arrive together.
+# cost is unbounded memory when several long recordings arrive together — the
+# slot covers decoding too, which is where that memory actually goes (ffmpeg
+# plus 32 kB of PCM per second of audio).
 ENV SILERO_VAD_ONNX_THREADS=1
 ENV SILERO_VAD_MAX_CONCURRENCY=1
 ENV PYTHONUNBUFFERED=1

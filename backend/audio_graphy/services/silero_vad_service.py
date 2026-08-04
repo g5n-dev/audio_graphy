@@ -84,6 +84,13 @@ _DECODE_TIMEOUT_SEC = float(os.getenv("SILERO_VAD_DECODE_TIMEOUT_SEC", "300"))
 #: honest 503.
 _INFER_TIMEOUT_SEC = float(os.getenv("SILERO_VAD_INFER_TIMEOUT_SEC", "25"))
 _MAX_CONCURRENCY = int(os.getenv("SILERO_VAD_MAX_CONCURRENCY", "1"))
+#: How long a request waits for the concurrency slot before giving up. Bounded
+#: because the guarded section now includes decoding: a waiter holds its raw
+#: upload resident the whole time, so an unbounded queue reintroduces exactly
+#: the memory growth _MAX_CONCURRENCY exists to prevent. Kept under the caller's
+#: 30s read timeout so a busy server answers 503 rather than letting the client
+#: time out with no idea why.
+_QUEUE_WAIT_SEC = float(os.getenv("SILERO_VAD_QUEUE_WAIT_SEC", "20"))
 
 _SEMAPHORE = asyncio.Semaphore(_MAX_CONCURRENCY)
 _session: Any = None
@@ -330,9 +337,24 @@ async def segment(
         )
 
     suffix = Path(audio.filename or "upload.wav").suffix
-    pcm = await _decode_to_pcm16(raw, suffix)
 
-    async with _SEMAPHORE:
+    # Decoding is inside the slot, not before it. ffmpeg forks a process and the
+    # decoded PCM is 32 kB per second of audio — an hour of speech is ~115 MB
+    # resident, dwarfing the ONNX graph. Guarding only the inference let N
+    # concurrent uploads each run their own ffmpeg and hold their own PCM while
+    # _MAX_CONCURRENCY=1 claimed one recording was in flight.
+    try:
+        await asyncio.wait_for(_SEMAPHORE.acquire(), timeout=_QUEUE_WAIT_SEC)
+    except TimeoutError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                f"no VAD slot within {_QUEUE_WAIT_SEC}s; retry later, or raise "
+                "SILERO_VAD_MAX_CONCURRENCY if the host has memory to spare"
+            ),
+        ) from None
+    try:
+        pcm = await _decode_to_pcm16(raw, suffix)
         try:
             probs = await asyncio.wait_for(
                 asyncio.to_thread(probabilities, session, pcm),
@@ -349,6 +371,8 @@ async def segment(
                     "or split the recording"
                 ),
             ) from None
+    finally:
+        _SEMAPHORE.release()
 
     spans = spans_from_probabilities(
         probs, min_segment_sec=min_segment_sec, max_segment_sec=max_segment_sec

@@ -669,6 +669,9 @@ services:
       # a server that runs past it holds the single concurrency slot for a
       # client that has already given up.
       SILERO_VAD_INFER_TIMEOUT_SEC: ${SILERO_VAD_INFER_TIMEOUT_SEC:-25}
+      # Same reason, for the queue: a waiter holds its upload resident, so the
+      # wait is bounded and answered with 503 before the caller gives up.
+      SILERO_VAD_QUEUE_WAIT_SEC: ${SILERO_VAD_QUEUE_WAIT_SEC:-20}
     volumes:
       - type: bind
         source: ${SILERO_VAD_MODEL_FILE:-./models/silero_vad.onnx}

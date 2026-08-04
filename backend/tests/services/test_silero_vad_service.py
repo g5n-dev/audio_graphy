@@ -8,6 +8,8 @@ with the streaming path.
 
 from __future__ import annotations
 
+import asyncio
+import io
 from typing import Any
 
 import pytest
@@ -227,6 +229,96 @@ class TestDegradesHonestlyWithoutTheModel:
         assert caught.value.status_code == 503
         # The detail carries the load error, so the caller's log says which file.
         assert "unavailable" in str(caught.value.detail)
+
+
+class TestConcurrencyBoundsTheExpensiveWork:
+    """_MAX_CONCURRENCY must bound what actually costs memory.
+
+    The Dockerfile pins it to 1 and says why: "unbounded memory when several
+    long recordings arrive together". The dominant term is not the ONNX graph —
+    it is ffmpeg plus the decoded PCM, 32 kB per second of audio, ~115 MB for an
+    hour. Guarding only the inference call left every concurrent upload decoding
+    at once, so the setting bounded the cheap half and documented the expensive
+    half.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _fresh_semaphore(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The module-level semaphore binds to whichever loop first awaits it,
+        # and each test gets its own loop. Production has one loop for the
+        # process lifetime, so this is a test-isolation concern only.
+        monkeypatch.setattr(svc, "_SEMAPHORE", asyncio.Semaphore(1))
+
+    @staticmethod
+    def _upload() -> Any:
+        from starlette.datastructures import Headers, UploadFile
+
+        return UploadFile(
+            filename="a.wav",
+            file=io.BytesIO(b"RIFF-ish bytes; the decoder is patched out"),
+            headers=Headers({"content-type": "audio/wav"}),
+        )
+
+    async def test_two_requests_never_decode_at_the_same_time(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        live = 0
+        peak = 0
+
+        async def slow_decode(raw: bytes, suffix: str) -> bytes:
+            nonlocal live, peak
+            live += 1
+            peak = max(peak, live)
+            await asyncio.sleep(0.05)
+            live -= 1
+            return b"\x00\x00" * svc.SILERO_CHUNK_SAMPLES
+
+        monkeypatch.setattr(svc, "_decode_to_pcm16", slow_decode)
+        monkeypatch.setattr(svc, "_require_session", lambda: object())
+        monkeypatch.setattr(svc, "probabilities", lambda session, pcm: [0.0])
+
+        await asyncio.gather(
+            *(
+                svc.segment(audio=self._upload(), min_segment_sec=0.5, max_segment_sec=30.0)
+                for _ in range(4)
+            ),
+        )
+
+        assert peak == 1, f"{peak} concurrent decodes under _MAX_CONCURRENCY=1"
+
+    async def test_a_request_that_cannot_get_a_slot_is_told_so(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A waiter holds its raw upload resident, so the queue must be bounded.
+
+        Answering 503 inside the caller's read timeout is also the difference
+        between a log line naming the cause and a bare client-side timeout.
+        """
+        from fastapi import HTTPException
+
+        from audio_graphy.adapters.real import vad_silero
+
+        assert svc._QUEUE_WAIT_SEC < vad_silero._DEFAULT_TIMEOUT
+
+        async def slow_decode(raw: bytes, suffix: str) -> bytes:
+            await asyncio.sleep(0.2)
+            return b"\x00\x00" * svc.SILERO_CHUNK_SAMPLES
+
+        monkeypatch.setattr(svc, "_decode_to_pcm16", slow_decode)
+        monkeypatch.setattr(svc, "_require_session", lambda: object())
+        monkeypatch.setattr(svc, "probabilities", lambda session, pcm: [0.0])
+        monkeypatch.setattr(svc, "_QUEUE_WAIT_SEC", 0.01)
+
+        holder = asyncio.create_task(
+            svc.segment(audio=self._upload(), min_segment_sec=0.5, max_segment_sec=30.0)
+        )
+        await asyncio.sleep(0.01)
+        with pytest.raises(HTTPException) as caught:
+            await svc.segment(audio=self._upload(), min_segment_sec=0.5, max_segment_sec=30.0)
+        await holder
+
+        assert caught.value.status_code == 503
+        assert "slot" in str(caught.value.detail)
 
 
 class TestTheContainerCanActuallyStart:
