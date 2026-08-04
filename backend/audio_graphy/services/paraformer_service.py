@@ -311,6 +311,20 @@ def _join_cjk_spaces(text: str) -> str:
     return _CJK_SPACE_RE.sub("", text)
 
 
+def _sec_from_ms(value: Any) -> float | None:
+    """Seconds from a funasr millisecond timestamp, or None when unusable.
+
+    ``sentence_info`` entries arrive untyped: the key may be missing (so the
+    value is ``None``) or hold something non-numeric. Both cases must drop the
+    sentence rather than give it a fabricated span, so they surface as ``None``
+    instead of an exception the caller would have to spell out twice.
+    """
+    try:
+        return float(value) / _MS_PER_SEC
+    except (TypeError, ValueError):
+        return None
+
+
 def _audio_duration_sec(path: str) -> float:
     """Decoded duration in seconds; 0.0 when the file cannot be read."""
     try:
@@ -324,7 +338,7 @@ def _audio_duration_sec(path: str) -> float:
 
 def _transcribe_file(path: str) -> tuple[str, list[dict[str, Any]], float]:
     """Run the funasr pipeline and normalize its output to the API schema."""
-    res = _MODEL.generate(  # type: ignore[union-attr]
+    res = _MODEL.generate(
         input=path,
         cache={},
         batch_size_s=300,
@@ -354,12 +368,9 @@ def _transcribe_file(path: str) -> tuple[str, list[dict[str, Any]], float]:
             seg_text = _join_cjk_spaces(str(sent.get("text", "")).strip())
             if not seg_text:
                 continue
-            start_ms = sent.get("start")
-            end_ms = sent.get("end")
-            try:
-                start = float(start_ms) / _MS_PER_SEC
-                end = float(end_ms) / _MS_PER_SEC
-            except (TypeError, ValueError):
+            start = _sec_from_ms(sent.get("start"))
+            end = _sec_from_ms(sent.get("end"))
+            if start is None or end is None:
                 logger.debug("Skipping sentence without usable timestamps: %s", sent)
                 continue
             # No "confidence" key: Paraformer emits no per-sentence posterior.

@@ -504,16 +504,18 @@ class TestInferenceSlotIsolation:
         monkeypatch.setattr(campplus_app, "_crop_audio", lambda path, s, e: path)
 
         transport = httpx.ASGITransport(app=campplus_app.app)
-        async with campplus_app._ASR_SEMAPHORE:  # an ASR pass is in flight
-            async with httpx.AsyncClient(transport=transport, base_url="http://t") as ac:
-                # Shared slots would deadlock here instead of returning.
-                resp = await asyncio.wait_for(
-                    ac.post(
-                        "/v1/voiceprint/extract",
-                        files={"audio": ("a.wav", b"\x00" * 1000, "audio/wav")},
-                    ),
-                    timeout=10.0,
-                )
+        async with (
+            campplus_app._ASR_SEMAPHORE,  # an ASR pass is in flight
+            httpx.AsyncClient(transport=transport, base_url="http://t") as ac,
+        ):
+            # Shared slots would deadlock here instead of returning.
+            resp = await asyncio.wait_for(
+                ac.post(
+                    "/v1/voiceprint/extract",
+                    files={"audio": ("a.wav", b"\x00" * 1000, "audio/wav")},
+                ),
+                timeout=10.0,
+            )
         assert resp.status_code == 200, resp.text
         assert resp.json()["dim"] == 192
 
@@ -532,16 +534,18 @@ class TestInferenceSlotIsolation:
         monkeypatch.setattr(campplus_app, "_crop_audio", lambda path, s, e: path)
 
         transport = httpx.ASGITransport(app=campplus_app.app)
-        async with campplus_app._SV_SEMAPHORE:
-            async with httpx.AsyncClient(transport=transport, base_url="http://t") as ac:
-                with pytest.raises(asyncio.TimeoutError):
-                    await asyncio.wait_for(
-                        ac.post(
-                            "/v1/voiceprint/extract",
-                            files={"audio": ("a.wav", b"\x00" * 1000, "audio/wav")},
-                        ),
-                        timeout=0.5,
-                    )
+        async with (
+            campplus_app._SV_SEMAPHORE,
+            httpx.AsyncClient(transport=transport, base_url="http://t") as ac,
+        ):
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(
+                    ac.post(
+                        "/v1/voiceprint/extract",
+                        files={"audio": ("a.wav", b"\x00" * 1000, "audio/wav")},
+                    ),
+                    timeout=0.5,
+                )
 
     def test_duration_sec_reports_the_audio_actually_used(
         self,
