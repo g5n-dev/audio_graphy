@@ -14,6 +14,13 @@ LLM, embedding and ASR adapters. The batch VAD image would have had to ship the
 whole adapter tree to read three integers — and the Dockerfile that did not
 copy it failed at import, after the build succeeded.
 
+Layering: ``adapters.real.streaming_vad_silero`` imports this, which is upward
+and frozen in ``tests/architecture/test_layering.py``. It belongs to that file's
+accepted group -- a dependency-free leaf whose only sin is where it lives. This
+module imports nothing at all (asserted by the batch service's COPY-closure
+test), so the edge cannot close a cycle. ``core`` is where it sits because the
+alternative is the adapter tree the paragraph above describes.
+
 L3 locked: changing any of these changes segmentation for every deployment.
 """
 

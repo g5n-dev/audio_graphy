@@ -29,6 +29,9 @@ Accepted — the target is a dependency-free leaf whose only sin is where it liv
   package at all and ``config`` only reaches ``adapters.bundle`` from a
   ``TYPE_CHECKING`` block and a function body, so neither can close a runtime cycle.
 * ``audio_graphy.db``, imported once by ``eval.cli``, has the same shape.
+* ``core.silero_framing`` holds four framing constants and imports nothing at all --
+  the batch VAD image copies exactly five files, which is the proof. It cannot live
+  under ``adapters`` without pulling ``adapters/__init__.py`` into that image.
 * ``core.types``, ``core.llm_cache_crypto``, ``core.crypto`` and ``core.audio_timeline``
   are value/exception/helper modules with no upward edges of their own; ``storage``,
   ``models`` and ``schemas`` reaching into them is a naming problem, not a cycle.
@@ -98,6 +101,12 @@ KNOWN_VIOLATIONS: frozenset[tuple[str, str]] = frozenset(
         ("audio_graphy.adapters.mock_streaming_vad", "audio_graphy.core.chunker"),
         ("audio_graphy.adapters.protocols", "audio_graphy.core.chunker"),
         ("audio_graphy.adapters.real.streaming_vad_silero", "audio_graphy.core.chunker"),
+        # Accepted: core.silero_framing declares four framing constants and imports
+        # nothing whatsoever. The batch VAD container proves it -- its whole import
+        # closure is five files. Putting the constants under adapters/ instead would
+        # drag adapters/__init__.py, and with it the LLM/embedding/ASR adapters, into
+        # that image; see the module docstring.
+        ("audio_graphy.adapters.real.streaming_vad_silero", "audio_graphy.core.silero_framing"),
         ("audio_graphy.api.auth", "audio_graphy.config"),
         ("audio_graphy.api.auth", "audio_graphy.errors"),
         ("audio_graphy.api.bi_temporal", "audio_graphy.errors"),
