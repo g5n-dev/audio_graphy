@@ -157,8 +157,11 @@ function OptimizationRunDetail({ runId }: { runId: number }) {
               <span>Trial {trial.ordinal}</span>
               <strong>{trial.status}</strong>
               <small>
-                {trial.mutation_dimension ?? "—"}
-                {trial.elimination_reason ? ` · ${trial.elimination_reason}` : ""}
+                {/* mutation.dimension / .description 是优化器真正写入的字段
+                    （models/tag_governance.py TagOptimizationTrial.mutation）；
+                    phase 说明这次 trial 跑在哪条数据通道上。 */}
+                {trial.mutation?.dimension ?? "—"}
+                {trial.phase ? ` · ${trial.phase}` : ""}
               </small>
             </li>
           ))}

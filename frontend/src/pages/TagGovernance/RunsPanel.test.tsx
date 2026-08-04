@@ -301,12 +301,19 @@ describe("RunsPanel", () => {
         trials: [
           {
             id: 501,
+            optimization_run_id: 88,
             ordinal: 1,
             status: "pruned",
-            mutation_dimension: "generation",
-            elimination_reason: "低于基线",
+            phase: "train",
+            // 优化器写入的真实形状，见 models/tag_governance.py 的 mutation 列。
+            mutation: { dimension: "generation", description: "收紧生成约束" },
           },
-          { id: 502, ordinal: 2, status: "completed" },
+          {
+            id: 502,
+            optimization_run_id: 88,
+            ordinal: 2,
+            status: "completed",
+          },
         ],
       }),
     );
@@ -319,7 +326,8 @@ describe("RunsPanel", () => {
 
     await waitFor(() => expect(mocks.run).toHaveBeenCalledWith(88));
     expect(await screen.findByText("Trial 1")).toBeInTheDocument();
-    expect(screen.getByText(/低于基线/)).toBeInTheDocument();
+    // mutation.dimension + phase：后端真实字段，不是臆造的 elimination_reason。
+    expect(screen.getByText(/generation/)).toBeInTheDocument();
     expect(screen.getByText(/胜出候选 #9/)).toBeInTheDocument();
   });
 
