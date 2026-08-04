@@ -876,6 +876,9 @@ async def create_review_batch(
     )
     return {
         "batch_id": rows[0].batch_id,
+        # The gold-set cohort selects tasks by review_bundle_id, NOT by batch_id.
+        # Returning only the batch id sent operators to freeze an empty cohort.
+        "review_bundle_id": rows[0].review_bundle_id,
         "created_count": len(rows),
         "items": [_review_resource(row, viewer_user_id=user.id) for row in rows],
     }

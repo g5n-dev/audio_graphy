@@ -1626,6 +1626,8 @@ export interface CreateTagReviewBatchRequest {
 
 export interface CreateTagReviewBatchResponse {
   batch_id?: string;
+  /** 金标 cohort 的 review_bundle_ids 圈的是这个，不是 batch_id。 */
+  review_bundle_id?: string | null;
   created_count: number;
   items: TagReviewTask[];
 }

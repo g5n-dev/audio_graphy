@@ -74,8 +74,8 @@ export function GovernanceActions({
   const [feedback, setFeedback] = useState<{
     message: string;
     link?: { to: string; label: string };
-    /** 批次 ID：金标冻结（复核批次 ID）要引用它，别处不再展示，必须在这里留痕。 */
-    batchId?: string | null;
+    /** 金标冻结的 cohort 按它圈定复核任务，别处不再展示，必须在这里留痕。 */
+    reviewBundleId?: string | null;
   } | null>(null);
 
   const reviewSubjects = useMemo(() => {
@@ -221,7 +221,7 @@ export function GovernanceActions({
     onSuccess: (batch) =>
       setFeedback({
         message: `已创建 ${batch.created_count} 个复核任务`,
-        batchId: batch.batch_id ?? null,
+        reviewBundleId: batch.review_bundle_id ?? null,
         link: { to: "/tag-review", label: "进入复核工作台" },
       }),
   });
@@ -328,18 +328,21 @@ export function GovernanceActions({
       {feedback && (
         <p className="ag-insight-action-feedback is-success" role="status">
           <span>{feedback.message}</span>
-          {feedback.batchId && (
-            // 冻结金标时要按复核批次 ID 圈定 cohort，而这个 ID 只在创建响应里
-            // 出现一次，所以必须展示并支持复制，否则操作员无从抄录。
+          {feedback.reviewBundleId && (
+            // 金标冻结的 cohort 按 review_bundle_id 圈定复核任务，不是 batch_id
+            // ——两者是不同的列。这个 ID 只在创建响应里出现一次，必须展示并支持
+            // 复制，否则操作员无从抄录。
             <span className="ag-insight-action-feedback__batch">
-              批次 ID <code>{feedback.batchId}</code>
+              复核集 ID <code>{feedback.reviewBundleId}</code>
               <button
                 type="button"
                 onClick={() =>
-                  void navigator.clipboard?.writeText(feedback.batchId ?? "")
+                  void navigator.clipboard?.writeText(
+                    feedback.reviewBundleId ?? "",
+                  )
                 }
               >
-                复制批次 ID
+                复制复核集 ID
               </button>
             </span>
           )}

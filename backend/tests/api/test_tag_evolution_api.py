@@ -206,6 +206,9 @@ def test_structured_review_decision_persists_feedback_lineage(
         },
     )
     assert batch.status_code == 201, batch.text
+    # The gold-set cohort selects on review_bundle_id, so the response has to
+    # echo it: an operator handed only batch_id would freeze an empty cohort.
+    assert batch.json()["review_bundle_id"] == "audit-2026-07-25"
     created_task = batch.json()["items"][0]
     assert created_task["proposed_value"] is None
     assert created_task["confidence"] is None

@@ -112,6 +112,8 @@ describe("GovernanceActions", () => {
     mockedCreateReview.mockReset();
     mockedCreateReview.mockResolvedValue({
       batch_id: "batch-1",
+      // 后端两列独立：cohort 圈的是 review_bundle_id，batch_id 圈不到任何任务。
+      review_bundle_id: "insight-bundle-1",
       created_count: 1,
       items: [{ id: 501 }],
     });
@@ -144,7 +146,7 @@ describe("GovernanceActions", () => {
     );
   });
 
-  it("surfaces the server-issued batch id so gold-set freezing can reference it", async () => {
+  it("surfaces the review bundle id — the one the gold-set cohort selects on", async () => {
     const user = userEvent.setup();
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", {
@@ -154,11 +156,12 @@ describe("GovernanceActions", () => {
     renderActions();
     await user.click(screen.getByRole("button", { name: "创建复核批次" }));
 
-    // 金标冻结要求填写复核批次 ID，而这个 ID 只在创建响应里返回一次，
-    // 因此成功反馈必须把它展示出来并支持复制。
-    expect(await screen.findByText("batch-1")).toBeVisible();
-    await user.click(screen.getByRole("button", { name: "复制批次 ID" }));
-    expect(writeText).toHaveBeenCalledWith("batch-1");
+    // 金标冻结的 cohort 是 review_bundle_ids，查的是 TagReviewTask.review_bundle_id。
+    // 抄 batch_id 过去会圈出空 cohort，所以这里展示和复制的必须是 bundle id。
+    expect(await screen.findByText("insight-bundle-1")).toBeVisible();
+    expect(screen.queryByText("batch-1")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "复制复核集 ID" }));
+    expect(writeText).toHaveBeenCalledWith("insight-bundle-1");
   });
 
   it("creates an idempotent scoped rerun and links to progress", async () => {
