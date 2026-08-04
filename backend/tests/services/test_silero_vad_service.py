@@ -19,6 +19,16 @@ from audio_graphy.services import silero_vad_service as svc
 
 pytestmark = pytest.mark.unit
 
+
+async def _async_return_inner(value):
+    return value
+
+
+def _async_return(value):
+    """A coroutine-returning stand-in for an async function."""
+    return _async_return_inner(value)
+
+
 _WINDOW = svc.SILERO_CHUNK_SEC  # 0.032s
 
 
@@ -163,28 +173,49 @@ class TestAdapterContract:
     only in production, where the service's own unit tests would still pass.
     """
 
-    def test_the_route_and_field_names_match_what_the_adapter_sends(self) -> None:
-        import inspect
+    async def test_the_real_adapter_round_trips_through_the_real_route(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: object
+    ) -> None:
+        """The adapter's actual multipart hits the actual route over ASGI.
 
-        from audio_graphy.adapters.real import vad_silero
+        This replaces two source-text greps that certified nothing: renaming
+        the service's ``start_sec`` to ``start`` left them green because the
+        adapter's own fixtures hardcoded the old keys. Here the request is
+        built by ``SileroVADAdapter.segment`` and parsed by
+        ``_parse_segments`` — a rename on either side of the wire fails this
+        test, not production.
+        """
+        from pathlib import Path
 
-        assert vad_silero._VAD_PATH == "/v1/vad/segment"
-        source = inspect.getsource(vad_silero.SileroVADAdapter.segment)
-        assert '"audio"' in source, "adapter's multipart part name"
-        assert '"min_segment_sec"' in source
-        assert '"max_segment_sec"' in source
+        import httpx
 
-        params = inspect.signature(svc.segment).parameters
-        assert set(params) == {"audio", "min_segment_sec", "max_segment_sec"}
+        from audio_graphy.adapters.real.vad_silero import SileroVADAdapter
 
-    def test_the_response_keys_are_the_ones_the_adapter_parses(self) -> None:
-        import inspect
+        monkeypatch.setattr(svc, "_session", object())
+        monkeypatch.setattr(
+            svc,
+            "_decode_to_pcm16",
+            lambda raw, suffix: _async_return(b"\x00\x00" * svc.SILERO_CHUNK_SAMPLES),
+        )
+        # 40 confident windows = 1.28s of speech: one span, confidence 0.9.
+        monkeypatch.setattr(svc, "probabilities", lambda session, pcm, deadline=None: [0.9] * 40)
 
-        from audio_graphy.adapters.real import vad_silero
+        wav = Path(str(tmp_path)) / "a.wav"
+        wav.write_bytes(b"RIFF-ish bytes; the decoder is patched out")
 
-        parser = inspect.getsource(vad_silero.SileroVADAdapter._parse_segments)
-        for key in ("segments", "start_sec", "end_sec"):
-            assert f'"{key}"' in parser or f"['{key}']" in parser or f'["{key}"]' in parser
+        adapter = SileroVADAdapter(url="http://vad")
+        adapter._client = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=svc.app), base_url="http://vad"
+        )
+        try:
+            segments = await adapter.segment(str(wav), min_segment_sec=0.5, max_segment_sec=30.0)
+        finally:
+            await adapter.aclose()
+
+        assert len(segments) == 1
+        assert segments[0].start_sec == 0.0
+        assert segments[0].end_sec == pytest.approx(1.28, abs=0.01)
+        assert segments[0].confidence == pytest.approx(0.9, abs=0.01)
 
     def test_the_adapter_timeout_bounds_the_service_timeout(self) -> None:
         """The service must give up before the client does.
@@ -207,17 +238,56 @@ class TestDegradesHonestlyWithoutTheModel:
     happily index an empty transcript.
     """
 
-    async def test_health_reports_degraded_and_names_the_cause(self) -> None:
+    async def test_health_reports_degraded_and_names_the_missing_file(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         from fastapi import FastAPI
 
-        # No model file (and no onnxruntime in the test image): exactly what a
-        # deployment that skipped the download looks like.
+        # The exact state of a deployment that skipped the download. The path
+        # check runs before the onnxruntime import, so this exercises the real
+        # branch even in this venv, where onnxruntime is absent — previously
+        # every path failed identically at the import and /etc/hosts produced
+        # the same "coverage" as a genuinely missing file.
+        monkeypatch.setenv("SILERO_VAD_MODEL_PATH", "/definitely/not/here.onnx")
         async with svc.lifespan(FastAPI()):
             health = await svc.health()
 
         assert health["status"] == "degraded"
         assert health["model_loaded"] is False
-        assert health["error"], "an unloadable model must explain itself"
+        assert "/definitely/not/here.onnx" in (health["error"] or ""), (
+            "the error must name the path the operator needs to fill"
+        )
+        assert "SILERO_VAD_MODEL_FILE" in (health["error"] or ""), "and the variable that fills it"
+
+    async def test_health_reports_ok_once_a_session_loads(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: object
+    ) -> None:
+        """Positive control: without it, the degraded assertions above would
+        stay green even if lifespan failed unconditionally."""
+
+        import sys
+        import types
+        from pathlib import Path
+
+        model = Path(str(tmp_path)) / "model.onnx"
+        model.write_bytes(b"weights")
+        monkeypatch.setenv("SILERO_VAD_MODEL_PATH", str(model))
+
+        fake = types.ModuleType("onnxruntime")
+        fake.SessionOptions = lambda: types.SimpleNamespace(
+            intra_op_num_threads=0, inter_op_num_threads=0
+        )
+        fake.InferenceSession = lambda *a, **k: object()
+        monkeypatch.setitem(sys.modules, "onnxruntime", fake)
+
+        from fastapi import FastAPI
+
+        async with svc.lifespan(FastAPI()):
+            health = await svc.health()
+
+        assert health["status"] == "ok"
+        assert health["model_loaded"] is True
+        assert health["error"] is None
 
     async def test_requests_are_refused_with_503_not_an_empty_answer(self) -> None:
         from fastapi import FastAPI, HTTPException
@@ -275,7 +345,7 @@ class TestConcurrencyBoundsTheExpensiveWork:
 
         monkeypatch.setattr(svc, "_decode_to_pcm16", slow_decode)
         monkeypatch.setattr(svc, "_require_session", lambda: object())
-        monkeypatch.setattr(svc, "probabilities", lambda session, pcm: [0.0])
+        monkeypatch.setattr(svc, "probabilities", lambda session, pcm, deadline=None: [0.0])
 
         await asyncio.gather(
             *(
@@ -306,7 +376,7 @@ class TestConcurrencyBoundsTheExpensiveWork:
 
         monkeypatch.setattr(svc, "_decode_to_pcm16", slow_decode)
         monkeypatch.setattr(svc, "_require_session", lambda: object())
-        monkeypatch.setattr(svc, "probabilities", lambda session, pcm: [0.0])
+        monkeypatch.setattr(svc, "probabilities", lambda session, pcm, deadline=None: [0.0])
         monkeypatch.setattr(svc, "_QUEUE_WAIT_SEC", 0.01)
 
         holder = asyncio.create_task(
@@ -319,6 +389,155 @@ class TestConcurrencyBoundsTheExpensiveWork:
 
         assert caught.value.status_code == 503
         assert "slot" in str(caught.value.detail)
+
+
+class TestResourceCeilings:
+    """Every ceiling must fail loudly at the ceiling, not somewhere past it."""
+
+    async def test_the_deadline_stops_the_inference_thread_itself(self) -> None:
+        """asyncio.wait_for cannot cancel a thread; the loop must stop itself.
+
+        Without the in-loop check, a timeout answered the caller 503 while the
+        worker thread kept a core busy to the end of the recording — with
+        _MAX_CONCURRENCY=1, the freed slot's next request then contended with
+        a computation nobody was waiting for.
+        """
+        import time
+
+        calls = 0
+
+        class _SlowSession:
+            def get_inputs(self):
+                return [type("I", (), {"name": "input"})()]
+
+            def run(self, _none, _feed):
+                nonlocal calls
+                calls += 1
+                time.sleep(0.005)
+                return [0.5]
+
+        total_windows = 400
+        pcm = b"\x00\x00" * (svc.SILERO_CHUNK_SAMPLES * total_windows)
+        with pytest.raises(TimeoutError):
+            svc.probabilities(_SlowSession(), pcm, deadline=time.monotonic() + 0.02)
+        assert calls < total_windows // 4, (
+            f"{calls} windows ran after the deadline — the loop is not checking it"
+        )
+
+    async def test_a_full_tmpfs_answers_507_and_leaks_no_temp_file(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The temp file must die even when writing it is what failed.
+
+        It used to be created outside the try with delete=False: an ENOSPC on
+        the write leaked it permanently, shrinking the very tmpfs whose
+        exhaustion caused the failure — each failed request made the next one
+        more likely to fail.
+        """
+        import tempfile as _tempfile
+
+        from fastapi import HTTPException
+
+        created: list[str] = []
+        real = _tempfile.NamedTemporaryFile
+
+        def _failing(*args: object, **kwargs: object):
+            handle = real(*args, **kwargs)  # type: ignore[arg-type]
+            created.append(handle.name)
+
+            class _Wrapper:
+                name = handle.name
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *exc: object) -> None:
+                    handle.close()
+
+                def write(self, _data: bytes) -> int:
+                    raise OSError(28, "No space left on device")
+
+            return _Wrapper()
+
+        monkeypatch.setattr(svc.shutil, "which", lambda _name: "/usr/bin/ffmpeg")
+        monkeypatch.setattr(svc.tempfile, "NamedTemporaryFile", _failing)
+
+        with pytest.raises(HTTPException) as caught:
+            await svc._decode_to_pcm16(b"bytes", ".wav")
+
+        assert caught.value.status_code == 507
+        assert created, "the failing write must have gone through the wrapper"
+        assert not svc.Path(created[0]).exists(), "the temp file leaked"
+
+    async def test_audio_past_the_duration_cap_is_refused_not_truncated(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A truncated tail would read as "the rest had no speech".
+
+        ffmpeg is capped at _MAX_AUDIO_SEC + 1s; output longer than the cap
+        proves the input kept going, and the honest answer is 422 with the
+        variable to raise — never a silently shortened segment list.
+        """
+        import asyncio as _asyncio
+
+        from fastapi import HTTPException
+
+        cap_sec = 1.0
+        monkeypatch.setattr(svc, "_MAX_AUDIO_SEC", cap_sec)
+        monkeypatch.setattr(svc.shutil, "which", lambda _name: "/usr/bin/ffmpeg")
+
+        class _FakeProcess:
+            returncode = 0
+
+            async def communicate(self):
+                over = int(cap_sec * svc.SILERO_SAMPLE_RATE * 2) + 2
+                return b"\x00" * over, b""
+
+            def kill(self) -> None: ...
+
+            async def wait(self) -> None: ...
+
+        async def _fake_exec(*args: object, **kwargs: object) -> _FakeProcess:
+            assert "-t" in [str(a) for a in args], "the ffmpeg cap flag went missing"
+            return _FakeProcess()
+
+        monkeypatch.setattr(_asyncio, "create_subprocess_exec", _fake_exec)
+
+        with pytest.raises(HTTPException) as caught:
+            await svc._decode_to_pcm16(b"bytes", ".wav")
+
+        assert caught.value.status_code == 422
+        assert "SILERO_VAD_MAX_AUDIO_SEC" in str(caught.value.detail)
+
+    async def test_an_oversized_upload_is_refused_before_being_copied(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """UploadFile.size is the spooled truth; reject on it, not after read().
+
+        Reading first would materialise a second copy of an upload we already
+        know we are going to refuse.
+        """
+        import io
+
+        from fastapi import HTTPException
+        from starlette.datastructures import Headers, UploadFile
+
+        monkeypatch.setattr(svc, "_require_session", lambda: object())
+
+        class _MustNotRead(io.BytesIO):
+            def read(self, *_a: object) -> bytes:  # type: ignore[override]
+                raise AssertionError("the oversized upload was read anyway")
+
+        upload = UploadFile(
+            filename="big.wav",
+            file=_MustNotRead(b""),
+            size=svc._MAX_UPLOAD_BYTES + 1,
+            headers=Headers({"content-type": "audio/wav"}),
+        )
+        with pytest.raises(HTTPException) as caught:
+            await svc.segment(audio=upload, min_segment_sec=0.5, max_segment_sec=30.0)
+
+        assert caught.value.status_code == 413
 
 
 class TestTheContainerCanActuallyStart:

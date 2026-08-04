@@ -41,6 +41,7 @@ import logging
 import os
 import shutil
 import tempfile
+import time
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -75,13 +76,25 @@ MIN_SILENCE_SEC = 0.35
 #: a window or two into the speech; without padding the first phoneme is cut.
 SPEECH_PAD_SEC = 0.10
 
-_MAX_UPLOAD_BYTES = int(os.getenv("SILERO_VAD_MAX_UPLOAD_BYTES", str(512 * 1024 * 1024)))
+#: Ceiling on one upload. The same bytes occupy /tmp twice while a request is
+#: in flight -- Starlette spools the multipart part there, and the decoder
+#: writes its own copy for ffmpeg -- so the container's 512m tmpfs supports at
+#: most half its size per upload. Raise SILERO_VAD_MAX_UPLOAD_BYTES and the
+#: compose tmpfs together, keeping tmpfs >= 2x this value.
+_MAX_UPLOAD_BYTES = int(os.getenv("SILERO_VAD_MAX_UPLOAD_BYTES", str(256 * 1024 * 1024)))
+#: Ceiling on decoded audio duration. Decoded PCM is 32 kB per second and the
+#: inference loop holds a float32 copy on top (2x), all in memory: three hours
+#: is ~346 MB + ~692 MB. Longer input is refused, never silently truncated --
+#: a truncated tail would look exactly like "the rest of the recording had no
+#: speech". Split the recording or raise SILERO_VAD_MAX_AUDIO_SEC.
+_MAX_AUDIO_SEC = float(os.getenv("SILERO_VAD_MAX_AUDIO_SEC", str(3 * 60 * 60)))
 _DECODE_TIMEOUT_SEC = float(os.getenv("SILERO_VAD_DECODE_TIMEOUT_SEC", "300"))
 #: Wall-clock ceiling on one inference. The adapter's own read timeout is 30s
 #: (vad_silero._DEFAULT_TIMEOUT); anything past that is a client-side failure
-#: with the server still holding the single concurrency slot. Failing fast here
-#: turns "the next request queues behind a run nobody is waiting for" into an
-#: honest 503.
+#: with the server still holding the single concurrency slot. The deadline is
+#: passed INTO the inference loop, so on expiry the worker thread itself stops
+#: -- asyncio.wait_for alone would answer 503 while the uncancellable
+#: to_thread call kept the CPU busy for a client that already gave up.
 _INFER_TIMEOUT_SEC = float(os.getenv("SILERO_VAD_INFER_TIMEOUT_SEC", "25"))
 _MAX_CONCURRENCY = int(os.getenv("SILERO_VAD_MAX_CONCURRENCY", "1"))
 #: How long a request waits for the concurrency slot before giving up. Bounded
@@ -111,6 +124,18 @@ def _model_path() -> str:
 def _load_session() -> Any:
     """Create the ONNX session. Raises on failure; the caller maps it to 503."""
 
+    path = _model_path()
+    if not Path(path).is_file():
+        # Checked before the onnxruntime import, for two reasons: the missing
+        # file is the operator's most likely state (a fresh deployment before
+        # the documented curl) and deserves an error that names the path and
+        # the fix, not provider noise; and environments without onnxruntime --
+        # the API image, this test suite -- can still exercise this branch.
+        raise FileNotFoundError(
+            f"model file not found: {path} -- supply it via SILERO_VAD_MODEL_FILE, "
+            "see .env.example for the one-line curl"
+        )
+
     import onnxruntime  # imported lazily: absent from the API image
 
     options = onnxruntime.SessionOptions()
@@ -129,6 +154,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Load the model at startup so the first caller does not pay for it."""
 
     global _session, _load_error
+    # Reset both: a stale error from a previous load attempt in this process
+    # must not survive a successful one, or /health reports a phantom failure.
+    _session = None
+    _load_error = None
     try:
         _session = await asyncio.to_thread(_load_session)
         logger.info("Silero VAD model loaded from %s", _model_path())
@@ -172,10 +201,20 @@ async def _decode_to_pcm16(raw: bytes, suffix: str) -> bytes:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="ffmpeg is not available in this image",
         )
-    with tempfile.NamedTemporaryFile(suffix=suffix or ".bin", delete=False) as handle:
-        handle.write(raw)
-        source = handle.name
+    # The temp file is created inside the try so the finally can always unlink
+    # it: created outside, a failed write (ENOSPC on the tmpfs) leaked the file
+    # forever, shrinking the very filesystem that caused the failure.
+    source: str | None = None
     try:
+        try:
+            with tempfile.NamedTemporaryFile(suffix=suffix or ".bin", delete=False) as handle:
+                source = handle.name
+                handle.write(raw)
+        except OSError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_507_INSUFFICIENT_STORAGE,
+                detail="temp storage exhausted; retry when in-flight uploads drain",
+            ) from exc
         process = await asyncio.create_subprocess_exec(
             "ffmpeg",
             "-nostdin",
@@ -183,6 +222,11 @@ async def _decode_to_pcm16(raw: bytes, suffix: str) -> bytes:
             "error",
             "-i",
             source,
+            # One second past the cap, not the cap itself: the length check
+            # below must distinguish "exactly at the limit" (fine) from
+            # "ffmpeg stopped because the input kept going" (refused).
+            "-t",
+            str(_MAX_AUDIO_SEC + 1.0),
             "-f",
             "s16le",
             "-acodec",
@@ -212,19 +256,33 @@ async def _decode_to_pcm16(raw: bytes, suffix: str) -> bytes:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"cannot decode audio: {stderr.decode('utf-8', 'replace')[:200]}",
             )
+        if len(stdout) > int(_MAX_AUDIO_SEC) * SILERO_SAMPLE_RATE * 2:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=(
+                    f"audio exceeds {_MAX_AUDIO_SEC:.0f}s; split the recording "
+                    "or raise SILERO_VAD_MAX_AUDIO_SEC"
+                ),
+            )
         return stdout
     finally:
-        with contextlib.suppress(OSError):
-            Path(source).unlink()
+        if source is not None:
+            with contextlib.suppress(OSError):
+                Path(source).unlink()
 
 
-def probabilities(session: Any, pcm: bytes) -> list[float]:
+def probabilities(session: Any, pcm: bytes, deadline: float | None = None) -> list[float]:
     """Speech probability per 512-sample window, LSTM state carried across.
 
     Mirrors ``streaming_vad_silero._run_onnx``: same input-name tolerance, same
     (prob, h, c) output convention, same normalisation. A trailing partial
     window is zero-padded rather than dropped, so the tail of a recording is
     never silently discarded.
+
+    ``deadline`` is a ``time.monotonic()`` instant. It is checked between
+    windows because this function runs in a thread ``asyncio.wait_for`` cannot
+    cancel: without the check, a timeout answers the caller 503 while the loop
+    keeps a core busy to the end of the recording anyway.
     """
 
     import numpy as np
@@ -246,6 +304,10 @@ def probabilities(session: Any, pcm: bytes) -> list[float]:
 
     out: list[float] = []
     for offset in range(0, len(samples), SILERO_CHUNK_SAMPLES):
+        if deadline is not None and time.monotonic() > deadline:
+            raise TimeoutError(
+                f"inference deadline passed at window {offset // SILERO_CHUNK_SAMPLES}"
+            )
         window = samples[offset : offset + SILERO_CHUNK_SAMPLES]
         if len(window) < SILERO_CHUNK_SAMPLES:
             window = np.pad(window, (0, SILERO_CHUNK_SAMPLES - len(window)))
@@ -322,12 +384,20 @@ async def segment(
     """Segment one recording. Field names are the adapter's, not ours to choose."""
 
     session = _require_session()
+    # UploadFile.size is the spooled part's real size -- checking it before
+    # read() refuses an oversized upload without materialising a second copy
+    # of it in this process.
+    if audio.size is not None and audio.size > _MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail=f"audio exceeds {_MAX_UPLOAD_BYTES} bytes",
+        )
     raw = await audio.read()
     if not raw:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="empty audio upload")
     if len(raw) > _MAX_UPLOAD_BYTES:
         raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail=f"audio exceeds {_MAX_UPLOAD_BYTES} bytes",
         )
     if min_segment_sec <= 0 or max_segment_sec <= min_segment_sec:
@@ -356,13 +426,18 @@ async def segment(
     try:
         pcm = await _decode_to_pcm16(raw, suffix)
         try:
+            # Belt and braces: wait_for answers the caller promptly, and the
+            # deadline inside the loop stops the worker thread itself -- the
+            # thread is otherwise uncancellable and would keep computing for a
+            # client that already gave up.
             probs = await asyncio.wait_for(
-                asyncio.to_thread(probabilities, session, pcm),
+                asyncio.to_thread(
+                    probabilities, session, pcm, time.monotonic() + _INFER_TIMEOUT_SEC
+                ),
                 timeout=_INFER_TIMEOUT_SEC,
             )
         except TimeoutError:
             # The adapter has already given up (its read timeout is shorter).
-            # Returning frees the slot instead of holding it for a dead client.
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=(

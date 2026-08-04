@@ -679,8 +679,11 @@ services:
         read_only: true
     read_only: true
     tmpfs:
-      # ffmpeg decodes the upload here before inference. 512m covers an hour of
-      # 16 kHz mono PCM (~115 MB) with room for the source container alongside.
+      # The upload lands here twice while a request is in flight: Starlette
+      # spools the multipart part, and the service writes its own copy for
+      # ffmpeg. Decoded PCM never touches /tmp -- it comes back over a pipe.
+      # So tmpfs must be >= 2x SILERO_VAD_MAX_UPLOAD_BYTES (default 256 MiB);
+      # raise them together.
       - /tmp:rw,noexec,nosuid,size=512m
     ports:
       - "${COMPOSE_PRIVATE_BIND_HOST:-127.0.0.1}:${SILERO_VAD_HOST_PORT:-18008}:8008"
