@@ -21,8 +21,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY pyproject.toml README.md ./
 COPY audio_graphy ./audio_graphy
 
+# Optional extras, empty by default. The optimizer worker runs its builtin and
+# builtin_grounded compilers on the base install; "[optimizer]" is only needed once a
+# DSPy-native compiler is wired, and it pulls litellm plus the provider SDK tree that
+# the API image has no reason to carry.
+ARG EXTRAS=""
+
 RUN pip install --upgrade pip && \
-    pip install --prefix=/install .
+    pip install --prefix=/install ".${EXTRAS}"
 
 # --- runtime ---------------------------------------------------------
 FROM python:3.13-slim AS runtime

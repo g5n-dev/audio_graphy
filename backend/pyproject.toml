@@ -67,6 +67,17 @@ dev = [
     "ipython>=8.29.0",
 ]
 
+# Installed only by the optimizer-worker image. The API image must never carry
+# these: dspy pulls litellm, which pulls the whole provider-SDK tree, and none of
+# it is reachable from a request handler.
+optimizer = [
+    "dspy>=3.2,<4",
+    # Upstream has been quiet since 2025-03 and declares no 3.13 classifier; it does
+    # resolve and run on 3.13 (verified with uv pip compile + a real loop), but it
+    # drags in datasets/pyarrow/pandas, which is why this is not a base dependency.
+    "textgrad>=0.1.8,<0.2",
+]
+
 [build-system]
 requires = ["setuptools>=75.0", "wheel"]
 build-backend = "setuptools.build_meta"
@@ -186,6 +197,10 @@ module = [
     "onnxruntime.*",
     "leidenalg.*",
     "igraph.*",
+    # Optimizer extras, installed only by the optimizer-worker image.
+    "dspy.*",
+    "litellm.*",
+    "textgrad.*",
 ]
 ignore_missing_imports = true
 
@@ -227,6 +242,11 @@ filterwarnings = [
     "error",
     "ignore::DeprecationWarning:apscheduler.*",
     "ignore::DeprecationWarning:passlib.*",
+    # litellm warns at import time, so on a machine with the optimizer extras
+    # installed this would turn "DSPy is available" into a suite-wide failure.
+    # audio_graphy.optimizers.availability probes metadata to avoid the import
+    # entirely; this covers the one place that genuinely has to import it.
+    "ignore::DeprecationWarning:litellm.*",
 ]
 
 # ============================================================
@@ -241,6 +261,13 @@ omit = [
     "*/alembic/*",
     "*/audio_graphy/adapters/mock_data/*",
     "*/audio_graphy/__init__.py",
+    # Vendor adapters that cannot be imported without the optimizer extras, which
+    # CI does not install -- unmeasured they would read as 0% and drag the gate
+    # down. They are safe to exclude only because they are kept free of logic:
+    # every decision lives in optimizers/lm_bridge.py, which is always testable.
+    # Adding anything but forwarding to these files breaks that bargain.
+    "*/audio_graphy/optimizers/dspy_bridge.py",
+    "*/audio_graphy/optimizers/textgrad_bridge.py",
 ]
 
 [tool.coverage.report]

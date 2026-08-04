@@ -274,6 +274,50 @@ services:
       - audiography_net
     command: ["python", "-m", "audio_graphy.tag_worker"]
 
+  # Offline prompt compilation. Shares the queue with tag-worker but claims a
+  # disjoint job type, so running one without the other is safe -- prompt_compile
+  # jobs simply wait. Behind a profile because a deployment that never opens
+  # /prompt-lab has nothing for it to do.
+  #
+  # Build with EXTRAS="[optimizer]" once a DSPy-native compiler is wired; the
+  # builtin and builtin_grounded compilers need nothing beyond the base image.
+  optimizer-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      args:
+        EXTRAS: ${OPTIMIZER_EXTRAS:-}
+    container_name: audiography-optimizer-worker
+    profiles: ["prompt-lab"]
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      ADAPTER_MODE: ${ADAPTER_MODE:-mock}
+      ADAPTER_LLM_MODE: ${ADAPTER_LLM_MODE:-mock}
+      OPENAI_BASE_URL_STRONG: ${OPENAI_BASE_URL_STRONG:-http://vllm-strong:8000/v1}
+      OPENAI_BASE_URL_WEAK: ${OPENAI_BASE_URL_WEAK:-http://vllm-weak:8000/v1}
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      LLM_HOT_CACHE_BACKEND: ${LLM_HOT_CACHE_BACKEND:-auto}
+      REDIS_URL: ${REDIS_URL:-}
+      WORKING_DIR: /data/working_dir
+    volumes:
+      - ./backend:/app
+      - working_dir:/data/working_dir
+      - master_key:/run/secrets:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+      master-key-init:
+        condition: service_completed_successfully
+      mysql:
+        condition: service_healthy
+    networks:
+      - audiography_net
+    command: ["python", "-m", "audio_graphy.optimizer_worker"]
+
   frontend:
     build:
       context: ./frontend
