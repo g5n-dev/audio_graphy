@@ -201,6 +201,104 @@ describe("EvolutionPanel", () => {
     expect(screen.getByText("退化 2")).toBeVisible();
   });
 
+  it("renders the sealed-holdout verdict and a deployment CTA on passed completed runs", async () => {
+    mocks.runs.mockResolvedValue({
+      items: [
+        {
+          id: 74,
+          status: "completed",
+          phase: "completed",
+          baseline_tagger_version_id: 42,
+          baseline_version: "harness-2.3",
+          candidate_tagger_version_id: 45,
+          winner_tagger_version_id: 45,
+          candidate_version: "harness-2.4",
+          gold_set_version_id: 7,
+          cohort: { source: "eligible_feedback" },
+          objective: { policy: "balanced" },
+          search_budget: { max_trials: 24, sealed_holdout_queries: 1 },
+          trigger: "manual",
+          summary: {
+            completed_trials: 24,
+            trial_count: 24,
+            evaluation_run_id: 91,
+            holdout_passed: true,
+          },
+          next_actions: ["start_shadow_deployment"],
+          created_at: "2026-07-25T06:00:00Z",
+          updated_at: "2026-07-25T08:00:00Z",
+        },
+      ],
+      total: 1,
+    });
+    renderPanel();
+
+    expect(await screen.findByText("Sealed Holdout 通过")).toBeVisible();
+    expect(screen.getByText("评估 #91")).toBeVisible();
+    expect(
+      screen.getByRole("link", { name: "创建影子部署" }),
+    ).toHaveAttribute(
+      "href",
+      "#/tag-governance?tab=deployments&deploy_evaluation_id=91",
+    );
+    expect(
+      screen.getByRole("link", { name: "harness-2.4" }),
+    ).toHaveAttribute("href", "#/tag-governance?tab=taggers");
+  });
+
+  it("explains a failed sealed holdout and reopens the optimizer with the same cohort", async () => {
+    const user = userEvent.setup();
+    mocks.runs.mockResolvedValue({
+      items: [
+        {
+          id: 75,
+          status: "completed",
+          phase: "completed",
+          baseline_tagger_version_id: 42,
+          candidate_tagger_version_id: 46,
+          winner_tagger_version_id: null,
+          candidate_version: "harness-2.5-c2",
+          gold_set_version_id: 7,
+          cohort: {
+            source: "tag_insights",
+            filters: { store_ids: ["S9"] },
+          },
+          objective: { policy: "balanced" },
+          search_budget: { max_trials: 24, sealed_holdout_queries: 1 },
+          trigger: "insight",
+          summary: {
+            completed_trials: 24,
+            trial_count: 24,
+            evaluation_run_id: 92,
+            holdout_passed: false,
+          },
+          next_actions: ["inspect_regressions", "create_new_optimization_run"],
+          failure_reason: "关键召回下降超出硬门禁",
+          created_at: "2026-07-25T06:00:00Z",
+          updated_at: "2026-07-25T08:00:00Z",
+        },
+      ],
+      total: 1,
+    });
+    renderPanel();
+
+    expect(await screen.findByText("Sealed Holdout 未通过")).toBeVisible();
+    expect(screen.getByText("关键召回下降超出硬门禁")).toBeVisible();
+    expect(
+      screen.queryByRole("link", { name: "创建影子部署" }),
+    ).not.toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("button", { name: "基于运行 75 重新优化" }),
+    );
+    const dialog = await screen.findByRole("dialog", {
+      name: "启动自进化优化",
+    });
+    // 重新优化沿用失败运行的 cohort，让重跑针对同一批反馈样本。
+    expect(dialog).toHaveTextContent("来自标签洞察");
+    expect(within(dialog).getByText("门店 S9")).toBeVisible();
+  });
+
   it("asks for explicit confirmation before cancelling an active run", async () => {
     const user = userEvent.setup();
     renderPanel();

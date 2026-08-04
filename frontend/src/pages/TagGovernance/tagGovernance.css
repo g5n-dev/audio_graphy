@@ -781,6 +781,36 @@
   border-color: #f2cbd0;
 }
 
+.ag-evaluation-lane {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 18px 15px;
+  padding: 9px 12px;
+  border: 1px solid;
+  border-radius: 8px;
+  font-size: 13.5px;
+}
+
+.ag-evaluation-lane.is-challenge {
+  color: #8a5a00;
+  background: #fff8ea;
+  border-color: #f0dfb4;
+}
+
+.ag-evaluation-lane.is-holdout {
+  color: #0f5c8f;
+  background: #f0f8ff;
+  border-color: #c9e4f7;
+}
+
+.ag-evaluation-lane a {
+  flex: 0 0 auto;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
 .ag-gate-list {
   padding: 3px 18px 15px;
 }
@@ -2389,6 +2419,38 @@
   margin: 2px 0 0;
   color: #7c899e;
   font-size: 13px;
+}
+
+.ag-optimization-outcome {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 9px;
+  margin-top: 11px;
+  padding-top: 11px;
+  border-top: 1px solid #e4ebf5;
+  color: #51617c;
+  font-size: 13px;
+}
+
+.ag-optimization-outcome .ag-gate-badge {
+  font-size: 12.5px;
+  padding: 3px 8px;
+}
+
+.ag-optimization-outcome a {
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.ag-optimization-outcome button {
+  padding: 3px 9px;
+  color: #245cce;
+  background: #fff;
+  border: 1px solid #c4d4f2;
+  border-radius: 5px;
+  font-size: 13px;
+  cursor: pointer;
 }
 
 .ag-optimization-run-actions {

@@ -144,6 +144,23 @@ describe("GovernanceActions", () => {
     );
   });
 
+  it("surfaces the server-issued batch id so gold-set freezing can reference it", async () => {
+    const user = userEvent.setup();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+    renderActions();
+    await user.click(screen.getByRole("button", { name: "创建复核批次" }));
+
+    // 金标冻结要求填写复核批次 ID，而这个 ID 只在创建响应里返回一次，
+    // 因此成功反馈必须把它展示出来并支持复制。
+    expect(await screen.findByText("batch-1")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "复制批次 ID" }));
+    expect(writeText).toHaveBeenCalledWith("batch-1");
+  });
+
   it("creates an idempotent scoped rerun and links to progress", async () => {
     const user = userEvent.setup();
     renderActions();

@@ -147,6 +147,29 @@ describe("TagRunDetailPage", () => {
     expect(await screen.findByText("重试任务已进入队列")).toBeVisible();
   });
 
+  it("keeps manual retry enabled after attempt exhaustion and relabels it as a reset", async () => {
+    const user = userEvent.setup();
+    // 终态 failed 恰好在 attempt_count == max_attempts 时产生；服务端
+    // retry_job 会把尝试归零，所以按钮必须保持可用。
+    mockedGet.mockResolvedValueOnce({
+      ...RUN,
+      status: "failed",
+      attempt_count: 3,
+      max_attempts: 3,
+      last_error_code: "MODEL_TIMEOUT",
+      last_error_message: "模型超时",
+    });
+    renderPage();
+
+    const retryButton = await screen.findByRole("button", {
+      name: "重置尝试并重试",
+    });
+    expect(retryButton).toBeEnabled();
+    await user.click(retryButton);
+    await waitFor(() => expect(mockedRetry).toHaveBeenCalledWith(88));
+    expect(await screen.findByText("重试任务已进入队列")).toBeVisible();
+  });
+
   it("keeps retry available when a failed worker did not persist an error message", async () => {
     mockedGet.mockResolvedValueOnce({
       ...RUN,

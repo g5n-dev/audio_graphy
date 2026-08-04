@@ -128,6 +128,34 @@ function canResumeDriftDeployment(deployment: TagDeployment): boolean {
   );
 }
 
+/**
+ * 部署是否可引用这次评估：后端 create_deployment 要求
+ * metrics.evaluation_lane === "holdout" 且 sealed_release === true。
+ * 公开「运行评估」永远走 challenge 通道，产出天然不满足该条件。
+ */
+function isSealedHoldoutEvaluation(evaluation: TagEvaluation): boolean {
+  return (
+    evaluation.metrics.evaluation_lane === "holdout" &&
+    evaluation.metrics.sealed_release === true
+  );
+}
+
+/**
+ * 把部署冲突翻译给操作员。后端 `_domain` 把所有领域冲突都映射成同一个
+ * TAG_GOVERNANCE_CONFLICT / 409，所以「评估未走密封 Holdout」这类创建冲突
+ * 只能按 message 识别——否则会被误标成「修订号过期」，把操作员引去刷新。
+ */
+function deploymentOperationErrorCopy(error: unknown): string {
+  const message = getErrorMessage(error, "部署操作失败");
+  if (getErrorStatus(error) === 409 && /sealed holdout/i.test(message)) {
+    return (
+      "该评估不是发布服务在密封 Holdout 上运行的结果，challenge 验证结果" +
+      "不能用于部署。请在自进化面板产生候选，待其密封评估通过后再创建部署。"
+    );
+  }
+  return message;
+}
+
 function parseOptimizationCohort(
   value: string | null,
 ): TagOptimizationSourceCohort | null {
@@ -1519,6 +1547,39 @@ function EvaluationsPanel({
                     </div>
                   ))}
                 </div>
+                {/* 评估通道决定结果能不能进入发布：challenge 结果后端会
+                    409 拒绝部署，所以在卡片上就说明去向，别等到部署报错。 */}
+                {!evaluationPending &&
+                  (isSealedHoldoutEvaluation(evaluation) ? (
+                    evaluation.passed ? (
+                      <footer className="ag-evaluation-lane is-holdout">
+                        <span>
+                          Sealed Holdout 评估已通过，可进入受控发布。
+                        </span>
+                        <Link
+                          to={`/tag-governance?tab=deployments&deploy_evaluation_id=${evaluation.id}`}
+                        >
+                          创建影子部署
+                        </Link>
+                      </footer>
+                    ) : (
+                      <footer className="ag-evaluation-lane is-holdout">
+                        <span>
+                          Sealed Holdout 评估未通过，该候选不能部署。
+                        </span>
+                      </footer>
+                    )
+                  ) : (
+                    <footer className="ag-evaluation-lane is-challenge">
+                      <span>
+                        Challenge 验证通道：仅验证结果，不能直接用于部署，
+                        请走自进化产生候选。
+                      </span>
+                      <Link to="/tag-governance?tab=evolution">
+                        前往自进化
+                      </Link>
+                    </footer>
+                  ))}
               </article>
             );
           })}
@@ -1571,17 +1632,22 @@ function deploymentStep(status: TagDeployment["status"]): number {
 
 function DeploymentDialog({
   taggerVersions,
+  initialEvaluationId = null,
+  serverError = null,
   onClose,
   onCreate,
   pending,
 }: {
   taggerVersions: TaggerVersion[];
+  /** 从评估卡片 / 自进化 CTA 带过来的密封评估 ID，避免人工二次抄录。 */
+  initialEvaluationId?: string | null;
+  serverError?: unknown;
   onClose: () => void;
   onCreate: (body: CreateTagDeploymentRequest) => void;
   pending: boolean;
 }) {
   const [taggerVersionId, setTaggerVersionId] = useState("");
-  const [evaluationId, setEvaluationId] = useState("");
+  const [evaluationId, setEvaluationId] = useState(initialEvaluationId ?? "");
   const [baselineVersionId, setBaselineVersionId] = useState("");
   const [error, setError] = useState<string | null>(null);
 
@@ -1708,6 +1774,13 @@ function DeploymentDialog({
           {error && (
             <p className="ag-inline-feedback is-error" role="alert">
               {error}
+            </p>
+          )}
+          {/* 服务端拒绝要在对话框里就地解释：创建失败时对话框不会关闭，
+              渲染在其背后的面板错误条会被遮住。 */}
+          {!error && serverError !== null && serverError !== undefined && (
+            <p className="ag-inline-feedback is-error" role="alert">
+              {deploymentOperationErrorCopy(serverError)}
             </p>
           )}
           <footer>
@@ -2203,6 +2276,7 @@ function DeploymentsPanel({
   error,
   onRetry,
   isAdmin,
+  initialEvaluationId = null,
 }: {
   items: TagDeployment[];
   taggerVersions: TaggerVersion[];
@@ -2210,6 +2284,8 @@ function DeploymentsPanel({
   error: unknown;
   onRetry: () => void;
   isAdmin: boolean;
+  /** 评估卡片 / 自进化 CTA 通过 deploy_evaluation_id 深链预填的评估 ID。 */
+  initialEvaluationId?: string | null;
 }) {
   const queryClient = useQueryClient();
   const [dialog, setDialog] = useState<
@@ -2217,7 +2293,10 @@ function DeploymentsPanel({
     | { kind: "rollback"; deploymentId: number; revision: number }
     | { kind: "resume"; deploymentId: number; revision: number }
     | null
-  >(null);
+  >(isAdmin && initialEvaluationId ? { kind: "create" } : null);
+  useEffect(() => {
+    if (isAdmin && initialEvaluationId) setDialog({ kind: "create" });
+  }, [initialEvaluationId, isAdmin]);
   const [success, setSuccess] = useState<string | null>(null);
   const refresh = () =>
     Promise.all([
@@ -2277,11 +2356,13 @@ function DeploymentsPanel({
       void refresh();
     },
   });
+  // 修订号 CAS 只存在于 approve / rollback；创建部署的 409 是领域冲突
+  // （最常见：评估不是密封 Holdout），绝不能套用「修订号过期」的解释。
+  const revisionActionError = approveMutation.error ?? rollbackMutation.error;
   const operationError =
-    createMutation.error ??
-    approveMutation.error ??
-    rollbackMutation.error;
-  const staleRevision = getErrorStatus(operationError) === 409;
+    revisionActionError ??
+    (dialog?.kind !== "create" ? createMutation.error : null);
+  const staleRevision = getErrorStatus(revisionActionError) === 409;
   const refreshStaleDeployment = () => {
     approveMutation.reset();
     rollbackMutation.reset();
@@ -2303,7 +2384,13 @@ function DeploymentsPanel({
           </span>
         </div>
         {isAdmin && (
-          <button type="button" onClick={() => setDialog({ kind: "create" })}>
+          <button
+            type="button"
+            onClick={() => {
+              createMutation.reset();
+              setDialog({ kind: "create" });
+            }}
+          >
             创建影子部署
           </button>
         )}
@@ -2317,7 +2404,7 @@ function DeploymentsPanel({
         <p className="ag-inline-feedback is-error" role="alert">
           {staleRevision
             ? "部署已被其他操作更新，当前修订号已过期。刷新后再执行，避免覆盖并发变更。"
-            : getErrorMessage(operationError, "部署操作失败")}
+            : deploymentOperationErrorCopy(operationError)}
           {staleRevision && (
             <button type="button" onClick={refreshStaleDeployment}>
               刷新部署状态
@@ -2492,8 +2579,13 @@ function DeploymentsPanel({
       {isAdmin && dialog?.kind === "create" && (
         <DeploymentDialog
           taggerVersions={taggerVersions}
+          initialEvaluationId={initialEvaluationId}
+          serverError={createMutation.error}
           pending={createMutation.isPending}
-          onClose={() => setDialog(null)}
+          onClose={() => {
+            createMutation.reset();
+            setDialog(null);
+          }}
           onCreate={(body) => createMutation.mutate(body)}
         />
       )}
@@ -2616,6 +2708,12 @@ export default function TagGovernancePage() {
     () => parseOptimizationCohort(searchParams.get("cohort")),
     [searchParams],
   );
+  // 评估卡片与自进化 CTA 用 deploy_evaluation_id 深链预填部署对话框；
+  // 只接受正整数，深链被篡改时静默回落到空表单。
+  const deployEvaluationId = useMemo(() => {
+    const raw = searchParams.get("deploy_evaluation_id");
+    return raw && /^[1-9]\d{0,15}$/.test(raw) ? raw : null;
+  }, [searchParams]);
 
   const schemasQuery = useQuery({
     queryKey: ["tag-governance", "schemas"],
@@ -2773,6 +2871,7 @@ export default function TagGovernancePage() {
             error={deploymentsQuery.error}
             onRetry={() => void deploymentsQuery.refetch()}
             isAdmin={isAdmin}
+            initialEvaluationId={deployEvaluationId}
           />
         )}
         {activeTab === "evolution" && (

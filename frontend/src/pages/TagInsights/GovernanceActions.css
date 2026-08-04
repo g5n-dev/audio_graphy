@@ -158,6 +158,30 @@
   font-weight: 700;
 }
 
+.ag-insight-action-feedback__batch {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.ag-insight-action-feedback__batch code {
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: #ffffff;
+  border: 1px solid #c8eee0;
+  font-size: 12.5px;
+}
+
+.ag-insight-action-feedback__batch button {
+  padding: 2px 9px;
+  border: 1px solid #9adcc4;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #08785a;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
 .ag-insight-dialog-backdrop {
   position: fixed;
   z-index: 1100;

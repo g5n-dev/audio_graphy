@@ -462,15 +462,19 @@ export default function TagRunDetailPage() {
             <small>{job.last_error_code || "UNKNOWN_ERROR"}</small>
           </span>
           {failed && (
+            // 终态 failed 恰好在尝试耗尽时产生，而服务端 retry_job 会把
+            // attempt_count 归零后重新入队——人工重试正是尝试耗尽后的设计
+            // 恢复路径，所以这里不能按 attempt_count 禁用按钮。
             <button
               type="button"
-              disabled={
-                retryMutation.isPending ||
-                job.attempt_count >= job.max_attempts
-              }
+              disabled={retryMutation.isPending}
               onClick={() => retryMutation.mutate()}
             >
-              {retryMutation.isPending ? "正在重试…" : "重试运行"}
+              {retryMutation.isPending
+                ? "正在重试…"
+                : job.attempt_count >= job.max_attempts
+                  ? "重置尝试并重试"
+                  : "重试运行"}
             </button>
           )}
         </section>

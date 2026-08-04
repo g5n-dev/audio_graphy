@@ -631,11 +631,14 @@ function OptimizationRuns({
   isAdmin,
   cancellingRunId,
   onCancel,
+  onReoptimize,
 }: {
   items: TagOptimizationRun[];
   isAdmin: boolean;
   cancellingRunId: number | null;
   onCancel: (runId: number) => void;
+  /** Holdout 未通过时的恢复路径：带原 cohort 重新打开优化对话框。 */
+  onReoptimize: (run: TagOptimizationRun) => void;
 }) {
   return (
     <section className="ag-evolution-section">
@@ -670,14 +673,35 @@ function OptimizationRuns({
               run.winner_tagger_version_id ??
               run.candidate_tagger_version_id ??
               null;
+            const candidateLabel =
+              run.candidate_version ??
+              (candidateId ? `候选 #${candidateId}` : "候选搜索中");
+            // 密封 Holdout 结论由服务端写进 summary（tag_evaluator 完成时落
+            // winner / evaluation_run_id / holdout_passed），完成卡必须把
+            // 结论和下一步动作渲染出来，而不是只留一个候选编号。
+            const holdoutPassed =
+              typeof run.summary.holdout_passed === "boolean"
+                ? run.summary.holdout_passed
+                : null;
+            const evaluationRunId = numericSummary(
+              run.summary,
+              "evaluation_run_id",
+            );
             return (
               <article key={run.id}>
                 <header>
                   <div>
                     <span className="ag-card-kicker">运行 #{run.id}</span>
                     <h3>
-                      {run.candidate_version ??
-                        (candidateId ? `候选 #${candidateId}` : "候选搜索中")}
+                      {candidateId !== null ? (
+                        // 原生 a + hash 链接：本面板可脱离 Router 渲染，见
+                        // 上方提示词实验室入口的说明。
+                        <a href="#/tag-governance?tab=taggers">
+                          {candidateLabel}
+                        </a>
+                      ) : (
+                        candidateLabel
+                      )}
                     </h3>
                     <p>
                       基线 #{run.baseline_tagger_version_id}
@@ -763,6 +787,53 @@ function OptimizationRuns({
                     </div>
                   </>
                 )}
+                {run.status === "completed" && holdoutPassed !== null && (
+                  <footer
+                    className="ag-optimization-outcome"
+                    aria-label={`优化运行 ${run.id} 密封评估结论`}
+                  >
+                    <span
+                      className={`ag-gate-badge ${
+                        holdoutPassed ? "is-pass" : "is-fail"
+                      }`}
+                      role="status"
+                    >
+                      {holdoutPassed
+                        ? "Sealed Holdout 通过"
+                        : "Sealed Holdout 未通过"}
+                    </span>
+                    {holdoutPassed ? (
+                      <>
+                        {evaluationRunId !== null && (
+                          <span>评估 #{evaluationRunId}</span>
+                        )}
+                        {evaluationRunId !== null && (
+                          <a
+                            href={`#/tag-governance?tab=deployments&deploy_evaluation_id=${evaluationRunId}`}
+                          >
+                            创建影子部署
+                          </a>
+                        )}
+                      </>
+                    ) : (
+                      <>
+                        <span>
+                          {run.failure_reason ??
+                            "候选未通过密封 Holdout 门禁，不能进入发布。"}
+                        </span>
+                        {isAdmin && (
+                          <button
+                            type="button"
+                            aria-label={`基于运行 ${run.id} 重新优化`}
+                            onClick={() => onReoptimize(run)}
+                          >
+                            重新优化
+                          </button>
+                        )}
+                      </>
+                    )}
+                  </footer>
+                )}
               </article>
             );
           })}
@@ -783,6 +854,9 @@ export function EvolutionPanel({
   );
   const [cancelRunId, setCancelRunId] = useState<number | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  // 「重新优化」沿用失败运行的 cohort，让重跑针对同一批反馈样本。
+  const [reoptimizeCohort, setReoptimizeCohort] =
+    useState<TagOptimizationSourceCohort | null>(null);
   const cohort = useMemo<TagOptimizationSourceCohort>(
     () => initialCohort ?? { source: "eligible_feedback" },
     [initialCohort],
@@ -816,6 +890,7 @@ export function EvolutionPanel({
       createTagOptimizationRun(body),
     onSuccess: (run) => {
       setDialogOpen(false);
+      setReoptimizeCohort(null);
       setSuccess(
         run.summary.coverage_gate_passed === false
           ? `优化运行 #${run.id} 未启动：可信反馈覆盖不足`
@@ -876,6 +951,7 @@ export function EvolutionPanel({
               onClick={() => {
                 setSuccess(null);
                 createMutation.reset();
+                setReoptimizeCohort(null);
                 setDialogOpen(true);
               }}
             >
@@ -922,15 +998,22 @@ export function EvolutionPanel({
           setSuccess(null);
           setCancelRunId(runId);
         }}
+        onReoptimize={(run) => {
+          setSuccess(null);
+          createMutation.reset();
+          setReoptimizeCohort(run.cohort);
+          setDialogOpen(true);
+        }}
       />
       {dialogOpen && (
         <OptimizationDialog
-          cohort={cohort}
+          cohort={reoptimizeCohort ?? cohort}
           overview={overviewQuery.data}
           pending={createMutation.isPending}
           mutationError={createMutation.error}
           onClose={() => {
             createMutation.reset();
+            setReoptimizeCohort(null);
             setDialogOpen(false);
           }}
           onCreate={(body) => createMutation.mutate(body)}

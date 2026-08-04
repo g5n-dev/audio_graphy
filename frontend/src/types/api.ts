@@ -1707,7 +1707,11 @@ export interface TagQualityMetrics {
   error_rate?: number;
   precision?: number;
   recall?: number;
-  [key: string]: number | undefined;
+  /** 评估通道：challenge 是公开验证；holdout 只有发布服务能查询。 */
+  evaluation_lane?: "challenge" | "holdout";
+  /** 为 true 时评估由发布服务在密封 holdout 上双跑，是创建部署的硬前提。 */
+  sealed_release?: boolean;
+  [key: string]: number | string | boolean | undefined;
 }
 
 export interface TagQualityGate {

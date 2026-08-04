@@ -728,6 +728,136 @@ describe("TagGovernancePage", () => {
     );
   });
 
+  it("labels challenge-lane evaluations as non-deployable and routes to evolution", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText("销售对话标签");
+
+    await user.click(screen.getByRole("tab", { name: "评估实验" }));
+    await screen.findByText("Macro F1");
+
+    // 公开「运行评估」永远走 challenge 通道，后端会 409 拒绝其部署，
+    // 卡片必须提前说明去向而不是留给部署时报错。
+    expect(
+      screen.getByText(/仅验证结果，不能直接用于部署/),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("link", { name: "前往自进化" }),
+    ).toHaveAttribute("href", "/tag-governance?tab=evolution");
+    expect(
+      screen.queryByRole("link", { name: "创建影子部署" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("offers a shadow-deployment CTA on passed sealed-holdout evaluations that prefills the id", async () => {
+    const user = userEvent.setup();
+    mocks.evaluations.mockResolvedValue({
+      items: [
+        {
+          id: 7,
+          tenant_id: "tenant-a",
+          tagger_version_id: 42,
+          baseline_tagger_version_id: 41,
+          gold_set_version_id: 3,
+          status: "completed",
+          passed: true,
+          metrics: {
+            macro_f1: 0.88,
+            critical_recall: 0.97,
+            evidence_coverage: 0.99,
+            error_rate: 0.002,
+            evaluation_lane: "holdout",
+            sealed_release: true,
+          },
+          baseline_metrics: { macro_f1: 0.86 },
+          gates: [
+            {
+              code: "sealed_release",
+              passed: true,
+              actual: null,
+              threshold: null,
+              message: "Sealed Holdout 仅公开聚合结果",
+            },
+          ],
+          created_at: "2026-07-25T03:00:00Z",
+          updated_at: "2026-07-25T03:00:00Z",
+        },
+      ],
+      total: 1,
+    });
+    renderPage("/tag-governance?tab=evaluations");
+    await screen.findByText("Macro F1");
+
+    expect(
+      screen.queryByText(/仅验证结果，不能直接用于部署/),
+    ).not.toBeInTheDocument();
+    const cta = screen.getByRole("link", { name: "创建影子部署" });
+    expect(cta).toHaveAttribute(
+      "href",
+      "/tag-governance?tab=deployments&deploy_evaluation_id=7",
+    );
+
+    await user.click(cta);
+    const dialog = await screen.findByRole("dialog", {
+      name: "创建影子部署",
+    });
+    expect(
+      within(dialog).getByRole("spinbutton", { name: "部署评估 ID" }),
+    ).toHaveValue(7);
+  });
+
+  it("shows the real sealed-holdout conflict instead of the stale-revision copy", async () => {
+    const user = userEvent.setup();
+    // 后端 create_deployment 对 challenge 评估的 409（api/tag_governance.py
+    // `_domain` 统一映射为 TAG_GOVERNANCE_CONFLICT）。
+    const conflict = Object.assign(
+      new Error("Request failed with status code 409"),
+      {
+        response: {
+          status: 409,
+          data: {
+            error: {
+              code: "TAG_GOVERNANCE_CONFLICT",
+              message:
+                "deployment requires a release-service sealed holdout evaluation",
+              detail: {},
+            },
+          },
+        },
+      },
+    );
+    mocks.createDeployment.mockRejectedValue(conflict);
+    renderPage("/tag-governance?tab=deployments");
+    await screen.findByText("灰度流量 25%");
+
+    await user.click(screen.getByRole("button", { name: "创建影子部署" }));
+    const dialog = screen.getByRole("dialog", { name: "创建影子部署" });
+    await user.type(
+      within(dialog).getByRole("spinbutton", { name: "部署抽取版本 ID" }),
+      "42",
+    );
+    await user.type(
+      within(dialog).getByRole("spinbutton", { name: "部署评估 ID" }),
+      "7",
+    );
+    await user.type(
+      within(dialog).getByRole("spinbutton", {
+        name: "部署基线抽取版本 ID",
+      }),
+      "41",
+    );
+    await user.click(
+      within(dialog).getByRole("button", { name: "创建影子部署" }),
+    );
+
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(
+      /密封 Holdout|challenge 验证结果/,
+    );
+    expect(
+      screen.queryByText(/部署已被其他操作更新/),
+    ).not.toBeInTheDocument();
+  });
+
   it("freezes a server-resolved review cohort with every completeness guarantee", async () => {
     const user = userEvent.setup();
     mocks.freezeGoldSet.mockResolvedValue({

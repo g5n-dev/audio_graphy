@@ -1012,6 +1012,17 @@ export default function TagReviewPage() {
                     {reviewPurpose(reviewTask)} · 真值层{" "}
                     {reviewTruthTier(reviewTask).toUpperCase()} · 触发原因{" "}
                     {reviewTask.reason} · 优先级 {reviewTask.priority}
+                    {/* 金标冻结按复核批次 ID 圈定 cohort，这里是复核员唯一能
+                        看到它的地方；盲审任务在提交前由服务端置空，前端同样
+                        不渲染，避免经由批次 ID 侧信道泄露抽样语义。 */}
+                    {reviewTask.review_bundle_id &&
+                      !isBlindReview(reviewTask) && (
+                        <>
+                          {" "}
+                          · 复核批次{" "}
+                          <code>{reviewTask.review_bundle_id}</code>
+                        </>
+                      )}
                   </p>
                 </div>
                 <div>

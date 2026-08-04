@@ -38,6 +38,7 @@ const QUEUE = {
       id: 501,
       tenant_id: "tenant-a",
       batch_id: "review-low-confidence-1",
+      review_bundle_id: "release-2026-07",
       reason: "low_confidence",
       subject_type: "dialogue_unit",
       subject_id: 77,
@@ -176,6 +177,26 @@ describe("TagReviewPage", () => {
     expect(
       screen.queryByRole("button", { name: "放弃任务/释放领取" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("shows the review bundle id needed by gold-set freezing on non-blind tasks", async () => {
+    renderPage();
+    await screen.findByText("今天合适的话就签约");
+
+    // 金标冻结按复核批次 ID 圈定 cohort，这里是复核员唯一可见的出处。
+    expect(screen.getByText(/复核批次/)).toBeVisible();
+    expect(screen.getByText("release-2026-07")).toBeVisible();
+  });
+
+  it("never renders the review bundle id inside an unresolved blind review", async () => {
+    mockedList.mockResolvedValue(ADJUDICATION_QUEUE);
+    renderPage();
+    await screen.findByText("盲审模式");
+
+    // 服务端会为未提交的盲审任务置空 review_bundle_id；即使数据异常携带了
+    // 值，前端也不得渲染，避免批次 ID 泄露抽样语义。
+    expect(screen.queryByText("release-2026-07")).not.toBeInTheDocument();
+    expect(screen.queryByText(/复核批次/)).not.toBeInTheDocument();
   });
 
   it("does not invent an invalid audio route without reception context", async () => {
