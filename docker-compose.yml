@@ -681,6 +681,19 @@ services:
       - /tmp:rw,noexec,nosuid,size=512m
     ports:
       - "${COMPOSE_PRIVATE_BIND_HOST:-127.0.0.1}:${SILERO_VAD_HOST_PORT:-18008}:8008"
+    healthcheck:
+      # Gated on the body, not the status: /health answers 200 with
+      # model_loaded=false when the operator has not supplied the ONNX file, and
+      # an unhealthy container is the honest signal for that.
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import json,urllib.request,sys; b=json.load(urllib.request.urlopen('http://127.0.0.1:8008/health',timeout=5)); sys.exit(0 if b.get('model_loaded') else 1)\"",
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 6
+      start_period: 30s
     networks:
       - audiography_net
 

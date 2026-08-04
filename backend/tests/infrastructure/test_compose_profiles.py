@@ -29,7 +29,14 @@ PROFILE_SERVICES = {
     # selects, so it belongs to all three. It is deliberately absent from
     # MODEL_SERVICES below: a one-shot container that exits 0 is depended on
     # via service_completed_successfully and has no healthcheck to assert.
-    "models-cpu": CORE_SERVICES | {"bge-m3-cache-init", "bge-m3-cpu", "campplus-service", "funasr"},
+    "models-cpu": CORE_SERVICES
+    | {
+        "bge-m3-cache-init",
+        "bge-m3-cpu",
+        "campplus-service",
+        "funasr",
+        "silero-vad-service",
+    },
     "models-single-gpu": CORE_SERVICES
     | {
         "bge-m3-cache-init",
@@ -37,6 +44,7 @@ PROFILE_SERVICES = {
         "campplus-service",
         "clap-service",
         "funasr",
+        "silero-vad-service",
         "vllm-strong",
     },
     "models-multi-gpu": CORE_SERVICES
@@ -46,6 +54,7 @@ PROFILE_SERVICES = {
         "campplus-service",
         "clap-service",
         "funasr",
+        "silero-vad-service",
         "vllm-strong",
         "vllm-weak",
     },
@@ -57,6 +66,7 @@ MODEL_SERVICES = {
     "campplus-service",
     "clap-service",
     "funasr",
+    "silero-vad-service",
     "vllm-strong",
     "vllm-weak",
 }
@@ -301,7 +311,9 @@ def test_custom_model_builds_wire_the_requirements_context() -> None:
 def test_backend_model_urls_use_container_ports() -> None:
     services = _compose("models-multi-gpu")["services"]
     environment = services["backend"]["environment"]
-    assert environment["SILERO_VAD_URL"] == "http://silero-vad.invalid:8000"
+    # Points at the bundled container since docker/silero-vad-service/ landed;
+    # it used to be an RFC-2606 .invalid placeholder because no image was shipped.
+    assert environment["SILERO_VAD_URL"] == "http://silero-vad-service:8008"
     assert environment["BGE_M3_URL"] == "http://bge-m3:80"
     assert environment["OPENAI_BASE_URL_STRONG"] == "http://vllm-strong:8000/v1"
     assert environment["OPENAI_BASE_URL_WEAK"] == "http://vllm-weak:8000/v1"
