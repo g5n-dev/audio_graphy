@@ -940,6 +940,60 @@ async def test_a_superseded_artifact_cannot_be_promoted(
 
 
 @pytest.mark.asyncio
+async def test_a_composed_version_wider_than_the_column_is_refused(
+    lab_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """tagger_versions.version is VARCHAR(64) and promotion composes into it.
+
+    baseline + "-lab-" + suffix reaches 101 chars at the schema's own limits.
+    Strict MySQL answers 1406 -- a 500 that names no field -- and a non-strict
+    server truncates, which is worse: two suffixes collapse to one string under
+    UNIQUE(tenant_id, version). These tests run on SQLite, which ignores
+    declared widths entirely, so nothing but this guard can catch it here.
+    """
+
+    from audio_graphy.models.tag_governance import TaggerVersion
+    from audio_graphy.services.prompt_lab import PromptLabError
+
+    service = PromptLabService(lab_factory)
+    artifact, baseline_id = await _persist_against_baseline(service, lab_factory)
+    long_baseline = "release-" + "x" * 40
+    async with lab_factory() as session, session.begin():
+        baseline = await session.get(TaggerVersion, baseline_id)
+        assert baseline is not None
+        baseline.version = long_baseline
+
+    with pytest.raises(PromptLabError, match="exceeds the 64-char limit"):
+        await service.promote_artifact(
+            tenant_id=_TENANT,
+            artifact_id=artifact.id,
+            version_suffix="r" * 32,
+            change_summary="超长基线名 + 最长后缀",
+            actor_user_id=9,
+        )
+
+    # The refusal has to be actionable: it names the room the suffix actually has.
+    with pytest.raises(PromptLabError, match="leaves 11 chars for the suffix"):
+        await service.promote_artifact(
+            tenant_id=_TENANT,
+            artifact_id=artifact.id,
+            version_suffix="r" * 32,
+            change_summary="超长基线名 + 最长后缀",
+            actor_user_id=9,
+        )
+
+    # And the boundary is inclusive: exactly 64 still promotes.
+    _, candidate = await service.promote_artifact(
+        tenant_id=_TENANT,
+        artifact_id=artifact.id,
+        version_suffix="r" * 11,
+        change_summary="正好落在列宽上",
+        actor_user_id=9,
+    )
+    assert len(candidate.version) == 64
+
+
+@pytest.mark.asyncio
 async def test_promotion_is_tenant_scoped(
     lab_factory: async_sessionmaker[AsyncSession],
 ) -> None:

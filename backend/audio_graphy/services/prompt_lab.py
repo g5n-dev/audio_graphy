@@ -20,9 +20,9 @@ from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
-from sqlalchemy import func, select
+from sqlalchemy import String, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -69,6 +69,9 @@ _COMPILE_JOB_TYPE = "prompt_compile"
 _FEEDBACK_THRESHOLD = 200
 _DOMAIN_THRESHOLD = 30
 _LIVE_ARTIFACT_STATUSES = ("draft", "review")
+#: Width of tagger_versions.version, read off the model so the promotion guard
+#: cannot drift from the schema it protects.
+_VERSION_COLUMN_CHARS: int = cast(String, TaggerVersion.__table__.c.version.type).length or 64
 
 
 class PromptLabError(GovernanceError):
@@ -626,6 +629,21 @@ class PromptLabService:
             rule_bundle = deepcopy(dict(harness_spec["orchestration"]["rule_bundle"]))
             thresholds = deepcopy(dict(baseline.thresholds or {}))
             version = f"{baseline.version}-lab-{version_suffix}"
+            # Read off the column so widening it moves this bound too. Without
+            # the check the composed name reaches the DB at up to 101 chars
+            # (64-char baseline + "-lab-" + 32-char suffix): strict MySQL answers
+            # 1406 with no hint which field to shorten, and a non-strict server
+            # truncates instead -- silently colliding two promotions on
+            # UNIQUE(tenant_id, version). Promotions also chain, so a version
+            # minted here can be tomorrow's baseline.
+            if len(version) > _VERSION_COLUMN_CHARS:
+                raise PromptLabError(
+                    f"candidate version {len(version)} chars exceeds the "
+                    f"{_VERSION_COLUMN_CHARS}-char limit; baseline "
+                    f"'{baseline.version}' leaves "
+                    f"{max(0, _VERSION_COLUMN_CHARS - len(baseline.version) - 5)} "
+                    "chars for the suffix"
+                )
             config = {
                 "schema_version_id": int(baseline.schema_version_id),
                 "engine": str(baseline.engine),
