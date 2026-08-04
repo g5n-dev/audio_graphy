@@ -55,9 +55,40 @@ def test_compiling_requires_admin(
     assert forbidden.status_code == 403
 
 
+def test_promoting_requires_admin(
+    test_client: TestClient,
+    auth_headers: dict[str, dict[str, str]],
+) -> None:
+    """An inspector reviews candidates but cannot mint tagger versions from them."""
+
+    body = {"version_suffix": "r1", "change_summary": "晋级为候选抽取版本"}
+    forbidden = test_client.post(
+        f"{_ARTIFACTS}/1/promote",
+        headers=auth_headers["inspector_t1"],
+        json=body,
+    )
+    assert forbidden.status_code == 403
+
+    # The admin passes the role gate and reaches the domain, where the missing
+    # artifact is a 404 — proving the route exists and maps not-found correctly.
+    missing = test_client.post(
+        f"{_ARTIFACTS}/1/promote",
+        headers=auth_headers["admin_t1"],
+        json=body,
+    )
+    assert missing.status_code == 404
+
+
 def test_an_unauthenticated_caller_reaches_nothing(test_client: TestClient) -> None:
     assert test_client.get(_READINESS).status_code == 401
     assert test_client.post(_COMPILATIONS, json=_compile_body()).status_code == 401
+    assert (
+        test_client.post(
+            f"{_ARTIFACTS}/1/promote",
+            json={"version_suffix": "r1", "change_summary": "未登录不可晋级"},
+        ).status_code
+        == 401
+    )
 
 
 def test_a_missing_artifact_is_a_404_not_a_500(

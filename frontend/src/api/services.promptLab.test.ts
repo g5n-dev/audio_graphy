@@ -16,6 +16,7 @@ import {
   getPromptLabReadiness,
   listPromptArtifacts,
   listPromptGradients,
+  promotePromptArtifact,
 } from "./services";
 
 const mockedGet = httpClient.get as unknown as ReturnType<typeof vi.fn>;
@@ -95,6 +96,20 @@ describe("prompt lab services", () => {
 
     expect(mockedPost).toHaveBeenCalledWith(
       "/prompt-lab/artifacts/9/decisions",
+      body,
+    );
+  });
+
+  it("promotes an artifact through its own sub-resource", async () => {
+    const body = {
+      version_suffix: "r1",
+      change_summary: "采纳两条聚类补丁后的候选提示词",
+    };
+
+    await promotePromptArtifact(9, body);
+
+    expect(mockedPost).toHaveBeenCalledWith(
+      "/prompt-lab/artifacts/9/promote",
       body,
     );
   });

@@ -14,6 +14,7 @@ from audio_graphy.auth.tenants import get_tenant_id
 from audio_graphy.errors import APIError
 from audio_graphy.schemas.prompt_lab import (
     PatchDecisionBatch,
+    PromoteArtifactCreate,
     PromptCompilationCreate,
     artifact_resource,
     gradient_resource,
@@ -247,3 +248,44 @@ async def decide_prompt_patches(
         )
     )
     return artifact_resource(row)
+
+
+@router.post(
+    "/artifacts/{artifact_id}/promote",
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_admin())],
+)
+async def promote_prompt_artifact(
+    artifact_id: int,
+    body: PromoteArtifactCreate,
+    request: Request,
+    user: AuthUser = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Mint a draft TaggerVersion from a reviewed artifact so evaluation can see it.
+
+    Idempotent: once an artifact carries a candidate version, resubmitting resolves
+    to that version instead of minting a second one. The candidate stays ``draft``
+    and still has to pass the normal evaluation and deployment gates.
+    """
+
+    await _deny_blind_review_side_channel(request, user=user)
+    artifact_row, version_row = await _domain(
+        _service(request).promote_artifact(
+            tenant_id=get_tenant_id(request),
+            artifact_id=artifact_id,
+            version_suffix=body.version_suffix,
+            change_summary=body.change_summary,
+            efficiency_policy=body.efficiency_policy,
+            actor_user_id=user.id,
+        )
+    )
+    return {
+        "artifact": artifact_resource(artifact_row, include_prompt=False),
+        "candidate_tagger_version": {
+            "id": int(version_row.id),
+            "version": str(version_row.version),
+            "status": str(version_row.status),
+            "origin": str(version_row.origin),
+            "prompt_artifact_id": version_row.prompt_artifact_id,
+        },
+    }

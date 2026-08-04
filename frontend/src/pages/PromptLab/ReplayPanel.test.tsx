@@ -1,18 +1,21 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/api/services", () => ({
   listTagEvaluations: vi.fn(),
+  promotePromptArtifact: vi.fn(),
 }));
 
-import { listTagEvaluations } from "@/api/services";
+import { listTagEvaluations, promotePromptArtifact } from "@/api/services";
 import type { PromptArtifactSummary, TagEvaluation } from "@/types/api";
 
 import { ReplayPanel } from "./ReplayPanel";
 
 const mocked = listTagEvaluations as unknown as ReturnType<typeof vi.fn>;
+const mockedPromote = promotePromptArtifact as unknown as ReturnType<typeof vi.fn>;
 
 function artifact(overrides: Partial<PromptArtifactSummary> = {}): PromptArtifactSummary {
   return {
@@ -98,7 +101,12 @@ function renderPanel(props: Partial<React.ComponentProps<typeof ReplayPanel>> = 
   render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter>
-        <ReplayPanel artifact={artifact()} onGoToCompile={onGoToCompile} {...props} />
+        <ReplayPanel
+          artifact={artifact()}
+          isAdmin
+          onGoToCompile={onGoToCompile}
+          {...props}
+        />
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -107,6 +115,16 @@ function renderPanel(props: Partial<React.ComponentProps<typeof ReplayPanel>> = 
 
 beforeEach(() => {
   mocked.mockReset().mockResolvedValue({ items: [evaluation()], total: 1 });
+  mockedPromote.mockReset().mockResolvedValue({
+    artifact: artifact({ candidate_tagger_version_id: 88, status: "accepted" }),
+    candidate_tagger_version: {
+      id: 88,
+      version: "baseline-v1-lab-r1",
+      status: "draft",
+      origin: "prompt_lab",
+      prompt_artifact_id: 302,
+    },
+  });
 });
 
 describe("ReplayPanel", () => {
@@ -117,13 +135,85 @@ describe("ReplayPanel", () => {
     expect(onGoToCompile).toBeDefined();
   });
 
-  it("frames a not-yet-promoted artifact as the next step, not as missing data", () => {
+  it("offers the admin a real promote CTA instead of a dead end", () => {
     renderPanel({ artifact: artifact({ candidate_tagger_version_id: null }) });
 
     expect(screen.getByText(/尚未晋级为候选抽取版本/)).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "前往创建评估" })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: "晋级为候选版本" })).toBeInTheDocument();
+    expect(screen.getByLabelText("版本后缀")).toBeInTheDocument();
+    expect(screen.getByLabelText("变更说明")).toBeInTheDocument();
+  });
+
+  it("keeps the promote button disabled until both fields are valid", async () => {
+    const user = userEvent.setup();
+    renderPanel({ artifact: artifact({ candidate_tagger_version_id: null }) });
+
+    const submit = screen.getByRole("button", { name: "晋级为候选版本" });
+    expect(submit).toBeDisabled();
+
+    await user.type(screen.getByLabelText("版本后缀"), "r1");
+    expect(submit).toBeDisabled();
+
+    // 变更说明少于 8 字仍不可提交——与后端 min_length=8 同步。
+    await user.type(screen.getByLabelText("变更说明"), "太短");
+    expect(submit).toBeDisabled();
+  });
+
+  it("promotes and then shows the minted candidate with a link to governance", async () => {
+    const user = userEvent.setup();
+    renderPanel({ artifact: artifact({ candidate_tagger_version_id: null }) });
+
+    await user.type(screen.getByLabelText("版本后缀"), "r1");
+    await user.type(screen.getByLabelText("变更说明"), "采纳两条聚类补丁后的候选提示词");
+    await user.click(screen.getByRole("button", { name: "晋级为候选版本" }));
+
+    expect(await screen.findByRole("status")).toHaveTextContent("baseline-v1-lab-r1");
+    expect(screen.getByRole("status")).toHaveTextContent("#88");
+    expect(
+      screen.getByRole("link", { name: "前往标签治理查看候选版本" }),
+    ).toHaveAttribute("href", "/tag-governance?tab=taggers");
+    expect(mockedPromote).toHaveBeenCalledWith(302, {
+      version_suffix: "r1",
+      change_summary: "采纳两条聚类补丁后的候选提示词",
+    });
+  });
+
+  it("surfaces a promote conflict as advice, not a raw error", async () => {
+    const user = userEvent.setup();
+    mockedPromote.mockRejectedValue({
+      isAxiosError: true,
+      response: { status: 409, data: { detail: "tagger version already exists" } },
+    });
+    renderPanel({ artifact: artifact({ candidate_tagger_version_id: null }) });
+
+    await user.type(screen.getByLabelText("版本后缀"), "r1");
+    await user.type(screen.getByLabelText("变更说明"), "采纳两条聚类补丁后的候选提示词");
+    await user.click(screen.getByRole("button", { name: "晋级为候选版本" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "版本号或配置与已有抽取版本冲突",
+    );
+  });
+
+  it("tells a non-admin honestly that promotion needs an administrator", () => {
+    renderPanel({
+      artifact: artifact({ candidate_tagger_version_id: null }),
+      isAdmin: false,
+    });
+
+    expect(screen.getByText(/需要管理员权限/)).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "晋级为候选版本" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("links a promoted artifact to its candidate version in governance", async () => {
+    renderPanel();
+
+    expect(await screen.findByText("#77")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "在标签治理中查看" })).toHaveAttribute(
       "href",
-      "/tag-governance?tab=evaluations",
+      "/tag-governance?tab=taggers",
     );
   });
 

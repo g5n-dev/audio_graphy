@@ -17,11 +17,13 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from audio_graphy.models.prompt_lab import (
@@ -35,6 +37,7 @@ from audio_graphy.models.tag_governance import (
     TaggerVersion,
     TagGoldLabel,
     TagGoldSetVersion,
+    TagGovernanceAuditEvent,
     TagSchemaVersion,
 )
 from audio_graphy.optimizers.artifacts import (
@@ -53,6 +56,11 @@ from audio_graphy.services.tag_governance import (
     GovernanceError,
     TagGovernanceService,
     canonical_checksum,
+)
+from audio_graphy.services.tag_harness_runtime import (
+    HarnessSpecError,
+    materialize_trial_candidate,
+    resolve_harness_spec,
 )
 
 logger = logging.getLogger(__name__)
@@ -554,6 +562,133 @@ class PromptLabService:
             parent.status = "superseded"
             await session.flush()
             return row
+
+    async def promote_artifact(
+        self,
+        *,
+        tenant_id: str,
+        artifact_id: int,
+        version_suffix: str,
+        change_summary: str,
+        efficiency_policy: str = "quality_uplift_v1",
+        actor_user_id: int,
+    ) -> tuple[TagPromptArtifact, TaggerVersion]:
+        """Mint a draft TaggerVersion from a reviewed artifact so evaluation can see it.
+
+        This is the only exit from the lab: without it an accepted prompt has no
+        consumer, because evaluations and deployments read tagger versions, never
+        prompt artifacts. The candidate is deliberately created ``draft`` with the
+        baseline's own model/rules/thresholds and only the prompt swapped in -- it
+        still has to pass the normal evaluation and deployment gates, promotion is
+        never a route straight to production.
+
+        Idempotent like apply_patch_decisions: once ``candidate_tagger_version_id``
+        is written, a double submit resolves to the version that already exists
+        instead of minting a second candidate.
+        """
+
+        async with self._factory() as session, session.begin():
+            artifact = await self._load_artifact(
+                session, tenant_id=tenant_id, artifact_id=artifact_id
+            )
+            # Checked before the live-status gate: a promoted artifact is 'accepted',
+            # which is not a live status, and the whole point of idempotency is that
+            # the second submit of a finished promotion is not an error.
+            if artifact.candidate_tagger_version_id is not None:
+                existing = await session.get(
+                    TaggerVersion, int(artifact.candidate_tagger_version_id)
+                )
+                if existing is None or str(existing.tenant_id) != tenant_id:
+                    raise PromptLabNotFoundError(
+                        "candidate tagger version not found for this tenant"
+                    )
+                return artifact, existing
+            if str(artifact.status) not in _LIVE_ARTIFACT_STATUSES:
+                raise GovernanceConflictError("only draft or review artifacts can be promoted")
+
+            baseline = await session.get(TaggerVersion, int(artifact.baseline_tagger_version_id))
+            if baseline is None or str(baseline.tenant_id) != tenant_id:
+                raise PromptLabNotFoundError("baseline tagger version not found for this tenant")
+
+            # Same materialization path the optimizer worker uses for its preflight:
+            # the baseline's whole config with the artifact's rendered prompt swapped
+            # in via replace mode, so the served spec is exactly what was reviewed.
+            try:
+                harness_spec = materialize_trial_candidate(
+                    resolve_harness_spec(baseline),
+                    prompt_mode="replace",
+                    prompt_template=str(artifact.rendered_prompt),
+                )
+            except HarnessSpecError as exc:
+                raise PromptLabError(str(exc)) from exc
+
+            prompt_content = str(harness_spec["generation"]["prompt_template"])
+            rule_bundle = deepcopy(dict(harness_spec["orchestration"]["rule_bundle"]))
+            thresholds = deepcopy(dict(baseline.thresholds or {}))
+            version = f"{baseline.version}-lab-{version_suffix}"
+            config = {
+                "schema_version_id": int(baseline.schema_version_id),
+                "engine": str(baseline.engine),
+                "prompt_content": prompt_content,
+                "rule_bundle": rule_bundle,
+                "model_version": str(baseline.model_version),
+                "thresholds": thresholds,
+                "harness_spec_version": "2.0",
+                "harness_spec": harness_spec,
+                "parent_version_id": int(baseline.id),
+                "origin": "prompt_lab",
+                "prompt_artifact_id": int(artifact.id),
+                "change_summary": change_summary,
+            }
+            checksum = canonical_checksum(config)
+            candidate = TaggerVersion(
+                tenant_id=tenant_id,
+                schema_version_id=baseline.schema_version_id,
+                version=version,
+                engine=baseline.engine,
+                prompt_content=prompt_content,
+                rule_bundle=rule_bundle,
+                model_version=baseline.model_version,
+                thresholds=thresholds,
+                harness_spec_version="2.0",
+                harness_spec=harness_spec,
+                parent_version_id=baseline.id,
+                origin="prompt_lab",
+                prompt_artifact_id=int(artifact.id),
+                change_summary=change_summary,
+                config_checksum=checksum,
+                status="draft",
+                created_by=actor_user_id,
+            )
+            session.add(candidate)
+            try:
+                await session.flush()
+            except IntegrityError as exc:
+                # Either the version string or the config checksum collided with a
+                # version some other artifact already minted; both mean "this exact
+                # candidate exists under a different identity", which is a conflict
+                # the caller has to resolve, not something to silently reuse.
+                raise GovernanceConflictError("tagger version already exists") from exc
+
+            artifact.candidate_tagger_version_id = int(candidate.id)
+            artifact.status = "accepted"
+            session.add(
+                TagGovernanceAuditEvent(
+                    tenant_id=tenant_id,
+                    resource_type="tagger_version",
+                    resource_id=int(candidate.id),
+                    action="prompt_lab_candidate_created",
+                    actor_user_id=actor_user_id,
+                    payload={
+                        "prompt_artifact_id": int(artifact.id),
+                        "config_checksum": checksum,
+                        "efficiency_policy": efficiency_policy,
+                    },
+                    occurred_at=datetime.now(UTC),
+                )
+            )
+            await session.flush()
+            return artifact, candidate
 
     async def list_gradients(
         self,

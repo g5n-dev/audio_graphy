@@ -215,6 +215,7 @@ export default function PromptLabPage() {
         {activeTab === "replay" && (
           <ReplayPanel
             artifact={selectedArtifact}
+            isAdmin={isAdmin}
             onGoToCompile={() => selectTabId("compile")}
           />
         )}

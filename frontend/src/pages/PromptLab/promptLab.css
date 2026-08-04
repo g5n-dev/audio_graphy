@@ -404,6 +404,29 @@
   font-size: 14px;
 }
 
+/* ------------------------------------------------------------ 晋级候选 */
+
+/* 复用 inline-field 的配色，但表单里字段要竖排铺满，而不是工具条式内联。 */
+.ag-plab-promote form {
+  display: grid;
+  justify-items: start;
+  gap: 10px;
+  width: min(520px, 100%);
+}
+
+.ag-plab-promote form .ag-plab-inline-field {
+  display: grid;
+  justify-items: start;
+  gap: 4px;
+  width: 100%;
+}
+
+.ag-plab-promote form input,
+.ag-plab-promote form textarea {
+  width: 100%;
+  box-sizing: border-box;
+}
+
 /* ---------------------------------------------------------------- 梯度 */
 
 .ag-plab-gradients {

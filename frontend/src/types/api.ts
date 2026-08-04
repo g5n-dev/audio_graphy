@@ -2395,6 +2395,26 @@ export interface PromptPatchDecisionBatch {
   dropped_demo_ids: string[];
 }
 
+export interface PromptArtifactPromoteRequest {
+  /** ^[\w.-]+$，1–32 字；最终版本号为 `{基线版本}-lab-{suffix}`。 */
+  version_suffix: string;
+  /** 8–4000 字，落到候选版本的 change_summary。 */
+  change_summary: string;
+  efficiency_policy?: PromptEfficiencyPolicy;
+}
+
+/** 晋级只产出 draft 候选：仍要走标签治理的评估与部署门禁，绝不直通生产。 */
+export interface PromptArtifactPromoteResponse {
+  artifact: PromptArtifactSummary;
+  candidate_tagger_version: {
+    id: number;
+    version: string;
+    status: string;
+    origin: string;
+    prompt_artifact_id: number | null;
+  };
+}
+
 export type PromptArtifactListResponse =
   TagGovernanceListResponse<PromptArtifactSummary>;
 export type PromptGradientListResponse =

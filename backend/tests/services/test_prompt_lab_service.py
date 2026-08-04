@@ -811,3 +811,146 @@ async def test_a_child_artifact_is_priced_as_itself_not_as_its_parent(
     # And the derived fields stay consistent with each other.
     assert report["fixed_tokens"] == report["prompt_tokens"] + 1_500
     assert report["headroom_tokens"] == 4_000 - report["fixed_tokens"]
+
+
+async def _persist_against_baseline(
+    service: PromptLabService,
+    factory: async_sessionmaker[AsyncSession],
+) -> tuple[Any, int]:
+    """An artifact whose baseline is a real TaggerVersion row, as promotion needs."""
+
+    baseline_id, _ = await _seed_baseline(factory)
+    artifact = await service.persist_artifact(
+        tenant_id=_TENANT,
+        compilation_id=1,
+        artifact=_artifact(),
+        baseline_tagger_version_id=baseline_id,
+        gold_set_version_id=None,
+        actor_user_id=9,
+    )
+    return artifact, baseline_id
+
+
+@pytest.mark.asyncio
+async def test_promoting_an_artifact_mints_a_draft_prompt_lab_tagger_version(
+    lab_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Promotion is the lab's only exit: evaluations read tagger versions, not artifacts.
+
+    The candidate must carry the artifact's rendered prompt, the prompt_lab origin
+    and draft status — draft, because promotion feeds the normal evaluation and
+    deployment gates rather than bypassing them.
+    """
+
+    from audio_graphy.models.tag_governance import TaggerVersion
+
+    service = PromptLabService(lab_factory)
+    artifact, baseline_id = await _persist_against_baseline(service, lab_factory)
+
+    promoted, candidate = await service.promote_artifact(
+        tenant_id=_TENANT,
+        artifact_id=artifact.id,
+        version_suffix="r1",
+        change_summary="采纳两条聚类补丁后的候选提示词",
+        actor_user_id=9,
+    )
+
+    assert promoted.status == "accepted"
+    assert promoted.candidate_tagger_version_id == candidate.id
+    assert candidate.origin == "prompt_lab"
+    assert candidate.status == "draft"
+    assert candidate.prompt_artifact_id == artifact.id
+    assert candidate.parent_version_id == baseline_id
+    assert candidate.version == "baseline-v1-lab-r1"
+    # The served prompt is exactly what was reviewed, both as the flat column and
+    # inside the harness spec the extractor will actually execute.
+    assert candidate.prompt_content == str(artifact.rendered_prompt).strip()
+    assert candidate.harness_spec is not None
+    assert (
+        candidate.harness_spec["generation"]["prompt_template"]
+        == str(artifact.rendered_prompt).strip()
+    )
+
+    async with lab_factory() as session:
+        stored = await session.get(TaggerVersion, candidate.id)
+    assert stored is not None
+    assert stored.change_summary == "采纳两条聚类补丁后的候选提示词"
+
+
+@pytest.mark.asyncio
+async def test_promoting_twice_resolves_to_the_same_candidate_version(
+    lab_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A double-clicked promote must not mint a second tagger version."""
+
+    from audio_graphy.models.tag_governance import TaggerVersion
+
+    service = PromptLabService(lab_factory)
+    artifact, baseline_id = await _persist_against_baseline(service, lab_factory)
+    request: dict[str, Any] = {
+        "tenant_id": _TENANT,
+        "artifact_id": artifact.id,
+        "version_suffix": "r1",
+        "change_summary": "采纳两条聚类补丁后的候选提示词",
+        "actor_user_id": 9,
+    }
+
+    _, first = await service.promote_artifact(**request)
+    # Even a different suffix resolves to the existing candidate: the artifact
+    # already points at its version, and that pointer is the idempotency key.
+    request["version_suffix"] = "r2"
+    _, second = await service.promote_artifact(**request)
+
+    assert second.id == first.id
+    async with lab_factory() as session:
+        total = await session.scalar(
+            select(func.count())
+            .select_from(TaggerVersion)
+            .where(TaggerVersion.origin == "prompt_lab")
+        )
+    assert total == 1, "one promotion, not one per click"
+    assert baseline_id != first.id
+
+
+@pytest.mark.asyncio
+async def test_a_superseded_artifact_cannot_be_promoted(
+    lab_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Only the reviewed head of the lineage may become a candidate version."""
+
+    from audio_graphy.services.tag_governance import GovernanceConflictError
+
+    service = PromptLabService(lab_factory)
+    parent, _ = await _persist_against_baseline(service, lab_factory)
+    await service.apply_patch_decisions(
+        tenant_id=_TENANT,
+        artifact_id=parent.id,
+        decisions=[PatchDecision(patch_id="p1", accepted=True)],
+        actor_user_id=9,
+    )
+
+    with pytest.raises(GovernanceConflictError, match="draft or review"):
+        await service.promote_artifact(
+            tenant_id=_TENANT,
+            artifact_id=parent.id,
+            version_suffix="r1",
+            change_summary="被取代的产物不应再晋级",
+            actor_user_id=9,
+        )
+
+
+@pytest.mark.asyncio
+async def test_promotion_is_tenant_scoped(
+    lab_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    service = PromptLabService(lab_factory)
+    artifact, _ = await _persist_against_baseline(service, lab_factory)
+
+    with pytest.raises(PromptLabError, match="not found"):
+        await service.promote_artifact(
+            tenant_id="other_tenant",
+            artifact_id=artifact.id,
+            version_suffix="r1",
+            change_summary="跨租户的晋级必须不可达",
+            actor_user_id=9,
+        )

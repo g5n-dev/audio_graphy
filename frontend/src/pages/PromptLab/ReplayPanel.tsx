@@ -1,5 +1,5 @@
-import { useQuery } from "@tanstack/react-query";
-import { useMemo } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { PanelState } from "@/components/PanelState";
@@ -10,8 +10,9 @@ import {
   numericMetric,
   signedPercent,
 } from "@/components/governance/format";
-import { listTagEvaluations } from "@/api/services";
+import { listTagEvaluations, promotePromptArtifact } from "@/api/services";
 import type { PromptArtifactSummary, TagEvaluation } from "@/types/api";
+import { getErrorMessage, getErrorStatus } from "@/utils/errors";
 
 const TERMINAL_STATUSES = new Set(["completed", "failed"]);
 
@@ -76,13 +77,35 @@ function FlipList({ deltas }: { deltas: LabelDelta[] }) {
   );
 }
 
+/** 与后端 PromoteArtifactCreate 同步：^[\w.-]+$，1–32 字。 */
+const VERSION_SUFFIX_PATTERN = /^[\w.-]{1,32}$/;
+
 export function ReplayPanel({
   artifact,
+  isAdmin,
   onGoToCompile,
 }: {
   artifact: PromptArtifactSummary | undefined;
+  isAdmin: boolean;
   onGoToCompile: () => void;
 }) {
+  const queryClient = useQueryClient();
+  const [versionSuffix, setVersionSuffix] = useState("");
+  const [changeSummary, setChangeSummary] = useState("");
+
+  const promote = useMutation({
+    mutationFn: (payload: { artifactId: number }) =>
+      promotePromptArtifact(payload.artifactId, {
+        version_suffix: versionSuffix.trim(),
+        change_summary: changeSummary.trim(),
+      }),
+    onSuccess: () => {
+      // 列表缓存与深链兜底详情都带着 candidate_tagger_version_id，两个都要刷。
+      void queryClient.invalidateQueries({ queryKey: ["prompt-lab", "artifacts"] });
+      void queryClient.invalidateQueries({ queryKey: ["prompt-lab", "artifact"] });
+    },
+  });
+
   const evaluations = useQuery({
     queryKey: ["tag-governance", "evaluations"],
     queryFn: listTagEvaluations,
@@ -117,13 +140,82 @@ export function ReplayPanel({
 
   if (artifact.candidate_tagger_version_id == null) {
     // 这是最常见的状态，要做得像「流程下一步」而不是「没数据」。
+    // 晋级刚成功、列表缓存还没刷新时，先展示铸出的版本，别让人再点一次。
+    if (promote.data) {
+      return (
+        <div className="ag-plab-empty">
+          <p role="status">
+            已晋级为候选抽取版本{" "}
+            <strong>#{promote.data.candidate_tagger_version.id}</strong>（
+            {promote.data.candidate_tagger_version.version}）。候选仍是 draft，
+            需在标签治理中心用冻结金标集完成评估并通过门禁后才能部署。
+          </p>
+          <Link to="/tag-governance?tab=taggers">前往标签治理查看候选版本</Link>
+        </div>
+      );
+    }
+
+    if (!isAdmin) {
+      // 对非管理员诚实：不是没数据，而是差一步需要管理员执行的晋级。
+      return (
+        <div className="ag-plab-empty">
+          <p>
+            该产物尚未晋级为候选抽取版本，因此还没有回放结果。晋级会铸出一个
+            draft 抽取版本供评估使用，该操作需要管理员权限——请在「梯度与补丁」
+            完成审阅后，联系管理员在本页发起晋级。
+          </p>
+        </div>
+      );
+    }
+
+    const suffixValid = VERSION_SUFFIX_PATTERN.test(versionSuffix.trim());
+    const summaryValid = changeSummary.trim().length >= 8;
     return (
-      <div className="ag-plab-empty">
+      <div className="ag-plab-empty ag-plab-promote">
         <p>
           该产物尚未晋级为候选抽取版本，因此还没有回放结果。在「梯度与补丁」里
-          确认要采纳的补丁后，到标签治理中心用冻结金标集发起一次评估。
+          确认要采纳的补丁后，在此晋级：会铸出一个 draft 候选版本，仍需通过
+          评估与部署门禁，不会直通生产。
         </p>
-        <Link to="/tag-governance?tab=evaluations">前往创建评估</Link>
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (suffixValid && summaryValid && !promote.isPending) {
+              promote.mutate({ artifactId: artifact.id });
+            }
+          }}
+        >
+          <label className="ag-plab-inline-field">
+            <span>版本后缀（字母、数字、._-，≤32 字）</span>
+            <input
+              aria-label="版本后缀"
+              value={versionSuffix}
+              maxLength={32}
+              placeholder={`如 r${artifact.id}`}
+              onChange={(event) => setVersionSuffix(event.target.value)}
+            />
+          </label>
+          <label className="ag-plab-inline-field">
+            <span>变更说明（至少 8 字）</span>
+            <textarea
+              aria-label="变更说明"
+              rows={2}
+              maxLength={4000}
+              value={changeSummary}
+              onChange={(event) => setChangeSummary(event.target.value)}
+            />
+          </label>
+          <button type="submit" disabled={!suffixValid || !summaryValid || promote.isPending}>
+            {promote.isPending ? "正在晋级…" : "晋级为候选版本"}
+          </button>
+        </form>
+        {promote.isError && (
+          <p className="ag-inline-feedback is-error" role="alert">
+            {getErrorStatus(promote.error) === 409
+              ? "版本号或配置与已有抽取版本冲突，请换一个版本后缀后重试。"
+              : getErrorMessage(promote.error, "晋级失败，请稍后重试。")}
+          </p>
+        )}
       </div>
     );
   }
@@ -132,6 +224,10 @@ export function ReplayPanel({
 
   return (
     <div className="ag-plab-replay">
+      <p className="ag-compact-state">
+        已晋级为候选抽取版本 <strong>#{artifact.candidate_tagger_version_id}</strong>，
+        <Link to="/tag-governance?tab=taggers">在标签治理中查看</Link>。
+      </p>
       <PanelState
         pending={evaluations.isPending}
         error={evaluations.error}

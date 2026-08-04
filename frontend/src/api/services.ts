@@ -12,6 +12,8 @@ import type {
   PromptArtifact,
   PromptArtifactDiff,
   PromptArtifactListResponse,
+  PromptArtifactPromoteRequest,
+  PromptArtifactPromoteResponse,
   PromptArtifactStatus,
   PromptGradientDecision,
   PromptGradientListResponse,
@@ -1409,6 +1411,21 @@ export async function decidePromptPatches(
 ): Promise<PromptArtifact> {
   const { data } = await httpClient.post<PromptArtifact>(
     `/prompt-lab/artifacts/${artifactId}/decisions`,
+    body,
+  );
+  return data;
+}
+
+/**
+ * 把审阅通过的产物晋级为 draft 候选抽取版本。幂等：重复提交解析到已有版本，
+ * 不会再铸一个。候选仍要走标签治理的评估与部署门禁。
+ */
+export async function promotePromptArtifact(
+  artifactId: number,
+  body: PromptArtifactPromoteRequest,
+): Promise<PromptArtifactPromoteResponse> {
+  const { data } = await httpClient.post<PromptArtifactPromoteResponse>(
+    `/prompt-lab/artifacts/${artifactId}/promote`,
     body,
   );
   return data;
