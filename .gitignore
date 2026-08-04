@@ -80,6 +80,8 @@ pnpm-debug.log*
 working_dir/
 runtime_working_dir/
 data/
+# Structured run logs written next to the app when it runs from a checkout.
+backend/logs/
 .design-audit/
 
 # Secrets — never version key material of any kind
