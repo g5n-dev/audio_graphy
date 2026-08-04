@@ -571,13 +571,21 @@ describe("reception and tag insight API services", () => {
             occurred_at: "2026-07-23T01:00:00Z",
           },
         ],
+        total: 1,
+        page: 1,
+        page_size: 100,
+        truncated: false,
       },
     });
 
-    const events = await getReceptionProvenance(9);
+    const chain = await getReceptionProvenance(9);
 
-    expect(mockedGet).toHaveBeenCalledWith("/provenance/reception/9");
-    expect(events[0]).toMatchObject({
+    expect(mockedGet).toHaveBeenCalledWith("/provenance/reception/9", {
+      params: { page: undefined, page_size: undefined },
+    });
+    expect(chain.total).toBe(1);
+    expect(chain.truncated).toBe(false);
+    expect(chain.items[0]).toMatchObject({
       object_type: "reception",
       object_ref: "9",
       action: "created",
@@ -592,6 +600,48 @@ describe("reception and tag insight API services", () => {
         }),
       ],
       detail: { source: "manual" },
+    });
+  });
+
+  it("reads a tag assignment's own chain, where a manual correction reason is persisted", async () => {
+    mockedGet.mockResolvedValueOnce({
+      data: {
+        object_type: "dialogue_tag_assignment",
+        object_ref: "77",
+        items: [
+          {
+            id: 5,
+            reception_id: 9,
+            object_type: "dialogue_tag_assignment",
+            object_ref: "77",
+            event_type: "edited",
+            actor: "inspector",
+            algorithm_version: "manual-v1",
+            parent_refs: [],
+            evidence_refs: [],
+            payload: { reason: "客户当场改口，阶段判定有误" },
+            occurred_at: "2026-07-23T02:00:00Z",
+          },
+        ],
+        total: 240,
+        page: 1,
+        page_size: 100,
+        truncated: true,
+      },
+    });
+
+    const chain = await getReceptionProvenance(77, {
+      objectType: "dialogue_tag_assignment",
+      pageSize: 100,
+    });
+
+    expect(mockedGet).toHaveBeenCalledWith(
+      "/provenance/dialogue_tag_assignment/77",
+      { params: { page: undefined, page_size: 100 } },
+    );
+    expect(chain.truncated).toBe(true);
+    expect(chain.items[0].detail).toEqual({
+      reason: "客户当场改口，阶段判定有误",
     });
   });
 

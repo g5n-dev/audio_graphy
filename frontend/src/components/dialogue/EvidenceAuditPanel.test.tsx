@@ -121,4 +121,56 @@ describe("EvidenceAuditPanel", () => {
     fireEvent.click(zeroButton);
     expect(onSeekEvidence).toHaveBeenCalledWith(startsAtZero);
   });
+
+  it("offers the full audit chain of the reception and of a single tag", () => {
+    const onViewAuditChain = vi.fn();
+
+    render(
+      <EvidenceAuditPanel
+        workspace={makeWorkspace([])}
+        onSeekEvidence={vi.fn()}
+        onViewAuditChain={onViewAuditChain}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "查看完整审计链" }));
+    expect(onViewAuditChain).toHaveBeenCalledWith({
+      objectType: "reception",
+      objectRef: 42,
+      title: "本次接待",
+    });
+
+    // The correction reason is written against the assignment, not against the
+    // reception, so the tag card needs its own entry point.
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "查看标签 stage.greeting 的完整审计链",
+      }),
+    );
+    expect(onViewAuditChain).toHaveBeenLastCalledWith({
+      objectType: "dialogue_tag_assignment",
+      objectRef: 1,
+      title: "标签 stage.greeting",
+    });
+  });
+
+  it("keeps the audit chain readable for roles that cannot edit tags", () => {
+    render(
+      <EvidenceAuditPanel
+        workspace={makeWorkspace([])}
+        onSeekEvidence={vi.fn()}
+        canEdit={false}
+        onViewAuditChain={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByRole("button", {
+        name: "查看标签 stage.greeting 的完整审计链",
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "从证据卡编辑标签 stage.greeting" }),
+    ).not.toBeInTheDocument();
+  });
 });

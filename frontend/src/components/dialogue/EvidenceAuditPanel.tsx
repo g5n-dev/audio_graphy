@@ -4,6 +4,7 @@ import type {
   ReceptionTagAssignment,
   ReceptionWorkspaceResponse,
 } from "@/types/api";
+import type { AuditChainTarget } from "./ReceptionAuditChainDrawer";
 import { formatClock, formatPercent, formatSeconds } from "./format";
 
 interface EvidenceAuditPanelProps {
@@ -12,6 +13,8 @@ interface EvidenceAuditPanelProps {
   selectedTagId?: EntityId | null;
   canEdit?: boolean;
   onEditTag?: (tag: ReceptionTagAssignment) => void;
+  /** Opens the full provenance chain of one object outside this window. */
+  onViewAuditChain?: (target: AuditChainTarget) => void;
 }
 
 export function EvidenceAuditPanel({
@@ -20,6 +23,7 @@ export function EvidenceAuditPanel({
   selectedTagId = null,
   canEdit = false,
   onEditTag,
+  onViewAuditChain,
 }: EvidenceAuditPanelProps) {
   return (
     <div className="ag-evidence-panel">
@@ -42,15 +46,35 @@ export function EvidenceAuditPanel({
                     <span>{tag.label_key}</span>
                     <strong>{tag.label_value}</strong>
                   </div>
-                  {canEdit && onEditTag && (
-                    <button
-                      type="button"
-                      aria-label={`从证据卡编辑标签 ${tag.label_key}`}
-                      onClick={() => onEditTag(tag)}
-                    >
-                      编辑
-                    </button>
-                  )}
+                  <div className="ag-evidence-card__actions">
+                    {/* Every role may read the chain — the provenance route
+                        gates on tenant/ownership, not on edit rights — so this
+                        stays outside the canEdit branch. */}
+                    {onViewAuditChain && (
+                      <button
+                        type="button"
+                        aria-label={`查看标签 ${tag.label_key} 的完整审计链`}
+                        onClick={() =>
+                          onViewAuditChain({
+                            objectType: "dialogue_tag_assignment",
+                            objectRef: tag.id,
+                            title: `标签 ${tag.label_key}`,
+                          })
+                        }
+                      >
+                        审计链
+                      </button>
+                    )}
+                    {canEdit && onEditTag && (
+                      <button
+                        type="button"
+                        aria-label={`从证据卡编辑标签 ${tag.label_key}`}
+                        onClick={() => onEditTag(tag)}
+                      >
+                        编辑
+                      </button>
+                    )}
+                  </div>
                 </div>
                 <div className="ag-meta-row">
                   <span>
@@ -138,8 +162,25 @@ export function EvidenceAuditPanel({
           <h3 id="audit-heading">审计记录</h3>
           <span>{workspace.audit_events.length}</span>
         </div>
+        {/* The list above only covers the loaded time window; the reception's
+            older events (and their edit reasons) live behind this drawer. */}
+        {onViewAuditChain && (
+          <button
+            type="button"
+            className="ag-audit-chain-link"
+            onClick={() =>
+              onViewAuditChain({
+                objectType: "reception",
+                objectRef: workspace.reception.id,
+                title: "本次接待",
+              })
+            }
+          >
+            查看完整审计链
+          </button>
+        )}
         {workspace.audit_events.length === 0 ? (
-          <p className="ag-empty-inline">暂无人工变更记录</p>
+          <p className="ag-empty-inline">当前时间窗内暂无人工变更记录</p>
         ) : (
           <ol className="ag-audit-list">
             {workspace.audit_events.map((event) => (

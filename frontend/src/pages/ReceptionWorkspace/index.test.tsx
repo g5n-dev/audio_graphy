@@ -24,6 +24,7 @@ vi.mock("@/api/services", () => ({
   deriveReceptionDialogueTags: vi.fn(),
   getReceptionAutomation: vi.fn(),
   getReceptionAudioOperation: vi.fn(),
+  getReceptionProvenance: vi.fn(),
   getReceptionWorkspace: vi.fn(),
   getTagFactLineage: vi.fn(),
   listTagSchemas: vi.fn(),
@@ -46,6 +47,7 @@ import {
   deriveReceptionDialogueTags,
   getReceptionAutomation,
   getReceptionAudioOperation,
+  getReceptionProvenance,
   getReceptionWorkspace,
   getTagFactLineage,
   listTagSchemas,
@@ -63,6 +65,8 @@ const mockedGetWorkspace = getReceptionWorkspace as unknown as ReturnType<
 >;
 const mockedGetLineage =
   getTagFactLineage as unknown as ReturnType<typeof vi.fn>;
+const mockedGetProvenance =
+  getReceptionProvenance as unknown as ReturnType<typeof vi.fn>;
 const mockedCreateTagJob = createTagJob as unknown as ReturnType<typeof vi.fn>;
 const mockedCorrectTag =
   correctReceptionDialogueTag as unknown as ReturnType<typeof vi.fn>;
@@ -327,6 +331,7 @@ describe("ReceptionWorkspacePage", () => {
     mockedListTaggers.mockReset();
     mockedGetWorkspace.mockReset();
     mockedGetLineage.mockReset();
+    mockedGetProvenance.mockReset();
     mockedGetAutomation.mockReset();
     mockedCreateAudioPlan.mockReset();
     mockedCreateAudioOperation.mockReset();
@@ -752,6 +757,59 @@ describe("ReceptionWorkspacePage", () => {
     expect(
       screen.getByRole("button", { name: "重新加载" }),
     ).toBeInTheDocument();
+  });
+
+  it("opens a tag's full audit chain so an edit reason survives the workspace window", async () => {
+    // 工作台只加载当前时间窗的审计事件，标签更正原因写在该标签自己的溯源链上。
+    mockedGetProvenance.mockResolvedValue({
+      object_type: "dialogue_tag_assignment",
+      object_ref: "tag-1",
+      total: 1,
+      page: 1,
+      page_size: 100,
+      truncated: false,
+      items: [
+        {
+          id: 9,
+          object_type: "dialogue_tag_assignment",
+          object_ref: "tag-1",
+          action: "edited",
+          actor: "inspector@example.com",
+          algorithm_version: "manual-v1",
+          parent_refs: [],
+          evidence_refs: [],
+          occurred_at: "2026-07-23T02:00:00Z",
+          detail: { reason: "客户当场改口，阶段判定有误" },
+        },
+      ],
+    });
+    const user = userEvent.setup();
+    renderWorkspace();
+
+    await user.click(
+      await screen.findByRole("button", {
+        name: "查看标签 stage.greeting 的完整审计链",
+      }),
+    );
+
+    await waitFor(() => {
+      expect(mockedGetProvenance).toHaveBeenCalledWith("tag-1", {
+        objectType: "dialogue_tag_assignment",
+      });
+    });
+    const drawer = await screen.findByRole("dialog", {
+      name: "标签 stage.greeting · 完整审计链",
+    });
+    expect(
+      within(drawer).getByText("客户当场改口，阶段判定有误"),
+    ).toBeInTheDocument();
+
+    await user.click(
+      within(drawer).getByRole("button", { name: "关闭完整审计链" }),
+    );
+    expect(
+      screen.queryByRole("dialog", { name: "标签 stage.greeting · 完整审计链" }),
+    ).not.toBeInTheDocument();
   });
 
   it("switches between reception detail tabs without losing the reception id", async () => {

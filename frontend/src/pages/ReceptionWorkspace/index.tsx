@@ -22,6 +22,7 @@ import {
   deriveReceptionDialogueTags,
   getReceptionAutomation,
   getReceptionAudioOperation,
+  getReceptionProvenance,
   getTagFactLineage,
   getReceptionWorkspace,
   mergeDialogueUnits,
@@ -40,6 +41,10 @@ import {
   TagAssignmentEditor,
   type TagCorrectionDraft,
 } from "@/components/dialogue/TagAssignmentEditor";
+import {
+  ReceptionAuditChainDrawer,
+  type AuditChainTarget,
+} from "@/components/dialogue/ReceptionAuditChainDrawer";
 import { TagFactLineageDrawer } from "@/components/dialogue/TagFactLineageDrawer";
 import { ReceptionContextTabs } from "@/components/navigation/ContextNavigation";
 import { useAuthStore } from "@/stores/auth";
@@ -218,6 +223,8 @@ export default function ReceptionWorkspacePage() {
     null,
   );
   const [lineageFactId, setLineageFactId] = useState<number | null>(null);
+  const [auditChainTarget, setAuditChainTarget] =
+    useState<AuditChainTarget | null>(null);
   const [mergeMode, setMergeMode] = useState<ReceptionMergeMode>("both");
   const [editReason, setEditReason] = useState("");
   const [operationStatus, setOperationStatus] = useState<string | null>(null);
@@ -309,6 +316,19 @@ export default function ReceptionWorkspacePage() {
     queryKey: ["tag-fact-lineage", lineageFactId],
     queryFn: () => getTagFactLineage(lineageFactId ?? 0),
     enabled: lineageFactId !== null,
+    retry: false,
+  });
+  const auditChainQuery = useQuery({
+    queryKey: [
+      "reception-provenance",
+      auditChainTarget?.objectType,
+      String(auditChainTarget?.objectRef ?? ""),
+    ],
+    queryFn: () =>
+      getReceptionProvenance(auditChainTarget?.objectRef ?? "", {
+        objectType: auditChainTarget?.objectType,
+      }),
+    enabled: auditChainTarget !== null,
     retry: false,
   });
   const workspace = workspaceQuery.data;
@@ -1309,6 +1329,11 @@ export default function ReceptionWorkspacePage() {
         queryClient.invalidateQueries({
           queryKey: ["reception-state-insights"],
         }),
+        // The correction appends provenance events carrying the reason the
+        // reviewer just typed; an open audit-chain drawer must show them.
+        queryClient.invalidateQueries({
+          queryKey: ["reception-provenance"],
+        }),
         queryClient.invalidateQueries({ queryKey: ["graph"] }),
       ]);
     },
@@ -1982,6 +2007,16 @@ export default function ReceptionWorkspacePage() {
               onClose={() => setLineageFactId(null)}
             />
           )}
+          {auditChainTarget !== null && (
+            <ReceptionAuditChainDrawer
+              target={auditChainTarget}
+              data={auditChainQuery.data}
+              pending={auditChainQuery.isPending}
+              error={auditChainQuery.error}
+              onRetry={() => void auditChainQuery.refetch()}
+              onClose={() => setAuditChainTarget(null)}
+            />
+          )}
 
           {(canRunSegmentation || canEditDialogue) && (
             <div className="ag-dialogue-toolbar">
@@ -2341,6 +2376,7 @@ export default function ReceptionWorkspacePage() {
             selectedTagId={selectedTagId}
             canEdit={canEditTags}
             onEditTag={selectTagForEditing}
+            onViewAuditChain={setAuditChainTarget}
           />
         </aside>
       </main>

@@ -570,13 +570,37 @@ function AppLayout() {
 export default function App() {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const loadFromStorage = useAuthStore((s) => s.loadFromStorage);
+  const setUser = useAuthStore((s) => s.setUser);
   const location = useLocation();
   const [authHydrated, setAuthHydrated] = useState(false);
 
   useEffect(() => {
-    loadFromStorage();
+    const restored = loadFromStorage();
     setAuthHydrated(true);
-  }, [loadFromStorage]);
+    if (!restored) return;
+
+    // The persisted profile is whatever the login response said, possibly days
+    // ago. Roles gate real actions (tag governance, review decisions), so a
+    // role an admin has since changed must not survive in this session — the
+    // store update re-renders the shell, no reload required.
+    let cancelled = false;
+    // Imported lazily on purpose: a static import would pull the whole API
+    // service module — and axios with it — into the entry chunk, which is the
+    // same first-paint cost the lazy route split exists to avoid.
+    void import("@/api/services")
+      .then(({ getMe }) => getMe())
+      .then((user) => {
+        if (!cancelled) setUser(user);
+      })
+      .catch(() => {
+        // Deliberately silent: the token is still valid, only the cached
+        // profile may be stale. Logging the user out over a failed refresh
+        // would turn a transient network error into a forced re-login.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [loadFromStorage, setUser]);
 
   // Do not redirect a deep link before persisted auth has been restored.
   if (!authHydrated) {

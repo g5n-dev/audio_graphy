@@ -997,6 +997,33 @@ export interface ProvenanceListApiResponse {
   truncated: boolean;
 }
 
+/**
+ * Object kinds `GET /provenance/{object_type}/{object_ref}` answers for.
+ *
+ * The route validates the type against a pattern rather than an enum, but only
+ * these kinds are ever written by the reception services, and a manual tag
+ * correction's `reason` lands on `dialogue_tag_assignment` — never on the
+ * reception itself.
+ */
+export type ProvenanceObjectType =
+  | "reception"
+  | "recording"
+  | "dialogue_unit"
+  | "dialogue_tag_assignment"
+  | "dialogue_state_transition";
+
+/** One page of an object's chronological provenance chain. */
+export interface ReceptionProvenanceChain {
+  object_type: string;
+  object_ref: string;
+  items: ReceptionAuditEvent[];
+  total: number;
+  page: number;
+  page_size: number;
+  /** True when this page does not contain the whole chain. */
+  truncated: boolean;
+}
+
 // ============================================================
 // Persisted reception dialogue tags
 // ============================================================

@@ -7,13 +7,18 @@ import {
   within,
 } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAuthStore } from "@/stores/auth";
 
 const graphModuleState = vi.hoisted(() => ({
   evaluations: 0,
   shouldThrow: false,
 }));
+const mockedGetMe = vi.hoisted(() => vi.fn());
+
+// App refreshes the cached profile on session restore; without this the boot
+// effect would issue a real request from jsdom.
+vi.mock("@/api/services", () => ({ getMe: mockedGetMe }));
 let restoreExpectedGraphError: (() => void) | undefined;
 
 function suppressExpectedGraphError() {
@@ -88,6 +93,17 @@ vi.mock("@/pages/ReceptionStateInsights", () => ({
 import App from "./App";
 
 describe("App route loading", () => {
+  beforeEach(() => {
+    mockedGetMe.mockReset();
+    mockedGetMe.mockResolvedValue({
+      id: 1,
+      name: "Persisted User",
+      email: "persisted@example.com",
+      role: "admin",
+      tenant_id: "tenant-test",
+    });
+  });
+
   afterEach(() => {
     cleanup();
     restoreExpectedGraphError?.();
@@ -515,6 +531,103 @@ describe("App route loading", () => {
     expect(
       await screen.findByText("reception-workspace-route"),
     ).toBeInTheDocument();
+  });
+
+  it("applies a role changed since login to the restored session without a reload", async () => {
+    useAuthStore.getState().clearAuth();
+    localStorage.setItem("ag_access_token", "persisted-token");
+    localStorage.setItem("ag_refresh_token", "persisted-refresh");
+    localStorage.setItem(
+      "ag_user_info",
+      JSON.stringify({
+        id: 1,
+        name: "Persisted User",
+        email: "persisted@example.com",
+        role: "agent",
+        tenant_id: "tenant-test",
+      }),
+    );
+    mockedGetMe.mockResolvedValue({
+      id: 1,
+      name: "Persisted User",
+      email: "persisted@example.com",
+      role: "inspector",
+      tenant_id: "tenant-test",
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/tag-governance"]}>
+        <App />
+      </MemoryRouter>,
+    );
+
+    // The persisted profile still says "agent"; only the refreshed role opens
+    // the governance route, and it must do so in place.
+    expect(await screen.findByText("tag-governance-route")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("alert", { name: "无标签治理权限" }),
+    ).not.toBeInTheDocument();
+    const sidebar = screen.getByRole("navigation", { name: "平台功能导航" });
+    expect(within(sidebar).getByText("标签治理")).toBeInTheDocument();
+    // Re-reading the profile must also survive a reload.
+    expect(
+      JSON.parse(localStorage.getItem("ag_user_info") ?? "{}").role,
+    ).toBe("inspector");
+  });
+
+  it("keeps the restored session usable when the profile refresh fails", async () => {
+    useAuthStore.getState().clearAuth();
+    localStorage.setItem("ag_access_token", "persisted-token");
+    localStorage.setItem("ag_refresh_token", "persisted-refresh");
+    localStorage.setItem(
+      "ag_user_info",
+      JSON.stringify({
+        id: 1,
+        name: "Persisted User",
+        email: "persisted@example.com",
+        role: "admin",
+        tenant_id: "tenant-test",
+      }),
+    );
+    mockedGetMe.mockRejectedValue(new Error("profile service unavailable"));
+
+    render(
+      <MemoryRouter initialEntries={["/"]}>
+        <App />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText("dashboard-route")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(mockedGetMe).toHaveBeenCalledTimes(1);
+    });
+    expect(useAuthStore.getState().isAuthenticated).toBe(true);
+    expect(useAuthStore.getState().user?.role).toBe("admin");
+    expect(screen.getByText("dashboard-route")).toBeInTheDocument();
+  });
+
+  it("does not re-read the profile for a session that was never persisted", async () => {
+    useAuthStore.setState({
+      token: "test-token",
+      refreshToken: "test-refresh-token",
+      user: {
+        id: 1,
+        name: "Test User",
+        email: "test@example.com",
+        role: "admin",
+        tenant_id: "tenant-test",
+      },
+      isAuthenticated: true,
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/"]}>
+        <App />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText("dashboard-route")).toBeInTheDocument();
+    expect(mockedGetMe).not.toHaveBeenCalled();
   });
 
   it("keeps the application shell visible and retries a failed route without exposing error details", async () => {

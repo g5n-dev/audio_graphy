@@ -60,7 +60,7 @@ import type {
   MergeDialogueUnitsRequest,
   MergeReceptionRecordingsRequest,
   ProvenanceListApiResponse,
-  ReceptionAuditEvent,
+  ProvenanceObjectType,
   ReceptionAudioOperation,
   ReceptionAudioPlanRequest,
   ReceptionAudioPlanResponse,
@@ -73,6 +73,7 @@ import type {
   ReceptionListResponse,
   ReceptionProposalAcceptRequest,
   ReceptionProposalAcceptResponse,
+  ReceptionProvenanceChain,
   ReceptionResponseApi,
   ReceptionStateTransition,
   ReceptionTagInsightsRequest,
@@ -843,33 +844,57 @@ export async function mergeDialogueUnits(
   return data;
 }
 
+/**
+ * One object's complete chronological provenance chain.
+ *
+ * `objectType` defaults to `reception` because that is the chain the workspace
+ * asks for first, but the reason text a reviewer is forced to type when
+ * correcting a tag is persisted against `dialogue_tag_assignment`, so the type
+ * has to stay caller-controlled. The server 404s an object with no events at
+ * all; callers branch on the status rather than expecting an empty page.
+ */
 export async function getReceptionProvenance(
-  receptionId: EntityId,
-): Promise<ReceptionAuditEvent[]> {
+  objectRef: EntityId,
+  options: {
+    objectType?: ProvenanceObjectType;
+    page?: number;
+    pageSize?: number;
+  } = {},
+): Promise<ReceptionProvenanceChain> {
+  const { objectType = "reception", page, pageSize } = options;
   const { data } = await httpClient.get<ProvenanceListApiResponse>(
-    `/provenance/reception/${encodeURIComponent(String(receptionId))}`,
+    `/provenance/${objectType}/${encodeURIComponent(String(objectRef))}`,
+    { params: { page, page_size: pageSize } },
   );
-  return data.items.map((event) => ({
-    id: event.id,
-    object_type: event.object_type,
-    object_ref: event.object_ref,
-    action: event.event_type,
-    actor: event.actor,
-    algorithm_version: event.algorithm_version,
-    parent_refs: event.parent_refs.filter(isJsonObject),
-    evidence_refs: event.evidence_refs
-      .map((evidence, index) =>
-        normalizeDialogueEvidence(
-          evidence,
-          `provenance-${event.id}-evidence-${index}`,
+  return {
+    object_type: data.object_type,
+    object_ref: data.object_ref,
+    total: data.total,
+    page: data.page,
+    page_size: data.page_size,
+    truncated: data.truncated,
+    items: data.items.map((event) => ({
+      id: event.id,
+      object_type: event.object_type,
+      object_ref: event.object_ref,
+      action: event.event_type,
+      actor: event.actor,
+      algorithm_version: event.algorithm_version,
+      parent_refs: event.parent_refs.filter(isJsonObject),
+      evidence_refs: event.evidence_refs
+        .map((evidence, index) =>
+          normalizeDialogueEvidence(
+            evidence,
+            `provenance-${event.id}-evidence-${index}`,
+          ),
+        )
+        .filter((evidence): evidence is NonNullable<typeof evidence> =>
+          Boolean(evidence),
         ),
-      )
-      .filter((evidence): evidence is NonNullable<typeof evidence> =>
-        Boolean(evidence),
-      ),
-    occurred_at: event.occurred_at,
-    detail: event.payload,
-  }));
+      occurred_at: event.occurred_at,
+      detail: event.payload,
+    })),
+  };
 }
 
 export async function deriveReceptionDialogueTags(

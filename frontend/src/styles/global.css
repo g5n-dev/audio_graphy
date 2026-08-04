@@ -2108,6 +2108,19 @@ a:focus-visible {
   text-align: center;
 }
 
+.ag-audit-chain-link {
+  display: block;
+  width: 100%;
+  margin: 2px 0 8px;
+  padding: 6px 8px;
+  color: var(--ag-primary);
+  background: #f4f8ff;
+  border: 1px dashed #94bfff;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
 .ag-evidence-list,
 .ag-transition-list,
 .ag-audit-list {
@@ -2148,7 +2161,15 @@ a:focus-visible {
   flex: 1;
 }
 
-.ag-evidence-card__title > button {
+/* Overrides the generic `> div` rule above: the action cluster must keep its
+   intrinsic width so the label/value block still gets the leftover space. */
+.ag-evidence-card__actions {
+  flex: none;
+  justify-content: flex-end;
+}
+
+.ag-evidence-card__title > button,
+.ag-evidence-card__actions > button {
   flex: none;
   min-height: 26px;
   padding: 3px 7px;
@@ -5129,6 +5150,62 @@ a:focus-visible {
   background: #f8fafc;
   border-radius: 6px;
   font-size: 13px;
+}
+
+.ag-audit-chain-list {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ag-audit-chain-list > li {
+  display: grid;
+  gap: 6px;
+  padding: 11px 12px;
+  background: #f8fafc;
+  border: 1px solid #e6ecf4;
+  border-radius: 8px;
+}
+
+.ag-audit-chain-list__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.ag-audit-chain-list__head strong {
+  color: #2a3b56;
+  font-size: 14px;
+}
+
+.ag-audit-chain-list__head time {
+  color: #8492a6;
+  font-size: 12px;
+}
+
+.ag-audit-chain-list__reason {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: #34445e;
+  font-size: 13px;
+}
+
+.ag-audit-chain-list__reason > span {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 1px 6px;
+  color: #285dca;
+  background: #eaf1ff;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.ag-audit-chain-list__reason.is-empty {
+  color: #93a0b2;
+  font-size: 12px;
 }
 
 @media (max-width: 620px) {
