@@ -4246,7 +4246,10 @@ async def test_nullable_lineage_recipe_is_database_idempotent(
     assert len(facts) == 1
 
 
-def test_the_deployment_conflict_messages_are_a_frontend_contract() -> None:
+@pytest.mark.asyncio
+async def test_the_deployment_conflict_messages_are_a_frontend_contract(
+    governance_factory: async_sessionmaker[AsyncSession],
+) -> None:
     """The web UI branches on these exact strings, so they are API surface.
 
     ``_domain`` maps every governance conflict onto one
@@ -4258,17 +4261,137 @@ def test_the_deployment_conflict_messages_are_a_frontend_contract() -> None:
     string without updating that function and the operator is sent the wrong
     way, with no error to show for it.
 
-    If you need to reword one, change both sides in the same commit.
+    Asserted by raising them from ``create_deployment`` itself — its first
+    test caller; the previous source-text grep proved the strings existed but
+    not that these situations produce them. If you need to reword one, change
+    both sides in the same commit.
     """
-    import inspect
+    from datetime import UTC, datetime
 
-    from audio_graphy.services import tag_governance
+    from audio_graphy.models.tag_governance import (
+        TagDeployment,
+        TagEvaluationRun,
+        TaggerVersion,
+    )
+    from audio_graphy.services.tag_governance import (
+        GovernanceConflictError,
+        TagGovernanceService,
+    )
 
-    source = inspect.getsource(tag_governance)
-    for phrase in (
-        "deployment requires a release-service sealed holdout evaluation",
-        "a sealed holdout evaluation can start only one deployment",
-    ):
-        assert phrase in source, (
-            f"{phrase!r} is matched verbatim by the deployment dialog's error copy"
+    schema_version_id = await _seed_single_tag_schema(
+        governance_factory, key="deploy-conflict-copy"
+    )
+    now = datetime.now(UTC).replace(second=0, microsecond=0)
+    async with governance_factory() as session, session.begin():
+        baseline = TaggerVersion(
+            tenant_id="chang_an",
+            schema_version_id=schema_version_id,
+            version="deploy-copy-baseline",
+            engine="rule",
+            prompt_content="",
+            rule_bundle={"dsl_version": "1", "rules": []},
+            model_version="rules-v1",
+            thresholds={},
+            config_checksum="c" * 64,
+            status="qualified",
+            created_by=1,
+            qualified_at=now,
         )
+        candidate = TaggerVersion(
+            tenant_id="chang_an",
+            schema_version_id=schema_version_id,
+            version="deploy-copy-candidate",
+            engine="rule",
+            prompt_content="",
+            rule_bundle={"dsl_version": "1", "rules": []},
+            model_version="rules-v2",
+            thresholds={},
+            config_checksum="d" * 64,
+            status="qualified",
+            created_by=1,
+            qualified_at=now,
+        )
+        session.add_all([baseline, candidate])
+        await session.flush()
+        # The production row needs its own (historical) evaluation: the column
+        # is NOT NULL, and sharing the candidate's run would spend that run's
+        # one-deployment slot before the test gets to spend it deliberately.
+        bootstrap_evaluation = TagEvaluationRun(
+            tenant_id="chang_an",
+            tagger_version_id=baseline.id,
+            baseline_tagger_version_id=baseline.id,
+            gold_set_version_id=1,
+            status="completed",
+            metrics={"evaluation_lane": "holdout", "sealed_release": True},
+            baseline_metrics={},
+            passed=True,
+            started_at=now,
+            finished_at=now,
+            created_by=1,
+        )
+        session.add(bootstrap_evaluation)
+        await session.flush()
+        session.add(
+            TagDeployment(
+                tenant_id="chang_an",
+                tagger_version_id=baseline.id,
+                evaluation_run_id=bootstrap_evaluation.id,
+                baseline_tagger_version_id=baseline.id,
+                status="production",
+                traffic_percent=100,
+                revision=1,
+                created_at=now,
+                created_by=1,
+            )
+        )
+        # Completed and passed, but NOT a sealed holdout run — the state a
+        # challenge-lane evaluation is in when someone tries to deploy it.
+        evaluation = TagEvaluationRun(
+            tenant_id="chang_an",
+            tagger_version_id=candidate.id,
+            baseline_tagger_version_id=baseline.id,
+            gold_set_version_id=1,
+            status="completed",
+            metrics={"evaluation_lane": "challenge"},
+            baseline_metrics={},
+            passed=True,
+            started_at=now,
+            finished_at=now,
+            created_by=1,
+        )
+        session.add(evaluation)
+        await session.flush()
+        evaluation_id = int(evaluation.id)
+        candidate_id = int(candidate.id)
+        baseline_id = int(baseline.id)
+
+    service = TagGovernanceService(governance_factory)
+    request = {
+        "tenant_id": "chang_an",
+        "tagger_version_id": candidate_id,
+        "evaluation_run_id": evaluation_id,
+        "baseline_tagger_version_id": baseline_id,
+        "actor_user_id": 1,
+    }
+
+    with pytest.raises(
+        GovernanceConflictError,
+        match=r"^deployment requires a release-service sealed holdout evaluation$",
+    ):
+        await service.create_deployment(**request)
+
+    async with governance_factory() as session, session.begin():
+        row = await session.get(TagEvaluationRun, evaluation_id)
+        assert row is not None
+        row.metrics = {"evaluation_lane": "holdout", "sealed_release": True}
+
+    deployment = await service.create_deployment(**request)
+    assert deployment.status == "shadow"
+
+    # Its slot is spent: a second deployment off the same sealed run must name
+    # the OTHER remedy — pick a different evaluation, not produce a candidate.
+    with pytest.raises(
+        GovernanceConflictError,
+        match=r"^a sealed holdout evaluation can start only one deployment$",
+    ):
+        await service.create_deployment(**request)
