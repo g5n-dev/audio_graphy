@@ -1009,7 +1009,17 @@ export type ProvenanceObjectType =
   | "reception"
   | "recording"
   | "dialogue_unit"
+  /**
+   * A legacy tag assignment. Governed tags are NOT this: the governance path
+   * writes provenance under `tag_assignment_fact`
+   * (services/tag_governance.py), and the workspace projects a fact into the
+   * tag contract carrying the FACT's id. Asking for the wrong type here is not
+   * merely a miss — `get_provenance` filters on (tenant, type, ref) with no
+   * reception predicate, and the two tables have independent id sequences, so
+   * a collision renders another reception's edit reason under this tag.
+   */
   | "dialogue_tag_assignment"
+  | "tag_assignment_fact"
   | "dialogue_state_transition";
 
 /** One page of an object's chronological provenance chain. */

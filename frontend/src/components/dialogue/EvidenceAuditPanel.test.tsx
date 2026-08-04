@@ -154,6 +154,45 @@ describe("EvidenceAuditPanel", () => {
     });
   });
 
+  it("asks for a governed tag's chain under tag_assignment_fact", () => {
+    // A governed tag's row is a projected TagAssignmentFact carrying the FACT's
+    // id, and the governance path writes its provenance under
+    // `tag_assignment_fact`. Asking for `dialogue_tag_assignment` is not merely
+    // a miss: get_provenance filters on (tenant, type, ref) with no reception
+    // predicate, and the two tables have independent id sequences — so a
+    // colliding id renders ANOTHER reception's edit reason under this tag.
+    const onViewAuditChain = vi.fn();
+    const base = makeWorkspace([]);
+    render(
+      <EvidenceAuditPanel
+        workspace={{
+          ...base,
+          tag_assignments: [
+            {
+              ...base.tag_assignments[0],
+              id: 42,
+              group_version: "schema:tag_schema_v3",
+              label_key: "intent.purchase",
+            },
+          ],
+        }}
+        onViewAuditChain={onViewAuditChain}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "查看标签 intent.purchase 的完整审计链",
+      }),
+    );
+
+    expect(onViewAuditChain).toHaveBeenLastCalledWith({
+      objectType: "tag_assignment_fact",
+      objectRef: 42,
+      title: "标签 intent.purchase",
+    });
+  });
+
   it("keeps the audit chain readable for roles that cannot edit tags", () => {
     render(
       <EvidenceAuditPanel

@@ -4947,6 +4947,25 @@ class ReceptionService:
                     Reception.agent_user_id == agent_user_id,
                 )
             )
+        elif object_type == "tag_assignment_fact":
+            # A governed tag's provenance lives here, not under
+            # `dialogue_tag_assignment`: the governance path writes the chain
+            # against the fact id, and the workspace projects the fact into the
+            # tag contract carrying that id. Without this branch an agent got a
+            # fail-closed 404 for every governed tag's audit chain.
+            stmt = (
+                select(TagAssignmentFact.id)
+                .join(
+                    Reception,
+                    Reception.id == TagAssignmentFact.reception_id,
+                )
+                .where(
+                    TagAssignmentFact.id == object_id,
+                    TagAssignmentFact.tenant_id == tenant_id,
+                    Reception.tenant_id == tenant_id,
+                    Reception.agent_user_id == agent_user_id,
+                )
+            )
         elif object_type == "dialogue_state_transition":
             stmt = (
                 select(DialogueStateTransition.id)

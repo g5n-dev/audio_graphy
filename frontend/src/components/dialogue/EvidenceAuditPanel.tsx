@@ -56,7 +56,15 @@ export function EvidenceAuditPanel({
                         aria-label={`查看标签 ${tag.label_key} 的完整审计链`}
                         onClick={() =>
                           onViewAuditChain({
-                            objectType: "dialogue_tag_assignment",
+                            // A governed tag's row is a projected fact — its id
+                            // is the fact's id and its chain lives under
+                            // `tag_assignment_fact`. `group_version` is what
+                            // distinguishes the two (`schema:` prefix), and it
+                            // is the same discriminator the legacy PATCH route
+                            // uses to decide whether to delegate.
+                            objectType: tag.group_version?.startsWith("schema:")
+                              ? "tag_assignment_fact"
+                              : "dialogue_tag_assignment",
                             objectRef: tag.id,
                             title: `标签 ${tag.label_key}`,
                           })
