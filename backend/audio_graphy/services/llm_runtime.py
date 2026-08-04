@@ -148,6 +148,7 @@ async def build_llm_runtime(
                 crypto=crypto,
                 max_item_bytes=settings.llm_hot_cache_max_item_bytes,
                 max_ttl_seconds=settings.llm_redis_cache_ttl_seconds,
+                deployment_id=settings.deployment_id,
             )
         hot = FailoverHotCache(
             primary,

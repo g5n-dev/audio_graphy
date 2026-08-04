@@ -379,3 +379,54 @@ async def test_failover_background_task_is_cancelled_on_close() -> None:
     await cache.aclose()
 
     assert cache.closed
+
+
+async def test_two_deployments_on_one_redis_never_touch_each_others_entries(
+    tmp_path: Path,
+) -> None:
+    """The wire key carries the deployment id — that IS the isolation boundary.
+
+    Redis is scoped to a host, not to a compose project. With a shared key
+    namespace, two stacks either silently serve each other's cached LLM output
+    (same master key) or read-then-UNLINK each other's entries on every AES-GCM
+    auth failure (different keys). With the deployment id in the prefix a
+    foreign entry is simply never addressed.
+    """
+    client = _FakeRedis()
+    crypto = _crypto(tmp_path)
+    ours = RedisHotCache("redis://unused", crypto=crypto, client=client, deployment_id="prod")
+    theirs = RedisHotCache("redis://unused", crypto=crypto, client=client, deployment_id="accept")
+    await ours.start()
+    await theirs.start()
+    value = HotCacheValue(payload=b"cached output", has_provenance=True)
+
+    assert await ours.set(_identity(), value, ttl_seconds=60)
+    assert await theirs.set(_identity(), value, ttl_seconds=60)
+    assert len(client.values) == 2, "same identity, two deployments, two keys"
+
+    # A tenant erase on one deployment must not reach into the other's entries.
+    assert await ours.clear_tenant("tenant-a") == 1
+    assert len(client.values) == 1
+    assert await theirs.get(_identity()) == value
+
+
+async def test_clear_tenant_also_sweeps_the_pre_deployment_id_namespace(
+    tmp_path: Path,
+) -> None:
+    """DSAR erase must not skip entries written before the prefix carried a
+    deployment id — a cache miss is recoverable, an unerased entry after a
+    reported-successful erase is not."""
+    client = _FakeRedis()
+    cache = RedisHotCache(
+        "redis://unused", crypto=_crypto(tmp_path), client=client, deployment_id="prod"
+    )
+    await cache.start()
+    identity = _identity()
+    # An entry in the legacy (pre-deployment-id) key shape.
+    client.values[
+        f"ag:llm:v1:{identity.tenant_hash}:{identity.namespace}:{identity.recipe_sha256}"
+    ] = b"legacy"
+    assert await cache.set(identity, HotCacheValue(b"new", True), ttl_seconds=60)
+
+    assert await cache.clear_tenant("tenant-a") == 2
+    assert client.values == {}

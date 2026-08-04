@@ -254,6 +254,7 @@ class RedisHotCache:
         max_item_bytes: int = 1024 * 1024,
         max_ttl_seconds: int = 3600,
         socket_timeout_seconds: float = 1.0,
+        deployment_id: str = "audiography",
     ) -> None:
         if not url:
             raise ValueError("Redis URL is required")
@@ -261,6 +262,15 @@ class RedisHotCache:
             raise ValueError("Redis cache limits must be positive")
         if socket_timeout_seconds <= 0:
             raise ValueError("socket_timeout_seconds must be positive")
+        if not deployment_id:
+            raise ValueError("deployment_id must be non-empty")
+        # Redis is scoped to a HOST, not to a compose project: with two stacks
+        # on one Redis, a shared key namespace either silently serves the other
+        # stack's cached LLM output (same master key) or read-then-UNLINKs the
+        # other stack's entries on every AES-GCM auth failure (different keys).
+        # Folding the deployment id into the prefix makes a foreign entry simply
+        # never addressed.
+        self._prefix = f"{_REDIS_PREFIX}:{deployment_id}"
         self._url = url
         self._crypto = crypto
         self._client = client
@@ -290,17 +300,17 @@ class RedisHotCache:
 
     async def get(self, key: CacheIdentity) -> HotCacheValue | None:
         client = self._require_client()
-        encoded = await client.get(key.redis_key)
+        encoded = await client.get(self._redis_key(key))
         if encoded is None:
             return None
         if not isinstance(encoded, bytes):
             encoded = bytes(encoded)
         if len(encoded) < len(_HOT_VALUE_MAGIC) + 2 or not encoded.startswith(_HOT_VALUE_MAGIC):
-            await client.unlink(key.redis_key)
+            await client.unlink(self._redis_key(key))
             return None
         provenance_byte = encoded[len(_HOT_VALUE_MAGIC)]
         if provenance_byte not in (0, 1):
-            await client.unlink(key.redis_key)
+            await client.unlink(self._redis_key(key))
             return None
         encrypted = EncryptedCachePayload(
             blob=encoded[len(_HOT_VALUE_MAGIC) + 1 :],
@@ -319,7 +329,7 @@ class RedisHotCache:
                 key.namespace,
                 key.recipe_sha256[:12],
             )
-            await client.unlink(key.redis_key)
+            await client.unlink(self._redis_key(key))
             return None
         return HotCacheValue(payload, bool(provenance_byte))
 
@@ -344,17 +354,20 @@ class RedisHotCache:
         if len(encoded) > self._max_item_bytes:
             return False
         result = await self._require_client().set(
-            key.redis_key,
+            self._redis_key(key),
             encoded,
             ex=min(ttl_seconds, self._max_ttl_seconds),
         )
         return bool(result)
 
+    def _redis_key(self, key: CacheIdentity) -> str:
+        return f"{self._prefix}:{key.tenant_hash}:{key.namespace}:{key.recipe_sha256}"
+
     async def delete(self, key: CacheIdentity) -> bool:
-        return bool(await self._require_client().unlink(key.redis_key))
+        return bool(await self._require_client().unlink(self._redis_key(key)))
 
     async def delete_many(self, keys: Sequence[CacheIdentity]) -> int:
-        redis_keys = [key.redis_key for key in keys]
+        redis_keys = [self._redis_key(key) for key in keys]
         if not redis_keys:
             return 0
         return int(await self._require_client().unlink(*redis_keys))
@@ -365,17 +378,24 @@ class RedisHotCache:
 
     async def clear_tenant(self, tenant_id: str) -> int:
         tenant_hash = hashlib.sha256(tenant_id.encode("utf-8")).hexdigest()
-        pattern = f"{_REDIS_PREFIX}:{tenant_hash}:*"
         client = self._require_client()
-        batch: list[str | bytes] = []
         removed = 0
-        async for redis_key in client.scan_iter(match=pattern, count=100):
-            batch.append(redis_key)
-            if len(batch) >= 100:
+        # Both the deployment-scoped pattern and the pre-deployment-id legacy
+        # one: entries written before the prefix carried a deployment id would
+        # otherwise be skipped by a DSAR erase that still reports success. The
+        # extra SCAN against an empty legacy namespace is one round trip.
+        for pattern in (
+            f"{self._prefix}:{tenant_hash}:*",
+            f"{_REDIS_PREFIX}:{tenant_hash}:*",
+        ):
+            batch: list[str | bytes] = []
+            async for redis_key in client.scan_iter(match=pattern, count=100):
+                batch.append(redis_key)
+                if len(batch) >= 100:
+                    removed += int(await client.unlink(*batch))
+                    batch.clear()
+            if batch:
                 removed += int(await client.unlink(*batch))
-                batch.clear()
-        if batch:
-            removed += int(await client.unlink(*batch))
         return removed
 
     async def aclose(self) -> None:

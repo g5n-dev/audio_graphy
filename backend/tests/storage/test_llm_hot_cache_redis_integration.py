@@ -141,11 +141,15 @@ async def test_real_redis_ttl_size_outage_and_two_probe_recovery(
         assert cache.backend_name == "redis"
         assert await cache.set(identity, value, ttl_seconds=60)
         inspector = Redis.from_url(real_redis.url, decode_responses=False)
+        # The wire key carries the deployment id (default "audiography"), not
+        # CacheIdentity.redis_key verbatim — that is the isolation boundary
+        # between two stacks sharing one Redis.
+        wire_key = f"ag:llm:v1:audiography:{identity.tenant_hash}:{identity.namespace}:{identity.recipe_sha256}"
         try:
-            encrypted = await inspector.get(identity.redis_key)
+            encrypted = await inspector.get(wire_key)
             assert isinstance(encrypted, bytes)
             assert value.payload not in encrypted
-            assert 0 < await inspector.ttl(identity.redis_key) <= 2
+            assert 0 < await inspector.ttl(wire_key) <= 2
         finally:
             await inspector.aclose()
         assert not await cache.set(
