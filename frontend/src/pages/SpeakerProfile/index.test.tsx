@@ -10,6 +10,7 @@
  */
 
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -210,5 +211,40 @@ describe("SpeakerProfileListPage", () => {
       status: "pending",
       limit: 1,
     });
+  });
+
+  it("flags a failed pending count instead of hiding the badge at zero", async () => {
+    const user = userEvent.setup();
+    mockedListSpeakers.mockResolvedValue({ items: [], total: 0 });
+    mockedListSpeakerMergePending.mockRejectedValue(
+      Object.assign(new Error("Request failed with status code 500"), {
+        response: {
+          status: 500,
+          data: {
+            error: { code: "internal_error", message: "复核队列服务不可用" },
+          },
+        },
+      }),
+    );
+
+    renderWithProviders();
+
+    // A zero badge is invisible, so a failed count reads as "nothing pending"
+    // — the opposite of what the reviewer needs to know.
+    const alerts = await screen.findAllByRole("alert");
+    const countAlert = alerts.find((el) =>
+      el.textContent?.includes("待复核数量加载失败"),
+    );
+    expect(countAlert).toBeDefined();
+    expect(countAlert).toHaveTextContent("复核队列服务不可用");
+    expect(screen.getByText("!")).toBeInTheDocument();
+    // The entry point into the review queue must survive the failure.
+    expect(screen.getByText("声纹质量")).toBeInTheDocument();
+
+    const callsBeforeRetry = mockedListSpeakerMergePending.mock.calls.length;
+    await user.click(screen.getByRole("button", { name: "重试" }));
+    expect(mockedListSpeakerMergePending.mock.calls.length).toBeGreaterThan(
+      callsBeforeRetry,
+    );
   });
 });

@@ -34,6 +34,7 @@ import {
   listSpeakerMergePending,
   type SpeakerMergePendingListItem,
 } from "@/api/advancedGraph";
+import { PanelState } from "@/components/PanelState";
 import { SpeakerBadge } from "@/components/SpeakerBadge";
 import {
   SpeakerMergeReviewModal,
@@ -225,7 +226,7 @@ export default function SpeakerProfileDetailPage(): JSX.Element {
 function PendingMergesCard({ speakerId }: { speakerId: number }): JSX.Element {
   const user = useAuthStore((s) => s.user);
   const canReview = user?.role === "admin" || user?.role === "inspector";
-  const { data, isLoading } = useQuery({
+  const pendingQuery = useQuery({
     queryKey: ["speaker-merge-pending", "by-speaker", speakerId],
     queryFn: () =>
       // Filtered server-side: a client-side filter over one capped page
@@ -238,7 +239,7 @@ function PendingMergesCard({ speakerId }: { speakerId: number }): JSX.Element {
     refetchInterval: 30_000,
   });
 
-  const rows = data?.items ?? [];
+  const rows = pendingQuery.data?.items ?? [];
 
   const [review, setReview] = useState<{
     mode: MergeReviewMode;
@@ -247,74 +248,81 @@ function PendingMergesCard({ speakerId }: { speakerId: number }): JSX.Element {
 
   return (
     <Card title="待确认的模糊合并 (L8 reconfirm queue)" style={{ marginTop: 16 }}>
-      <Spin loading={isLoading}>
-        {rows.length === 0 ? (
-          <Text type="secondary">无待处理项</Text>
-        ) : (
-          <Table
-            data={rows}
-            rowKey="id"
-            size="small"
-            pagination={false}
-            columns={[
-              { title: "Pending ID", dataIndex: "id", width: 100 },
-              {
-                title: "Candidate name",
-                dataIndex: "candidate_name",
-              },
-              {
-                title: "Fuzzy score",
-                dataIndex: "fuzzy_score",
-                render: (v: number) => (
-                  <Tag color="arc-orange">{v.toFixed(3)}</Tag>
-                ),
-              },
-              {
-                title: "Voiceprint",
-                dataIndex: "voiceprint_score",
-                width: 100,
-                render: (v: number | null) => (v !== null ? v.toFixed(3) : "—"),
-              },
-              {
-                title: "Recording",
-                dataIndex: "recording_id",
-                width: 110,
-              },
-              ...(canReview
-                ? [
-                    {
-                      title: "Action",
-                      key: "action",
-                      width: 180,
-                      render: (
-                        _: unknown,
-                        row: SpeakerMergePendingListItem,
-                      ) => (
-                        <>
-                          <Button
-                            size="mini"
-                            type="primary"
-                            style={{ marginRight: 8 }}
-                            onClick={() => setReview({ mode: "confirm", row })}
-                          >
-                            Confirm
-                          </Button>
-                          <Button
-                            size="mini"
-                            status="danger"
-                            onClick={() => setReview({ mode: "reject", row })}
-                          >
-                            Reject
-                          </Button>
-                        </>
-                      ),
-                    },
-                  ]
-                : []),
-            ]}
-          />
-        )}
-      </Spin>
+      {/* A rejected request must not read as 无待处理项: this queue is how a
+          wrong automatic merge gets caught, so the failure has to be visible
+          and retryable instead of silently empty. */}
+      <PanelState
+        pending={pendingQuery.isLoading}
+        error={pendingQuery.error}
+        empty={rows.length === 0}
+        emptyTitle="无待处理项"
+        emptyDescription="该说话人当前没有等待复核的模糊合并。"
+        onRetry={() => void pendingQuery.refetch()}
+        pendingLabel="正在加载待复核队列…"
+      >
+        <Table
+          data={rows}
+          rowKey="id"
+          size="small"
+          pagination={false}
+          columns={[
+            { title: "Pending ID", dataIndex: "id", width: 100 },
+            {
+              title: "Candidate name",
+              dataIndex: "candidate_name",
+            },
+            {
+              title: "Fuzzy score",
+              dataIndex: "fuzzy_score",
+              render: (v: number) => (
+                <Tag color="arc-orange">{v.toFixed(3)}</Tag>
+              ),
+            },
+            {
+              title: "Voiceprint",
+              dataIndex: "voiceprint_score",
+              width: 100,
+              render: (v: number | null) => (v !== null ? v.toFixed(3) : "—"),
+            },
+            {
+              title: "Recording",
+              dataIndex: "recording_id",
+              width: 110,
+            },
+            ...(canReview
+              ? [
+                  {
+                    title: "Action",
+                    key: "action",
+                    width: 180,
+                    render: (
+                      _: unknown,
+                      row: SpeakerMergePendingListItem,
+                    ) => (
+                      <>
+                        <Button
+                          size="mini"
+                          type="primary"
+                          style={{ marginRight: 8 }}
+                          onClick={() => setReview({ mode: "confirm", row })}
+                        >
+                          Confirm
+                        </Button>
+                        <Button
+                          size="mini"
+                          status="danger"
+                          onClick={() => setReview({ mode: "reject", row })}
+                        >
+                          Reject
+                        </Button>
+                      </>
+                    ),
+                  },
+                ]
+              : []),
+          ]}
+        />
+      </PanelState>
       <SpeakerMergeReviewModal
         visible={review !== null}
         mode={review?.mode ?? "confirm"}

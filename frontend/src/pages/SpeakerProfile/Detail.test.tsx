@@ -6,9 +6,11 @@
  *   - Shows related recordings table
  *   - Shows error fallback when speaker missing
  *   - Loading state renders Spin
+ *   - Announces a failed reconfirm-queue fetch rather than "无待处理项"
  */
 
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -195,6 +197,37 @@ describe("SpeakerProfileDetailPage", () => {
       matched_speaker_node_id: 7,
       limit: 50,
     });
+  });
+
+  it("announces a failed pending-merge request instead of 无待处理项", async () => {
+    const user = userEvent.setup();
+    mockedGetSpeaker.mockResolvedValueOnce(MOCK_DETAIL);
+    mockedListSpeakerMergePending.mockRejectedValue(
+      Object.assign(new Error("Request failed with status code 500"), {
+        response: {
+          status: 500,
+          data: {
+            error: { code: "internal_error", message: "复核队列服务不可用" },
+          },
+        },
+      }),
+    );
+
+    renderDetailWithId("7");
+    await screen.findByText("Carol");
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("数据加载失败");
+    expect(alert).toHaveTextContent("复核队列服务不可用");
+    // This queue is how a wrong automatic merge gets caught: a failed request
+    // drawn as "无待处理项" tells the reviewer to move on.
+    expect(screen.queryByText("无待处理项")).not.toBeInTheDocument();
+
+    const callsBeforeRetry = mockedListSpeakerMergePending.mock.calls.length;
+    await user.click(screen.getByRole("button", { name: "重新加载" }));
+    expect(mockedListSpeakerMergePending.mock.calls.length).toBeGreaterThan(
+      callsBeforeRetry,
+    );
   });
 
   it("shows the backend message when the detail request fails", async () => {

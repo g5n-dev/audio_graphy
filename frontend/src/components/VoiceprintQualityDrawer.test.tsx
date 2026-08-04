@@ -6,9 +6,12 @@
  *   - Shows honest "未启用" warning when enable_voiceprint=false
  *   - Renders global pending queue rows
  *   - Hides review actions for viewer role, shows them for inspector
+ *   - Announces a failed queue / policy fetch instead of drawing it as
+ *     "nothing to review" or as empty policy sections
  */
 
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -206,5 +209,83 @@ describe("VoiceprintQualityDrawer", () => {
     expect(await screen.findByText("王小姐")).toBeInTheDocument();
     expect(screen.getByText("确认")).toBeInTheDocument();
     expect(screen.getByText("驳回")).toBeInTheDocument();
+  });
+
+  it("announces a failed pending queue instead of claiming nothing to review", async () => {
+    const user = userEvent.setup();
+    mockedListPending.mockImplementation(
+      (params?: { status?: string | string[] }) =>
+        params?.status === "pending"
+          ? Promise.reject(
+              Object.assign(new Error("Request failed with status code 500"), {
+                response: {
+                  status: 500,
+                  data: {
+                    error: {
+                      code: "internal_error",
+                      message: "复核队列服务不可用",
+                    },
+                  },
+                },
+              }),
+            )
+          : Promise.resolve({ items: [], total: 0, page: 1, page_size: 20 }),
+    );
+
+    renderDrawer();
+
+    // findAllByRole: the pipeline-status banner is an alert too, so the queue
+    // failure has to be located by its own text.
+    const alerts = await screen.findAllByRole("alert");
+    const queueAlert = alerts.find((el) =>
+      el.textContent?.includes("复核队列服务不可用"),
+    );
+    expect(queueAlert).toBeDefined();
+    expect(queueAlert).toHaveTextContent("数据加载失败");
+    // The whole point of the queue is catching merges that should not have
+    // happened; "无待处理项" would send the reviewer away.
+    expect(screen.queryByText("无待处理项")).not.toBeInTheDocument();
+    expect(screen.queryByText(/待复核（0）/)).not.toBeInTheDocument();
+
+    // The failure must stay recoverable from inside the drawer.
+    const callsBeforeRetry = mockedListPending.mock.calls.length;
+    await user.click(screen.getByRole("button", { name: "重新加载" }));
+    expect(mockedListPending.mock.calls.length).toBeGreaterThan(
+      callsBeforeRetry,
+    );
+  });
+
+  it("never spells an unknown queue size as zero in the tab titles", async () => {
+    mockedListPending.mockRejectedValue(new Error("boom"));
+    renderDrawer();
+    expect(await screen.findByText(/待复核（—）/)).toBeInTheDocument();
+    expect(screen.getByText(/已处理（—）/)).toBeInTheDocument();
+    expect(screen.queryByText(/待复核（0）/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/已处理（0）/)).not.toBeInTheDocument();
+  });
+
+  it("announces a failed policy fetch instead of empty policy sections", async () => {
+    mockedGetPolicy.mockRejectedValue(
+      Object.assign(new Error("Request failed with status code 503"), {
+        response: {
+          status: 503,
+          data: {
+            error: { code: "unavailable", message: "策略服务暂不可用" },
+          },
+        },
+      }),
+    );
+
+    renderDrawer();
+
+    expect(await screen.findByText("策略服务暂不可用")).toBeInTheDocument();
+    // Titled-but-empty sections read as "no thresholds configured", and the
+    // pipeline-status alert used to vanish without a word.
+    expect(screen.queryByText("采样策略")).not.toBeInTheDocument();
+    expect(screen.queryByText("合并判定规则")).not.toBeInTheDocument();
+    expect(screen.queryByText("声纹链路当前未启用")).not.toBeInTheDocument();
+    expect(screen.queryByText("声纹链路已启用")).not.toBeInTheDocument();
+    // The queue below still works — one failure must not blank the drawer.
+    expect(await screen.findByText("王小姐")).toBeInTheDocument();
   });
 });

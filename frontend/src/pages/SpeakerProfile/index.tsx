@@ -31,6 +31,7 @@ import { PanelState } from "@/components/PanelState";
 import { SpeakerBadge } from "@/components/SpeakerBadge";
 import { VoiceprintQualityDrawer } from "@/components/VoiceprintQualityDrawer";
 import { useVoiceprintPolicy } from "@/hooks/useVoiceprintPolicy";
+import { getErrorMessage } from "@/utils/errors";
 import type { SpeakerListItem } from "@/types/api";
 
 const ROLE_ALL_SENTINEL = "";
@@ -107,6 +108,13 @@ export default function SpeakerProfileListPage(): JSX.Element {
     queryFn: () => listSpeakerMergePending({ status: "pending", limit: 1 }),
     refetchInterval: 30_000,
   });
+  /**
+   * A failed count must never be drawn as a badge-less "0": the badge is the
+   * only hint on this page that merges are waiting for a human, and a wrong
+   * automatic merge is exactly what that queue exists to catch. On failure the
+   * badge becomes a "!" and an alert below offers a retry.
+   */
+  const pendingCountError = pendingCountQuery.error;
   const pendingTotal = pendingCountQuery.data?.total ?? 0;
 
   /**
@@ -144,7 +152,11 @@ export default function SpeakerProfileListPage(): JSX.Element {
           <p>按角色与合并状态筛选说话人，查看声纹信息与跨录音关系。</p>
         </div>
         <div className="ag-feature-header__actions">
-          <Badge count={pendingTotal} maxCount={99}>
+          <Badge
+            count={pendingTotal}
+            text={pendingCountError ? "!" : undefined}
+            maxCount={99}
+          >
             <Button
               icon={<IconSafe />}
               onClick={() => setQualityDrawerVisible(true)}
@@ -161,6 +173,22 @@ export default function SpeakerProfileListPage(): JSX.Element {
       />
 
       <div style={{ padding: 24 }}>
+      {pendingCountError ? (
+        <Alert
+          type="error"
+          style={{ marginBottom: 16 }}
+          title="待复核数量加载失败"
+          content={`${getErrorMessage(pendingCountError)} 待复核数量未知，请重试后再判断是否有需要人工复核的合并。`}
+          action={
+            <Button
+              size="small"
+              onClick={() => void pendingCountQuery.refetch()}
+            >
+              重试
+            </Button>
+          }
+        />
+      ) : null}
       {focus ? (
         <Alert
           type="info"
