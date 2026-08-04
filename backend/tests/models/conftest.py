@@ -54,6 +54,20 @@ def mysql_container() -> Iterator[Any]:
         yield container
         container.stop()
     else:
+        # Probed HERE, not only in db_engine: the alembic roundtrip, the 0030
+        # consistency migration and the 0033 downgrade guard all build their own
+        # engines from this fixture's URL and never touch db_engine — patching
+        # only db_engine left them as 11 raw OperationalError failures on a host
+        # without MySQL. One probe at the fixture every consumer shares covers
+        # them all (and AUDIOGRAPHY_REQUIRE_MYSQL=1 still turns it into an error).
+        ensure_database(
+            host=MYSQL_HOST,
+            port=MYSQL_PORT,
+            user=MYSQL_USER,
+            password=MYSQL_PASSWORD,
+            name=MYSQL_DB,
+        )
+
         # Use existing docker-compose MySQL — return a dummy object
         # with get_connection_url() for backward compatibility
         class _ExistingMySQL:

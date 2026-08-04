@@ -358,7 +358,14 @@ async def get_recompute_task(
             "error_message": job.last_error_message,
             "successor": f"/api/v1/tag-jobs/{job.id}",
         }
-    task = await RecomputeService(factory, bundle, file_index).get_task_status(
+    task = await RecomputeService(
+        factory,
+        bundle,
+        file_index,
+        enable_hybrid_rule_short_circuit=bool(
+            getattr(request.app.state.settings, "enable_hybrid_rule_short_circuit", True)
+        ),
+    ).get_task_status(
         task_id,
         tenant_id,
     )

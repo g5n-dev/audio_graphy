@@ -158,17 +158,23 @@ class RecomputeService:
         file_index: FileIndex,
         *,
         tag_extractor: TagExtractor | None = None,
+        enable_hybrid_rule_short_circuit: bool = True,
     ) -> None:
         self._session_factory = session_factory
         self._bundle = bundle
         self._file_index = file_index
         self._current_svc = TagCurrentService(session_factory)
         self._governance = TagGovernanceService(session_factory)
+        # The flag is threaded in by the caller rather than read from Settings
+        # here (tags/ deliberately does not import config). It used to be
+        # hardcoded True, which meant ENABLE_HYBRID_RULE_SHORT_CIRCUIT=false
+        # turned the short circuit off everywhere EXCEPT recompute — the
+        # documented off-switch silently did not cover this path.
         self._tag_extractor = tag_extractor or TagExtractor(
             session_factory,
             weak_llm=bundle.weak_llm,
             strong_llm=bundle.strong_llm,
-            enable_hybrid_rule_short_circuit=True,
+            enable_hybrid_rule_short_circuit=enable_hybrid_rule_short_circuit,
         )
 
     async def create_task(

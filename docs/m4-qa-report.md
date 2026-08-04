@@ -1,5 +1,10 @@
 # M4 QA Sign-off Report — AudioGraphy
 
+> [!NOTE]
+> 本仓库采用 AI 辅助的 SOP 流程开发。文中的 许清楚 / 高见远 / 寇豆码 / 严过关 / 齐活林
+> 是流程中的**角色标签**（PM / 架构 / 工程 / QA / 交付），不是真实贡献者；本验收记录由
+> AI 代行角色产出，并由维护者复核。
+
 **QA engineer:** 严过关
 **Delivery director:** 齐活林
 **Date:** 2026-07-21

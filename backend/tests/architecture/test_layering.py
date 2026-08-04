@@ -44,13 +44,15 @@ Outstanding debt — real upward runtime dependencies that should be inverted:
 * ``adapters`` ↔ ``core.chunker`` is a genuine cycle (``core.chunker`` imports
   ``adapters.bundle`` and ``adapters.protocols`` at module scope), already papered over
   with ``TYPE_CHECKING`` and lazy imports in the three adapter modules on the other side.
-The ``services`` ↔ ``optimizers`` cycle recorded here previously is gone: the two
-helpers the compiler needed from ``services`` -- ``canonical_checksum`` and
-``estimate_prompt_tokens`` -- moved to ``core.canonical``, with the original modules
-re-exporting them. ``optimizers`` now sits below ``services`` and the dependency runs
-one way. Sharing the implementation rather than copying it also matters on its own:
-a checksum the compiler computes has to equal the one a search manifest records, and
-a token estimate made at compile time has to equal the one the extractor enforces.
+``optimizers`` used to be pinned to the same layer as ``services`` because
+``optimizers.artifacts`` imported two helpers from that layer -- ``canonical_checksum``
+and ``estimate_prompt_tokens``. (An earlier note here called it a mutual cycle; the
+history shows the edge only ever ran one way, optimizers -> services -- wrong-layer
+placement, not a cycle.) Both helpers moved to ``core.canonical``, the original
+modules re-export them, and ``optimizers`` now sits below ``services``. Sharing the
+implementation rather than copying it also matters on its own: a checksum the
+compiler computes has to equal the one a search manifest records, and a token
+estimate made at compile time has to equal the one the extractor enforces.
 
 Fixing any entry means deleting it here: ``test_known_violations_still_exist`` fails on
 a stale allowlist, so this list cannot rot into permanent permission.
@@ -77,10 +79,10 @@ LAYERS: tuple[tuple[str, ...], ...] = (
     # while it lived under services/ those five imports pointed upward.
     ("storage", "llm"),
     ("core", "auth"),
-    # `optimizers` sits below `services` because the dependency now runs one way:
-    # the prompt compiler reads `core.canonical` for checksums and token estimates,
-    # and `services.prompt_lab` drives the compiler. The cycle that previously
-    # forced same-layer placement is gone.
+    # `optimizers` sits below `services`: the prompt compiler reads
+    # `core.canonical` for checksums and token estimates, and `services.prompt_lab`
+    # drives the compiler. The upward import that previously forced same-layer
+    # placement is gone.
     ("optimizers",),
     ("services", "tags", "eval", "analytics"),
     ("api",),

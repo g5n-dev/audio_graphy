@@ -113,6 +113,31 @@ docker compose --profile models-cpu ps
 
 CPU profile 不含 CLAP，因为 CLAP 服务在本项目中强制使用 CUDA。
 
+**注意：`models-cpu` 不含任何 LLM**——上面把 `ADAPTER_LLM_MODE` 留在 mock 正是
+因此。抽取和问答要产生真实结论，必须再给 LLM 一个后端：
+
+```bash
+# 追加 CPU LLM（compose 内置 Ollama，CPU 推理，速度有限）：
+docker compose --profile models-cpu --profile models-cpu-llm up -d
+docker exec $(docker compose ps -q ollama) ollama pull qwen2.5:7b
+```
+
+并在 `.env` 中：
+
+```dotenv
+ADAPTER_LLM_MODE=real
+OPENAI_BASE_URL_STRONG=http://ollama:11434/v1
+OPENAI_BASE_URL_WEAK=http://ollama:11434/v1
+LLM_STRONG_MODEL=qwen2.5:7b
+LLM_WEAK_MODEL=qwen2.5:7b
+OPENAI_API_KEY=ollama
+```
+
+macOS Docker Desktop 下容器内 Ollama 没有 Metal 加速，宿主机直装 Ollama 更快：
+保持 profile 不变，把两个 base URL 换成
+`http://host.docker.internal:11434/v1` 即可（详见 `.env.example` 的
+No-GPU alternative 注释块）。
+
 ### 3.3 单 GPU
 
 单卡 profile 只启动 `vllm-strong`。后端仍保留 strong/weak 两个逻辑角色，

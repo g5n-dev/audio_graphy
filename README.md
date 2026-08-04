@@ -6,6 +6,8 @@
 
 *Turn conversations into scene-aware, evidence-grounded business intelligence.*
 
+**给谁** 门店销售运营与对话数据团队 · **输入** 一次接待的多段或长录音 · **输出** 带证据与时间码的阶段 / 意图 / 异议 / 下一步，以及可查询的关系图谱
+
 [![CI](https://github.com/g5n-dev/audio_graphy/actions/workflows/ci.yml/badge.svg)](https://github.com/g5n-dev/audio_graphy/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2f65ff.svg)](./LICENSE)
 [![Python 3.13](https://img.shields.io/badge/Python-3.13-356c9b?logo=python&logoColor=white)](./backend/pyproject.toml)
@@ -14,9 +16,6 @@
 [产品能力](#核心能力) · [快速启动](#快速启动) · [Roadmap](#进度与-roadmap) · [系统架构](#架构与部署) · [专题文档](#文档索引)
 
 </div>
-
-> [!NOTE]
-> 当前版本已交付完整的**音频处理与语义转译链路**。Hero 中的纯文本直接输入、多语言翻译以及原文—译文—时间码映射属于下一阶段，不作为当前可用能力宣传。
 
 ## 产品定位
 
@@ -58,8 +57,9 @@ flowchart LR
 
 | 场景 | 业务过程如何切分 | 典型转译结果 | 状态 |
 |---|---|---|---|
-| 汽车销售 | 迎宾 → 需求 → 车型介绍 → 试驾 → 报价 → 异议 → 跟进 | 车型偏好、预算、竞品、试驾意向、金融方案 | 已交付场景基线 |
-| 零售导购 | 需求识别 → 商品比较 → 价格沟通 → 成交 → 售后 | 商品偏好、价格敏感度、购买信号、复访动作 | 可通过自定义场景扩展 |
+| 汽车销售 | 迎宾 → 需求 → 车型介绍 → 报价 → 金融 → 置换 → 试驾 → 异议 → 预约下订 → 交付售后 → 成交 | 车型偏好、预算、竞品、试驾意向、金融方案 | 已交付场景基线 |
+| 金店零售（珠宝） | 迎宾 → 需求 → 选购试戴 → 商品讲解 → 价格与促销 → 异议议价 → 付款 → 售后 → 成交 | 商品偏好、价格敏感度、购买信号、复访动作 | 已交付场景基线 |
+| 其他零售导购 | 沿用金店阶段模型，或自定义阶段与跳转 | 同金店零售 | 可通过自定义场景扩展 |
 | 外贸洽谈 | 询盘 → 规格 → 报价 → 贸易条款 → 交期 → 议价 → 订单推进 | MOQ、Incoterms、付款条件、交期风险、下一步 | 下一阶段场景包 |
 | 自定义场景 | 自定义阶段、允许跳转与回退 | 自定义标签键、值域、证据要求和质量门禁 | 持续增强 |
 
@@ -72,7 +72,7 @@ flowchart LR
 
 ## 产品界面
 
-以下界面来自仓库内置的 Mock 演示数据，不包含真实客户信息。
+以下界面来自仓库内置的**金店销售**场景 Mock 演示数据，不包含真实客户信息。
 
 ### 接待时间线：从多段录音回到一次完整业务过程
 
@@ -142,6 +142,10 @@ flowchart LR
 图谱和洞察响应都有显式输出预算。全域图谱边窗口默认受服务端预算控制且硬上限为 5,000，响应返回 `total / returned / truncated / render_budget`；标签矩阵、证据和差异明细同样分页或截断并保留全量 KPI。前端按路由拆分图谱运行时，切换 Tab 时主动释放画布和布局资源，避免把“大结果可查询”误做成“大结果一次性渲染”。
 
 ## 进度与 Roadmap
+
+> [!NOTE]
+> 当前版本已交付完整的**音频处理与语义转译链路**。纯文本直接输入、多语言翻译，
+> 以及原文—译文—时间码映射属于下一阶段，不作为当前可用能力宣传。
 
 ### 能力成熟度
 
@@ -219,8 +223,9 @@ Mock profile 的目的是让整条链路跑起来，不是产出可信结论。�
 | 数据库、迁移、多租户 | ✅ 真实 | — |
 | JWT 鉴权、RBAC、审计 | ✅ 真实 | 生产需替换 `JWT_SECRET` |
 | 音频静态加密（PIPL） | ✅ 真实 | 主密钥由 `master-key-init` 一次性任务生成 |
-| 图存储、Leiden、双时态 | ✅ 真实算法 | 但输入来自下面的 mock 抽取结果 |
-| 接待时间线与分段编辑 | ✅ 真实 | 物理拼接需要 ffmpeg，缺失时降级为逻辑合并 |
+| 图存储 | ✅ 真实算法 | 但输入来自下面的 mock 抽取结果 |
+| Leiden 聚类、双时态边 | ❌ 默认不激活 | 需 `ENABLE_ADVANCED_GRAPH=true`；默认管线写入的边不带双时态字段 |
+| 接待时间线与分段编辑 | ✅ 真实 | 物理拼接与剪辑播放依赖 ffmpeg（Docker 镜像已内置；本地裸跑缺失时相关接口报错） |
 | VAD | ❌ mock | 按文件大小推算切分点，与语音内容无关 |
 | ASR | ❌ mock | 从固定话术池中按哈希取一条 |
 | LLM（强/弱） | ❌ mock | 固定模板，抽取出的实体与录音无关 |
@@ -229,7 +234,7 @@ Mock profile 的目的是让整条链路跑起来，不是产出可信结论。�
 | 流式实时转写 | ❌ 路由不注册 | 需 `ENABLE_STREAMING=true` |
 | 高级图 HTTP 接口 | ❌ 路由不注册 | 需 `ENABLE_ADVANCED_GRAPH=true` |
 
-也就是说：**mock 模式下问答页返回的是固定文案，不是对你的问题的回答**。要得到真实结论，按 [部署指南](./docs/deployment.md) 切换到 `models-cpu` 或 GPU profile。
+也就是说：**mock 模式下问答页返回的是固定文案，不是对你的问题的回答**。要得到真实结论，必须给 LLM 一个真实后端：无 GPU 用 `--profile models-cpu-llm`（内置 Ollama，CPU 推理，速度有限），有 GPU 按 [部署指南](./docs/deployment.md) 选 `models-single-gpu` / `models-multi-gpu`。注意 `models-cpu` 只含 ASR/Embedding/声纹模型，**不含任何 LLM**——只切它，抽取和问答仍然是 mock。
 
 常用命令：
 
@@ -331,7 +336,10 @@ flowchart TB
 |---|---|---:|---|
 | `mock` | 全部 Adapter 保持 Mock | 0 | 开发、CI、产品演示 |
 | `cache-redis` | 可选 Redis LLM 热缓存（与任一模型 Profile 组合） | 0 | 多进程共享热缓存 |
-| `models-cpu` | FunASR、BGE-M3、CAM++ | 0 | CPU 验证与离线小批量 |
+| `models-cpu` | FunASR、BGE-M3、CAM++（**不含 LLM**） | 0 | CPU 验证与离线小批量 |
+| `models-cpu-llm` | Ollama（OpenAI 兼容 CPU LLM，与 `models-cpu` 组合） | 0 | 无 GPU 的真实抽取与问答 |
+| `bootstrap` | 一次性建号任务（`compose run --rm bootstrap-admin`） | 0 | 首次部署建管理员 |
+| `prompt-lab` | 独立 optimizer-worker（提示词编译） | 0 | 启用提示词实验室后台 |
 | `models-single-gpu` | vLLM、BGE-M3、CLAP、CAM++ | 1 | 单卡推理 |
 | `models-multi-gpu` | Strong/Weak LLM 分卡及完整音频模型 | 2+ | 多卡生产拓扑 |
 
@@ -354,9 +362,9 @@ Compose 内置 Redis 限制为 128 MiB、容器上限 192 MiB，使用 LRU 且�
 AOF/RDB；需要长期复用的数据只保存在 MySQL。外部 Redis 建议使用独立实例或
 独立 DB，应用只操作自己的命名空间，不会执行 `KEYS`、`FLUSHDB` 或修改全局
 淘汰策略。Redis/MySQL 都不保存原始 prompt；校验后的输出先压缩，再使用
-租户、namespace 和 recipe 绑定的 AES-256-GCM 密文保存。语义缓存、候选批判断、
-hybrid 短路和自适应 gleaning 默认关闭，
-需在金标质量门禁通过后逐项开启。
+租户、namespace 和 recipe 绑定的 AES-256-GCM 密文保存。语义缓存、候选批判断和自适应 gleaning 默认关闭，
+需在金标质量门禁通过后逐项开启；hybrid 规则短路默认**开启**
+（`ENABLE_HYBRID_RULE_SHORT_CIRCUIT=false` 可全局关闭，含重算路径）。
 来源删除会先写入 MySQL 墓碑，并把 Redis/本地清除意图放入持久队列；即使
 Redis 当时不可用，在途 leader 也不能复活结果，恢复后会自动完成物理清除。
 
@@ -381,6 +389,11 @@ Redis 当时不可用，在途 leader 也不能复活结果，恢复后会自动
 | 工程 | Docker Compose、GitHub Actions、Ruff、mypy、pytest、Vitest、Playwright |
 
 ## 文档索引
+
+> [!NOTE]
+> M 系列过程文档（PRD / 架构 / QA 报告）沿用 AI 辅助的 SOP 流程产出。文中出现的
+> 许清楚 / 高见远 / 寇豆码 / 严过关 / 齐活林 是流程**角色标签**（PM / 架构 / 工程 /
+> QA / 交付），不是真实贡献者；验收记录由 AI 代行角色产出，并由维护者复核。
 
 ### 产品
 

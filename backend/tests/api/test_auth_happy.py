@@ -23,7 +23,7 @@ class TestAuthHappyPath:
         """POST /auth/login with valid credentials returns 200 + tokens."""
         resp = test_client.post(
             "/api/v1/auth/login",
-            json={"email": "admin@changan.com", "password": SEED_USER_PASSWORD},
+            json={"email": "admin@changan.example.com", "password": SEED_USER_PASSWORD},
         )
         assert resp.status_code == 200
         body = resp.json()
@@ -31,7 +31,7 @@ class TestAuthHappyPath:
         assert "refresh_token" in body
         assert body["token_type"] == "bearer"
         assert body["expires_in"] > 0
-        assert body["user"]["email"] == "admin@changan.com"
+        assert body["user"]["email"] == "admin@changan.example.com"
         assert body["user"]["role"] == "admin"
         assert body["user"]["tenant_id"] == "chang_an"
 
@@ -44,7 +44,7 @@ class TestAuthHappyPath:
         """
         resp = test_client.post(
             "/api/v1/auth/login",
-            json={"email": "admin@changan.com", "password": "definitely-not-it"},
+            json={"email": "admin@changan.example.com", "password": "definitely-not-it"},
         )
         assert resp.status_code == 401
         assert resp.json()["error"]["code"] == "INVALID_CREDENTIALS"
@@ -79,7 +79,7 @@ class TestAuthHappyPath:
                     User(
                         tenant_id="byd",
                         name="admin_byd_collision",
-                        email="admin@changan.com",
+                        email="admin@changan.example.com",
                         role=UserRole.ADMIN.value,
                         password_hash=PasswordHasher(bcrypt_rounds=4).hash(SEED_USER_PASSWORD),
                     )
@@ -90,7 +90,7 @@ class TestAuthHappyPath:
 
         resp = test_client.post(
             "/api/v1/auth/login",
-            json={"email": "admin@changan.com", "password": SEED_USER_PASSWORD},
+            json={"email": "admin@changan.example.com", "password": SEED_USER_PASSWORD},
         )
         assert resp.status_code == 401
         assert resp.json()["error"]["code"] == "INVALID_CREDENTIALS"
@@ -108,7 +108,7 @@ class TestAuthHappyPath:
         # First login to get a refresh token
         login_resp = test_client.post(
             "/api/v1/auth/login",
-            json={"email": "admin@changan.com", "password": SEED_USER_PASSWORD},
+            json={"email": "admin@changan.example.com", "password": SEED_USER_PASSWORD},
         )
         refresh_token = login_resp.json()["refresh_token"]
 
@@ -136,7 +136,7 @@ class TestAuthHappyPath:
         body = resp.json()
         assert body["id"] == 1
         assert body["name"] == "admin_ca"
-        assert body["email"] == "admin@changan.com"
+        assert body["email"] == "admin@changan.example.com"
         assert body["role"] == "admin"
         assert body["tenant_id"] == "chang_an"
 

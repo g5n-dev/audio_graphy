@@ -308,7 +308,7 @@
       </div>
       <div class="ag-card">
         <div class="ag-card-title">🔍 RAG 引擎层</div>
-        <div class="ag-card-desc">VideoRAG 文件索引 · 复用<br>graph_chunk_entity_relation.graphml ★ / kv_store_llm_response_cache.json ★ / vdb_entities / vdb_chunks</div>
+        <div class="ag-card-desc">文件索引 · 目录布局沿用 VideoRAG 约定，代码自研<br>graph_chunk_entity_relation.graphml ★ / kv_store_llm_response_cache.json ★ / vdb_entities / vdb_chunks</div>
       </div>
       <div class="ag-card">
         <div class="ag-card-title">🎨 前端</div>
@@ -331,7 +331,7 @@
     <div class="ag-grid-4" style="margin-top: 16px;">
       <span class="ag-badge ag-badge-green">🆕 新增/替换</span>
       <span class="ag-badge ag-badge-red">✗ 砍掉</span>
-      <span class="ag-badge ag-badge-blue">✓ 保留自 VideoRAG</span>
+      <span class="ag-badge ag-badge-blue">✓ 范式承袭（代码自研）</span>
       <span class="ag-badge ag-badge-purple">→ 服务调用</span>
     </div>
 
@@ -349,7 +349,7 @@
 <section class="ag-section" id="sec-storage">
   <div class="ag-container">
     <h2>3. 存储分层 <span style="font-size:14px; color:#86909C; font-weight:400;">Storage Layers</span></h2>
-    <div class="ag-section-en">VideoRAG 文件索引（复用）+ MySQL 状态层（新增）+ BaseStorage 抽象让三类存储可插拔</div>
+    <div class="ag-section-en">文件索引（目录约定沿用 VideoRAG，代码自研）+ MySQL 状态层 + 各存储按协议独立实现</div>
 
     <div class="ag-svg-frame">
       <object data="./assets/storage-layers.svg" type="image/svg+xml" style="width:100%; max-width:1000px;"></object>
@@ -509,12 +509,12 @@
 
     <div class="ag-grid-2">
       <div class="ag-principle">
-        <div class="ag-card-title">复用优先 · Reuse First</div>
-        <div class="ag-card-desc">图谱内核、存储抽象、检索-重排逻辑原样继承自 VideoRAG，零改动</div>
+        <div class="ag-card-title">范式承袭 · Paradigm Lineage</div>
+        <div class="ag-card-desc">图谱内核、存储分层、检索-重排的设计范式参考 VideoRAG，代码按音频场景独立实现，不复用上游源码</div>
       </div>
       <div class="ag-principle">
         <div class="ag-card-title">模态替换 · Modality Swap</div>
-        <div class="ag-card-desc">视觉预处理整体替换为音频预处理（VAD + ASR），不改造内核</div>
+        <div class="ag-card-desc">视觉预处理整体替换为音频预处理（VAD + ASR），图谱范式保持一致</div>
       </div>
       <div class="ag-principle">
         <div class="ag-card-title">两层分离 · Two-Layer Separation</div>

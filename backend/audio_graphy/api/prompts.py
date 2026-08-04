@@ -275,7 +275,14 @@ async def activate_prompt(
         bundle = get_adapters(request)
         file_index = get_file_index(request)
         dry_compatibility = LegacyTagCompatibilityService(factory)
-        svc = RecomputeService(factory, bundle, file_index)
+        svc = RecomputeService(
+            factory,
+            bundle,
+            file_index,
+            enable_hybrid_rule_short_circuit=bool(
+                getattr(request.app.state.settings, "enable_hybrid_rule_short_circuit", True)
+            ),
+        )
         try:
             dry_target = await dry_compatibility.resolve_prompt_scope(
                 tenant_id=tenant_id,
