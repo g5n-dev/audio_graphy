@@ -29,18 +29,33 @@ import {
   Space,
 } from "@arco-design/web-react";
 import { Graph } from "@antv/g6";
-import { exploreGraph, getEntity } from "@/api/services";
-import type { GraphNodeResponse, GraphEdgeResponse } from "@/types/api";
+import { exploreGraph, getEntity, getSubgraph } from "@/api/services";
+import type {
+  ExploreResponse,
+  GraphNodeResponse,
+  GraphEdgeResponse,
+} from "@/types/api";
 import {
   createBoundedGraphLayout,
   useDebouncedValue,
 } from "./graphExplorerPerformance";
 import CommunityExplorerPage from "./CommunityExplorer";
-import { buildFocusParam, parseFocusParam } from "@/utils/urlParams";
+import { PanelState } from "@/components/PanelState";
+import {
+  buildFocusParam,
+  parseFocusParam,
+  parseHopsParam,
+  SUBGRAPH_MAX_HOPS,
+  SUBGRAPH_MIN_HOPS,
+} from "@/utils/urlParams";
 import "./graphExplorerPage.css";
 
 const { Text } = Typography;
 export const MAX_RENDERED_GRAPH_EDGES = 5_000;
+/** Node ceiling of GET /graph/subgraph (`limit`, le=500).  The focused view
+ *  always asks for the endpoint's maximum: the hop count — not a node slider —
+ *  is what the operator uses to bound a neighbourhood. */
+export const SUBGRAPH_NODE_LIMIT = 500;
 
 // ── Node type → route mapping (P0 hard-coded, per Q2 lock) ──
 
@@ -139,6 +154,40 @@ function describeGraphService(
   };
 }
 
+/** Edges actually handed to G6 — the client budget caps what the server sent. */
+function renderedEdgeCount(data: ExploreResponse): number {
+  return Math.min(data.edges.length, MAX_RENDERED_GRAPH_EDGES);
+}
+
+/**
+ * Describe a capped relation set, or return null when nothing was dropped.
+ *
+ * Both the full-graph and the focused view answer the same
+ * `edge_window` contract, so neither may draw a partial projection as if it
+ * were complete — only the advice on how to narrow the result differs.
+ */
+function describeEdgeTruncation(
+  data: ExploreResponse,
+  narrowingHint: string,
+): string | null {
+  if (
+    !data.edge_window.truncated &&
+    data.edges.length <= MAX_RENDERED_GRAPH_EDGES
+  ) {
+    return null;
+  }
+  const shown = renderedEdgeCount(data).toLocaleString("zh-CN");
+  const available = Math.max(
+    data.edge_window.total,
+    data.edges.length,
+  ).toLocaleString("zh-CN");
+  const budget = Math.min(
+    data.edge_window.render_budget,
+    MAX_RENDERED_GRAPH_EDGES,
+  ).toLocaleString("zh-CN");
+  return ` · 当前画布展示 ${shown} / ${available} 条筛选关系（服务端性能预算 ${budget}，${narrowingHint}）`;
+}
+
 function EntityRelationshipPanel() {
   const containerRef = useRef<HTMLDivElement>(null);
   const graphRef = useRef<Graph | null>(null);
@@ -148,7 +197,7 @@ function EntityRelationshipPanel() {
   const focusConsumedRef = useRef(false);
   const focusAlertTimer = useRef<number>();
 
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [nodeType, setNodeType] = useState<string>("");
   const [minDegree, setMinDegree] = useState(0);
   const [limit, setLimit] = useState(200);
@@ -164,7 +213,20 @@ function EntityRelationshipPanel() {
   );
   const filters = useDebouncedValue(pendingFilters);
 
-  // Fetch graph data
+  // ── Focused N-hop view: the centre node and hop count live in the URL so a
+  //    reload — or a link pasted to a colleague — reopens the same answer. ──
+  const focusCentre = useMemo(
+    () => parseFocusParam(searchParams.get("center")),
+    [searchParams],
+  );
+  const centreId = focusCentre?.id ?? null;
+  const isFocused = centreId !== null;
+  const focusHops =
+    parseHopsParam(searchParams.get("hops")) ?? SUBGRAPH_MIN_HOPS;
+
+  // Fetch graph data.  Disabled while focused: pulling the whole tenant graph
+  // is exactly the cost the focused view exists to avoid.  React Query keeps
+  // the last full-graph payload cached, so leaving focus paints from cache.
   const {
     data: graphData,
     isError: isGraphQueryError,
@@ -186,12 +248,82 @@ function EntityRelationshipPanel() {
         limit: filters.limit,
         edge_limit: MAX_RENDERED_GRAPH_EDGES,
       }),
+    enabled: !isFocused,
   });
 
+  const subgraphQuery = useQuery({
+    queryKey: ["graph", "subgraph", centreId, focusHops],
+    queryFn: () =>
+      getSubgraph(
+        centreId as string,
+        focusHops,
+        SUBGRAPH_NODE_LIMIT,
+        MAX_RENDERED_GRAPH_EDGES,
+      ),
+    enabled: isFocused,
+  });
+
+  // One canvas, two sources: everything downstream reads the active response.
+  const activeData = isFocused ? subgraphQuery.data : graphData;
+  const centreLabel =
+    subgraphQuery.data?.nodes.find((n) => n.id === centreId)?.label ?? centreId;
+
   const serviceStatus = describeGraphService(
-    isGraphQueryError,
-    Boolean(graphData),
+    isFocused ? subgraphQuery.isError : isGraphQueryError,
+    Boolean(activeData),
   );
+
+  // Which guard — if any — the focused view owes the operator.  Derived once
+  // so the overlay wrapper is only mounted when PanelState renders something.
+  const focusPanelState: "pending" | "error" | "empty" | null = !isFocused
+    ? null
+    : subgraphQuery.isPending
+      ? "pending"
+      : subgraphQuery.isError
+        ? "error"
+        : subgraphQuery.data?.nodes.length === 0
+          ? "empty"
+          : null;
+
+  // The render-failure retry belongs to whichever response is on the canvas,
+  // but must never stack on top of a query-level guard.
+  const showRenderError =
+    renderStatus === "error" &&
+    focusPanelState === null &&
+    (isFocused || !isGraphQueryError);
+
+  const enterFocus = (node: { id: string; type: string }) => {
+    const next = new URLSearchParams(searchParams);
+    next.set("center", buildFocusParam(node.type, node.id));
+    next.set("hops", String(focusHops));
+    // `focus` only highlights a node inside the full view; keeping it would
+    // re-announce a stale "已聚焦到 …" banner over the focused subgraph.
+    next.delete("focus");
+    setSearchParams(next);
+  };
+
+  const leaveFocus = () => {
+    const next = new URLSearchParams(searchParams);
+    next.delete("center");
+    next.delete("hops");
+    setSearchParams(next);
+  };
+
+  const setFocusHops = (hops: number) => {
+    const next = new URLSearchParams(searchParams);
+    next.set("hops", String(hops));
+    // Replace: widening the radius is a refinement of one view, not a step
+    // the operator wants to walk back through one hop at a time.
+    setSearchParams(next, { replace: true });
+  };
+
+  // A shared focus link must restore the whole view it was copied from,
+  // including the detail panel of the node it is centred on.
+  useEffect(() => {
+    if (!centreId) return;
+    setSelectedEntity((current) => current || centreId);
+    selectedEntityRef.current = selectedEntityRef.current || centreId;
+  }, [centreId]);
 
   // Fetch entity detail when selected
   const { data: entityDetail } = useQuery({
@@ -385,9 +517,9 @@ function EntityRelationshipPanel() {
 
   // Update graph data when fetched
   useEffect(() => {
-    if (!graphRef.current || !graphData) return;
+    if (!graphRef.current || !activeData) return;
 
-    const nodes = graphData.nodes.map((n: GraphNodeResponse) => ({
+    const nodes = activeData.nodes.map((n: GraphNodeResponse) => ({
       id: n.id,
       data: {
         label: n.label,
@@ -397,7 +529,7 @@ function EntityRelationshipPanel() {
       },
     }));
 
-    const edges = graphData.edges
+    const edges = activeData.edges
       .slice(0, MAX_RENDERED_GRAPH_EDGES)
       .map((e: GraphEdgeResponse, i: number) => ({
         id: `edge-${i}`,
@@ -462,7 +594,7 @@ function EntityRelationshipPanel() {
     return () => {
       window.clearTimeout(renderStartTimer);
     };
-  }, [graphData, renderAttempt]);
+  }, [activeData, renderAttempt]);
 
   // GD-008: consume focus URL param — highlight & select after graph loads
   useEffect(() => {
@@ -531,6 +663,9 @@ function EntityRelationshipPanel() {
             flexWrap: "wrap",
           }}
         >
+          {/* The subgraph endpoint takes a centre and a hop count, not these
+              filters — leaving them live while focused would let the operator
+              set a value that silently changes nothing. */}
           <Space size="medium">
             {/* One control owns the node type filter: free text (the backend
                 accepts any type string) with the known types as suggestions. */}
@@ -540,6 +675,7 @@ function EntityRelationshipPanel() {
               value={nodeType}
               onChange={(value: string) => setNodeType(value ?? "")}
               style={{ width: 200 }}
+              disabled={isFocused}
               allowClear
             >
               {Object.entries(NODE_TYPE_RAMPS).map(([type, ramp]) => (
@@ -573,6 +709,7 @@ function EntityRelationshipPanel() {
               value={minDegree}
               onChange={(v) => setMinDegree(Number(v ?? 0))}
               min={0}
+              disabled={isFocused}
               style={{ width: 120 }}
             />
             <InputNumber
@@ -582,6 +719,7 @@ function EntityRelationshipPanel() {
               onChange={(v) => setLimit(Number(v ?? 200))}
               min={1}
               max={2000}
+              disabled={isFocused}
               style={{ width: 120 }}
             />
           </Space>
@@ -598,7 +736,33 @@ function EntityRelationshipPanel() {
         </div>
       </Card>
 
-      {focusAlert && (
+      {isFocused && (
+        <div className="ag-entity-graph-focus-bar" role="status">
+          <span className="ag-entity-graph-focus-bar__title">
+            已聚焦 <strong>{centreLabel}</strong> 的 {focusHops} 跳邻域
+          </span>
+          <Space size="small">
+            <InputNumber
+              aria-label="聚焦跳数"
+              value={focusHops}
+              onChange={(v) => {
+                const next = Number(v);
+                if (!Number.isInteger(next)) return;
+                if (next < SUBGRAPH_MIN_HOPS || next > SUBGRAPH_MAX_HOPS) return;
+                setFocusHops(next);
+              }}
+              min={SUBGRAPH_MIN_HOPS}
+              max={SUBGRAPH_MAX_HOPS}
+              style={{ width: 96 }}
+            />
+            <Button size="small" onClick={leaveFocus}>
+              返回全图
+            </Button>
+          </Space>
+        </div>
+      )}
+
+      {focusAlert && !isFocused && (
         <Alert
           type="info"
           closable
@@ -617,29 +781,29 @@ function EntityRelationshipPanel() {
             className="ag-entity-graph-canvas"
             role="img"
             aria-label={
-              graphData
-                ? `实体关系图谱，共 ${graphData.total_nodes} 个节点、${graphData.total_edges} 条关系`
+              activeData
+                ? isFocused
+                  ? `聚焦 ${centreLabel} 的 ${focusHops} 跳邻域，共 ${activeData.total_nodes} 个节点、${activeData.total_edges} 条关系`
+                  : `实体关系图谱，共 ${activeData.total_nodes} 个节点、${activeData.total_edges} 条关系`
                 : "实体关系图谱画布"
             }
           >
             <div className="ag-entity-graph-canvas__grid-fine" aria-hidden="true" />
-            {graphData && (
+            {activeData && (
               <div
                 className="ag-entity-graph-canvas__meta"
                 aria-live="polite"
               >
                 <span aria-hidden="true" style={{ width: 8, height: 8, borderRadius: "50%", background: "#27a66f", boxShadow: "0 0 0 3px rgba(39, 166, 111, 0.18)" }} />
-                实时拓扑 · <strong>{graphData.nodes.length.toLocaleString("zh-CN")}</strong> 节点 ·{" "}
+                {isFocused ? "聚焦邻域" : "实时拓扑"} ·{" "}
+                <strong>{activeData.nodes.length.toLocaleString("zh-CN")}</strong> 节点 ·{" "}
                 <strong>
-                  {Math.min(
-                    graphData.edges.length,
-                    MAX_RENDERED_GRAPH_EDGES,
-                  ).toLocaleString("zh-CN")}
+                  {renderedEdgeCount(activeData).toLocaleString("zh-CN")}
                 </strong>{" "}
                 关系
               </div>
             )}
-            {graphData && (
+            {activeData && (
               <div
                 className="ag-entity-graph-canvas__legend"
                 aria-label="节点类型图例"
@@ -652,12 +816,30 @@ function EntityRelationshipPanel() {
                 ))}
               </div>
             )}
-            {isLoading && !graphData && (
+            {/* Focused view states.  The wrapper is mounted only while
+                PanelState has something to show, so an idle overlay can never
+                swallow clicks meant for the canvas underneath. */}
+            {isFocused && focusPanelState !== null && (
+              <div className="ag-entity-graph-canvas__state">
+                <PanelState
+                  pending={focusPanelState === "pending"}
+                  error={focusPanelState === "error" ? subgraphQuery.error : null}
+                  empty={focusPanelState === "empty"}
+                  emptyTitle="该邻域暂无节点"
+                  emptyDescription="可增加跳数，或返回全图重新选择中心节点。"
+                  onRetry={() => void subgraphQuery.refetch()}
+                  pendingLabel={`正在展开 ${centreLabel} 的 ${focusHops} 跳邻域…`}
+                >
+                  {null}
+                </PanelState>
+              </div>
+            )}
+            {!isFocused && isLoading && !graphData && (
               <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "100%" }}>
                 <Spin size={40} />
               </div>
             )}
-            {isGraphQueryError && (
+            {!isFocused && isGraphQueryError && (
               <div
                 role="alert"
                 style={{
@@ -684,7 +866,7 @@ function EntityRelationshipPanel() {
                 </Button>
               </div>
             )}
-            {!isGraphQueryError && renderStatus === "error" && (
+            {showRenderError && (
               <div
                 role="alert"
                 style={{
@@ -710,7 +892,8 @@ function EntityRelationshipPanel() {
                 </Button>
               </div>
             )}
-            {!isGraphQueryError &&
+            {!isFocused &&
+              !isGraphQueryError &&
               renderStatus !== "error" &&
               !isLoading &&
               graphData &&
@@ -720,28 +903,24 @@ function EntityRelationshipPanel() {
               </div>
             )}
           </div>
-          {graphData && (
+          {activeData && (
             <div style={{ padding: "10px 16px", borderTop: "1px solid #e5e6eb", fontSize: 14, color: "#86909c", background: "#fcfdff" }}>
-              全图 {graphData.total_nodes.toLocaleString("zh-CN")} 节点 ·{" "}
-              {graphData.total_edges.toLocaleString("zh-CN")} 边 · 当前筛选{" "}
-              {graphData.nodes.length.toLocaleString("zh-CN")} 节点 ·{" "}
-              {Math.min(
-                graphData.edges.length,
-                MAX_RENDERED_GRAPH_EDGES,
-              ).toLocaleString("zh-CN")}{" "}
-              关系
-              {(graphData.edge_window.truncated ||
-                graphData.edges.length > MAX_RENDERED_GRAPH_EDGES) &&
-                ` · 当前画布展示 ${Math.min(
-                  graphData.edges.length,
-                  MAX_RENDERED_GRAPH_EDGES,
-                ).toLocaleString("zh-CN")} / ${Math.max(
-                  graphData.edge_window.total,
-                  graphData.edges.length,
-                ).toLocaleString("zh-CN")} 条筛选关系（服务端性能预算 ${Math.min(
-                  graphData.edge_window.render_budget,
-                  MAX_RENDERED_GRAPH_EDGES,
-                ).toLocaleString("zh-CN")}，可通过筛选缩小范围）`}
+              {isFocused ? (
+                <>
+                  聚焦 {centreLabel} · {focusHops} 跳邻域{" "}
+                  {activeData.total_nodes.toLocaleString("zh-CN")} 节点 ·{" "}
+                  {renderedEdgeCount(activeData).toLocaleString("zh-CN")} 关系
+                  {describeEdgeTruncation(activeData, "可减少跳数缩小范围")}
+                </>
+              ) : (
+                <>
+                  全图 {activeData.total_nodes.toLocaleString("zh-CN")} 节点 ·{" "}
+                  {activeData.total_edges.toLocaleString("zh-CN")} 边 · 当前筛选{" "}
+                  {activeData.nodes.length.toLocaleString("zh-CN")} 节点 ·{" "}
+                  {renderedEdgeCount(activeData).toLocaleString("zh-CN")} 关系
+                  {describeEdgeTruncation(activeData, "可通过筛选缩小范围")}
+                </>
+              )}
             </div>
           )}
         </Card>
@@ -849,6 +1028,24 @@ function EntityRelationshipPanel() {
                         </Text>
                       )}
                     </div>
+                  )}
+                </div>
+
+                <div className="ag-entity-detail-actions">
+                  {/* The way out of focus lives in the focus toolbar; here the
+                      centre node only reports that it is the centre. */}
+                  {centreId === entityDetail.node.id ? (
+                    <Button size="small" disabled>
+                      已聚焦此节点
+                    </Button>
+                  ) : (
+                    <Button
+                      type="outline"
+                      size="small"
+                      onClick={() => enterFocus(entityDetail.node)}
+                    >
+                      聚焦此节点
+                    </Button>
                   )}
                 </div>
 

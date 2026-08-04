@@ -383,6 +383,39 @@
   color: #1d3f80 !important;
 }
 
+/* Focused N-hop subgraph toolbar — the way back to the full view is always
+   visible next to the radius control that widened the neighbourhood. */
+.ag-entity-graph-focus-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+  padding: 10px 14px;
+  border: 1px solid #d1deff;
+  border-radius: 10px;
+  background: #f2f6ff;
+  color: #1d3f80;
+  font-size: 14px;
+}
+
+.ag-entity-graph-focus-bar__title strong {
+  font-weight: 650;
+}
+
+/* Overlay host for the focused view's PanelState: it must hide the previous
+   canvas contents so a stale neighbourhood is never mistaken for the new one. */
+.ag-entity-graph-canvas__state {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(255, 255, 255, 0.94);
+}
+
 @media (max-width: 760px) {
   .ag-global-graph-page {
     padding: 16px;

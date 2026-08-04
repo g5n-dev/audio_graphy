@@ -1,16 +1,18 @@
 import { StrictMode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { MemoryRouter, useNavigate } from "react-router-dom";
+import { MemoryRouter, useNavigate, useSearchParams } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExploreResponse, EntityDetailResponse } from "@/types/api";
 import GraphExplorerPage, {
   MAX_RENDERED_GRAPH_EDGES,
+  SUBGRAPH_NODE_LIMIT,
 } from "./GraphExplorerPage";
 
 const apiMocks = vi.hoisted(() => ({
   exploreGraph: vi.fn(),
   getEntity: vi.fn(),
+  getSubgraph: vi.fn(),
 }));
 
 const graphMocks = vi.hoisted(() => {
@@ -55,6 +57,17 @@ vi.mock("./CommunityExplorer", () => ({
     <section data-testid="topic-cluster-panel">topic-cluster-panel</section>
   ),
 }));
+
+/** Reads back the focus state the page wrote to the URL. */
+function UrlProbe() {
+  const [params] = useSearchParams();
+  return (
+    <>
+      <span data-testid="url-center">{params.get("center") ?? ""}</span>
+      <span data-testid="url-hops">{params.get("hops") ?? ""}</span>
+    </>
+  );
+}
 
 function GraphHistoryHarness() {
   const navigate = useNavigate();
@@ -156,6 +169,7 @@ function renderPage({
   const page = (
     <MemoryRouter initialEntries={[initialEntry]}>
       <QueryClientProvider client={queryClient}>
+        <UrlProbe />
         <GraphExplorerPage />
       </QueryClientProvider>
     </MemoryRouter>
@@ -170,6 +184,7 @@ describe("GraphExplorerPage performance lifecycle", () => {
     apiMocks.exploreGraph.mockReset();
     apiMocks.exploreGraph.mockResolvedValue(EMPTY_GRAPH);
     apiMocks.getEntity.mockReset();
+    apiMocks.getSubgraph.mockReset();
     graphMocks.Graph.mockClear();
     graphMocks.instances.length = 0;
     graphMocks.renderQueue.length = 0;
@@ -638,7 +653,11 @@ describe("GraphExplorerPage performance lifecycle", () => {
     await waitFor(() =>
       expect(apiMocks.getEntity).toHaveBeenCalledWith("产品:milestone"),
     );
-    expect(await screen.findByText(/聚焦/)).toBeInTheDocument();
+    // Named by role: the panel also offers the N-hop focus action, so a bare
+    // /聚焦/ text match would no longer identify the cross-page jump link.
+    expect(
+      await screen.findByRole("button", { name: /在图谱中聚焦/ }),
+    ).toBeInTheDocument();
   });
 
   it("does not render a jump button for unmapped node types (未知)", async () => {
@@ -754,5 +773,214 @@ describe("GraphExplorerPage performance lifecycle", () => {
     expect(
       await screen.findByText(/不在当前筛选范围内/),
     ).toBeInTheDocument();
+  });
+
+  // ── Focused N-hop subgraph (GET /graph/subgraph) ──
+
+  const ALICE_NODE = {
+    id: "alice",
+    label: "Alice",
+    type: "客户",
+    description: "重点客户",
+    degree: 4,
+    source_ids: [],
+    recording_ids: [],
+    recorded_at_range: null,
+  };
+
+  function neighbourhood(
+    edgeWindow: Partial<ExploreResponse["edge_window"]> = {},
+  ): ExploreResponse {
+    return {
+      nodes: [
+        ALICE_NODE,
+        {
+          ...ALICE_NODE,
+          id: "cs75",
+          label: "长安CS75",
+          type: "产品",
+          degree: 2,
+        },
+      ],
+      edges: [
+        {
+          source: "alice",
+          target: "cs75",
+          relation: "咨询",
+          weight: 1,
+          confidence: "EXTRACTED",
+          confidence_score: 0.9,
+          source_ids: [],
+        },
+      ],
+      total_nodes: 2,
+      total_edges: 1,
+      edge_window: {
+        total: 1,
+        returned: 1,
+        truncated: false,
+        render_budget: MAX_RENDERED_GRAPH_EDGES,
+        ...edgeWindow,
+      },
+    };
+  }
+
+  function fullGraphWith(node: (typeof ALICE_NODE)): ExploreResponse {
+    return {
+      nodes: [node],
+      edges: [],
+      total_nodes: 1,
+      total_edges: 0,
+      edge_window: {
+        total: 0,
+        returned: 0,
+        truncated: false,
+        render_budget: MAX_RENDERED_GRAPH_EDGES,
+      },
+    };
+  }
+
+  function clickNode(id: string) {
+    const graph = graphMocks.instances[0];
+    const clickHandler = graph.on.mock.calls.find(
+      (call: unknown[]) => call[0] === "node:click",
+    )?.[1] as ((evt: { target: { id: string } }) => void) | undefined;
+    act(() => {
+      clickHandler?.({ target: { id } });
+    });
+  }
+
+  it("focuses the selected node's neighbourhood and puts it in the URL", async () => {
+    apiMocks.exploreGraph.mockResolvedValue(fullGraphWith(ALICE_NODE));
+    apiMocks.getEntity.mockResolvedValue({
+      node: ALICE_NODE,
+      neighbors: [],
+      relation_counts: {},
+    } satisfies EntityDetailResponse);
+    apiMocks.getSubgraph.mockResolvedValue(neighbourhood());
+    renderPage();
+
+    await waitFor(() => expect(apiMocks.exploreGraph).toHaveBeenCalled());
+    clickNode("alice");
+    fireEvent.click(await screen.findByRole("button", { name: "聚焦此节点" }));
+
+    await waitFor(() =>
+      expect(apiMocks.getSubgraph).toHaveBeenCalledWith(
+        "alice",
+        1,
+        SUBGRAPH_NODE_LIMIT,
+        MAX_RENDERED_GRAPH_EDGES,
+      ),
+    );
+    // Shareable: a reload of this URL must reopen the same neighbourhood.
+    expect(screen.getByTestId("url-center")).toHaveTextContent("客户:alice");
+    expect(screen.getByTestId("url-hops")).toHaveTextContent("1");
+    expect(
+      await screen.findByText(/聚焦 Alice · 1 跳邻域 2 节点 · 1 关系/),
+    ).toBeInTheDocument();
+
+    // Filters do not reach the subgraph endpoint, so they must not pretend to.
+    expect(screen.getByLabelText("节点类型筛选")).toBeDisabled();
+  });
+
+  it("restores a shared focus link and reports server-side edge truncation", async () => {
+    apiMocks.getEntity.mockResolvedValue({
+      node: ALICE_NODE,
+      neighbors: [],
+      relation_counts: {},
+    } satisfies EntityDetailResponse);
+    apiMocks.getSubgraph.mockResolvedValue(
+      neighbourhood({ total: 900, returned: 1, truncated: true, render_budget: 1 }),
+    );
+    renderPage({
+      initialEntry: "/graph?center=%E5%AE%A2%E6%88%B7%3Aalice&hops=2",
+    });
+
+    await waitFor(() =>
+      expect(apiMocks.getSubgraph).toHaveBeenCalledWith(
+        "alice",
+        2,
+        SUBGRAPH_NODE_LIMIT,
+        MAX_RENDERED_GRAPH_EDGES,
+      ),
+    );
+    // The tenant-wide graph is exactly the cost focus exists to avoid.
+    expect(apiMocks.exploreGraph).not.toHaveBeenCalled();
+    expect(
+      await screen.findByText(
+        /当前画布展示 1 \/ 900 条筛选关系（服务端性能预算 1，可减少跳数缩小范围）/,
+      ),
+    ).toBeInTheDocument();
+    // The centre's detail panel is part of the view that was shared.
+    await waitFor(() =>
+      expect(apiMocks.getEntity).toHaveBeenCalledWith("alice"),
+    );
+    expect(
+      await screen.findByRole("button", { name: "已聚焦此节点" }),
+    ).toBeDisabled();
+  });
+
+  it("re-queries the neighbourhood when the hop count changes", async () => {
+    apiMocks.getSubgraph.mockResolvedValue(neighbourhood());
+    renderPage({
+      initialEntry: "/graph?center=%E5%AE%A2%E6%88%B7%3Aalice&hops=1",
+    });
+
+    await waitFor(() => expect(apiMocks.getSubgraph).toHaveBeenCalledTimes(1));
+    fireEvent.change(screen.getByLabelText("聚焦跳数"), {
+      target: { value: "3" },
+    });
+
+    await waitFor(() =>
+      expect(apiMocks.getSubgraph).toHaveBeenLastCalledWith(
+        "alice",
+        3,
+        SUBGRAPH_NODE_LIMIT,
+        MAX_RENDERED_GRAPH_EDGES,
+      ),
+    );
+    expect(screen.getByTestId("url-hops")).toHaveTextContent("3");
+  });
+
+  it("leaves focus back to the full graph on the same canvas", async () => {
+    apiMocks.exploreGraph.mockResolvedValue(fullGraphWith(ALICE_NODE));
+    apiMocks.getSubgraph.mockResolvedValue(neighbourhood());
+    renderPage({
+      initialEntry: "/graph?center=%E5%AE%A2%E6%88%B7%3Aalice&hops=1",
+    });
+
+    await waitFor(() => expect(apiMocks.getSubgraph).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole("button", { name: "返回全图" }));
+
+    await waitFor(() => expect(apiMocks.exploreGraph).toHaveBeenCalledTimes(1));
+    expect(screen.getByTestId("url-center")).toHaveTextContent("");
+    expect(await screen.findByText(/全图 1 节点/)).toBeInTheDocument();
+    expect(screen.getByLabelText("节点类型筛选")).not.toBeDisabled();
+    // No reload: the same G6 instance keeps serving both views.
+    expect(graphMocks.Graph).toHaveBeenCalledTimes(1);
+  });
+
+  it("guards the focused view with a recoverable error state", async () => {
+    apiMocks.getSubgraph
+      .mockRejectedValueOnce({
+        response: {
+          status: 404,
+          data: { error: { code: "ENTITY_NOT_FOUND", message: "实体不存在" } },
+        },
+      })
+      .mockResolvedValueOnce(neighbourhood());
+    renderPage({
+      initialEntry: "/graph?center=%E5%AE%A2%E6%88%B7%3Aghost&hops=1",
+    });
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("实体不存在");
+
+    fireEvent.click(screen.getByRole("button", { name: "重新加载" }));
+
+    await waitFor(() => expect(apiMocks.getSubgraph).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument(),
+    );
   });
 });

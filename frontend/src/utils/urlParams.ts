@@ -47,6 +47,29 @@ export function parseAtParam(raw: string | null): number | null {
   return n;
 }
 
+/** Hop bounds accepted by GET /api/v1/graph/subgraph (`max_hops`, ge=1 le=3). */
+export const SUBGRAPH_MIN_HOPS = 1;
+export const SUBGRAPH_MAX_HOPS = 3;
+
+/**
+ * Parse the hop count of a focused N-hop subgraph link ("?hops=2").
+ *
+ * Out-of-range and non-integer values are rejected rather than clamped: the
+ * backend answers 422 for anything outside 1..3, and a hand-edited or stale
+ * shared link must degrade to the default hop count instead of turning the
+ * whole focused view into a failed request.
+ *
+ * @returns the hop count when it is an integer within the endpoint's bounds,
+ *          otherwise `null`.
+ */
+export function parseHopsParam(raw: string | null): number | null {
+  if (!raw) return null;
+  const n = Number(raw);
+  if (!Number.isInteger(n)) return null;
+  if (n < SUBGRAPH_MIN_HOPS || n > SUBGRAPH_MAX_HOPS) return null;
+  return n;
+}
+
 /**
  * Parse "from" / "to" time-window parameters (both in milliseconds).
  *

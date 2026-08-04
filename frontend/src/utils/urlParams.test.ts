@@ -3,6 +3,7 @@ import {
   buildFocusParam,
   parseAtParam,
   parseFocusParam,
+  parseHopsParam,
   parseTimeRangeParams,
 } from "./urlParams";
 
@@ -56,6 +57,26 @@ describe("parseAtParam", () => {
     expect(parseAtParam(null)).toBeNull();
     expect(parseAtParam("")).toBeNull();
     expect(parseAtParam("abc")).toBeNull();
+  });
+});
+
+describe("parseHopsParam", () => {
+  it("accepts every hop count the subgraph endpoint allows", () => {
+    expect(parseHopsParam("1")).toBe(1);
+    expect(parseHopsParam("2")).toBe(2);
+    expect(parseHopsParam("3")).toBe(3);
+  });
+
+  it("rejects values the endpoint would answer with a 422", () => {
+    // A hand-edited link must fall back to the default hop count instead of
+    // turning the focused view into a failed request.
+    expect(parseHopsParam("0")).toBeNull();
+    expect(parseHopsParam("4")).toBeNull();
+    expect(parseHopsParam("-1")).toBeNull();
+    expect(parseHopsParam("1.5")).toBeNull();
+    expect(parseHopsParam("two")).toBeNull();
+    expect(parseHopsParam("")).toBeNull();
+    expect(parseHopsParam(null)).toBeNull();
   });
 });
 
