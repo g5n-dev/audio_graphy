@@ -18,6 +18,8 @@
 set -euo pipefail
 
 ROOT="${AG_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+# 私有化交付一律生产前端:样式与资产在镜像内,不依赖开发服务器。
+COMPOSE_FILES="-f docker-compose.yml -f docker-compose.frontend-prod.yml"
 MODEL_FILE="$ROOT/models/silero_vad.onnx"
 PREFIX_DEFAULT="audiography"
 
@@ -62,12 +64,12 @@ cmd_export() {
   info "构建本仓库自有镜像(backend/frontend/funasr/campplus/silero-vad 等)…"
   # 慢速链路可加速: PYPI_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple(各 Dockerfile 均支持)
   # shellcheck disable=SC2086
-  (cd "$ROOT" && docker compose $flags build)
+  (cd "$ROOT" && docker compose $COMPOSE_FILES $flags build)
 
   info "解析 profile=$profile 的完整镜像清单…"
   local images
   # shellcheck disable=SC2086
-  images="$(cd "$ROOT" && docker compose $flags config --images | sort -u)"
+  images="$(cd "$ROOT" && docker compose $COMPOSE_FILES $flags config --images | sort -u)"
   echo "$images" | sed 's/^/  /'
 
   info "拉取第三方镜像(mysql/vllm/tei 等,已存在则跳过)…"

@@ -328,18 +328,22 @@ function buildProvenanceGraph(
       nodes.push(
         {
           id: eventId,
-          label: `${event.action} · ${event.actor ?? "系统"}`,
+          label: `${provenanceLabel(event.action)} · ${event.actor ?? "系统"}`,
           kind: "audit",
           community: "events",
         },
         {
           id: objectId,
-          label: `${objectType} ${objectRef}`,
+          label: `${provenanceLabel(objectType)} ${objectRef}`,
           kind: objectType,
           community: "objects",
         },
       );
-      edges.push({ source: eventId, target: objectId, label: event.action });
+      edges.push({
+        source: eventId,
+        target: objectId,
+        label: provenanceLabel(event.action),
+      });
 
       (event.parent_refs ?? []).forEach((reference, index) => {
         const type =
@@ -362,7 +366,7 @@ function buildProvenanceGraph(
         const parentId = `${type}-${String(rawId)}${version ? `-v${version}` : ""}`;
         nodes.push({
           id: parentId,
-          label: `${type} ${String(rawId)}${version ? ` · v${version}` : ""}`,
+          label: `${provenanceLabel(type)} ${String(rawId)}${version ? ` · v${version}` : ""}`,
           kind: type,
           community: "sources",
         });
@@ -649,6 +653,32 @@ function stateLayout(nodes: VisualNode[]): GraphLayout {
     });
   });
   return { positions, regions };
+}
+
+/**
+ * 溯源词表:处理事件与对象类型的完整中文名。
+ * 后端(与演示 Worker)在这条链上给的是机器枚举——直接渲染就是中英混排
+ * 的标识符泄漏;词表不认识的值原样透出,宁可暴露也不猜。
+ */
+const PROVENANCE_LABELS: Record<string, string> = {
+  recordings_merged: "录音合并",
+  dialogue_unit_segmented: "对话单元切分",
+  manual_boundary_adjusted: "人工边界调整",
+  tag_assignment_created: "标签写入",
+  tag_assignment_superseded: "标签更正",
+  reception: "接待",
+  recording: "录音",
+  dialogue_unit: "对话单元",
+  dialogue_unit_segment: "单元分段",
+  dialogue_tag_assignment: "对话标签",
+  tag_assignment_fact: "标签事实",
+  transcript_item: "转写片段",
+  segment: "分段",
+  parent: "父项",
+};
+
+function provenanceLabel(raw: string): string {
+  return PROVENANCE_LABELS[raw] ?? raw;
 }
 
 function provenanceLayout(nodes: VisualNode[]): GraphLayout {

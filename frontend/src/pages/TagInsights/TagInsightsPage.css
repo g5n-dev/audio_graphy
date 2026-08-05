@@ -6,14 +6,8 @@
 }
 
 .ag-tag-insights-header {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  min-height: 0;
-  padding: 0;
-  overflow: hidden;
-  clip: rect(0 0 0 0);
-  white-space: nowrap;
+  /* 同状态路径:不再用 sr-only 藏标准头带,页面顶层与接待中心一致。 */
+  order: 0;
 }
 
 .ag-tag-insights-header h1 {

@@ -12,14 +12,8 @@
 }
 
 .ag-state-topology .ag-state-insights-header {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  min-height: 0;
-  padding: 0;
-  overflow: hidden;
-  clip: rect(0 0 0 0);
-  white-space: nowrap;
+  /* 曾用 sr-only 手法整块藏掉以省画布高度——但「页面顶层与其他页一致」
+     优先:标准头带(眉标 + 标题 + 描述)必须可见,接待中心即范本。 */
 }
 
 .ag-state-topology .ag-topology-title {
@@ -840,4 +834,17 @@
 
 .ag-state-topology .ag-state-path-label.is-danger rect {
   stroke: #f2cdc4;
+}
+
+/* 窄屏下整件换行,不许词内断行:「关键路径」折成「关键/路径」是排版事故。 */
+.ag-state-topology .ag-state-flow-toolbar {
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+
+.ag-state-topology .ag-state-flow-toolbar button,
+.ag-state-topology .ag-topology-summary-strip dt,
+.ag-state-topology .ag-topology-summary-strip dd,
+.ag-state-topology .ag-topology-confidence-legend {
+  white-space: nowrap;
 }

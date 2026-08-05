@@ -510,6 +510,18 @@ CPU/GPU 两个服务通过网络别名统一为 `bge-m3`。
 两个镜像以 UID/GID `10001` 运行。Compose 命名卷会自动提供容器内缓存；
 如果改成宿主 bind mount，必须预先把目录授权给 `10001:10001`。
 
+### 3.5 生产前端（deploy.sh 默认）
+
+`deploy.sh up` 默认叠加 `docker-compose.frontend-prod.yml`：前端为
+「`npm run build` 产物 + nginx」的 prod 镜像，同源反代 `/api` 与 `/ws` 到
+backend——样式、字体（系统字体栈）与图标全部在镜像内，离线环境与在线完全
+一致。裸 `docker compose up` 仍是 Vite dev server（HMR，供开发）；要在
+deploy.sh 里保留开发形态，加 `--dev-frontend`。
+
+不要用 dev 形态做交付：它从 bind mount 的源码即时转译,样式正确性取决于
+「宿主机代码 checkout」与「镜像内 node_modules」版本一致——两者一旦漂移
+（镜像 8 天前构建、源码今天更新），页面就会呈现残缺样式。
+
 ## 8. 离线 / 内网（私有化）部署
 
 目标机不出网时，介质在有网机器上准备。镜像清单不用手抄——脚本直接问
@@ -521,7 +533,7 @@ compose 要（`config --images`），加服务、换 tag 自动跟上：
 ./scripts/offline_bundle.sh export --profile cpu --output /tmp/ag-bundle
 ```
 
-`export` 会构建全部自有镜像、拉齐第三方镜像、`docker save` 成单档，并附带
+`export` 始终按生产前端 overlay 构建（私有化不交付开发服务器），并构建全部自有镜像、拉齐第三方镜像、`docker save` 成单档，并附带
 VAD 权重与 MANIFEST。**真离线环境务必加 `--with-caches`**：funASR / BGE-M3 /
 CAM++ / Ollama 的权重都是首次启动时下载进缓存卷的（合计可达 10 GB），不带
 缓存卷的介质在内网首启必然失败。前提是本机用同一 profile 完整启动并跑通过

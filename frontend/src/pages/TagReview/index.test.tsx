@@ -175,7 +175,7 @@ describe("TagReviewPage", () => {
       screen.getByRole("button", { name: "请先领取任务" }),
     ).toBeDisabled();
     expect(
-      screen.queryByRole("button", { name: "放弃任务/释放领取" }),
+      screen.queryByRole("button", { name: "退回队列" }),
     ).not.toBeInTheDocument();
   });
 
@@ -468,7 +468,7 @@ describe("TagReviewPage", () => {
       screen.getByRole("radio", { name: "接受建议" }),
     ).toBeDisabled();
     expect(
-      screen.queryByRole("button", { name: "放弃任务/释放领取" }),
+      screen.queryByRole("button", { name: "退回队列" }),
     ).not.toBeInTheDocument();
     expect(mockedDecide).not.toHaveBeenCalled();
   });
@@ -503,7 +503,7 @@ describe("TagReviewPage", () => {
     renderPage();
 
     const releaseButton = await screen.findByRole("button", {
-      name: "放弃任务/释放领取",
+      name: "退回队列",
     });
     await user.click(releaseButton);
     expect(mockedRelease).not.toHaveBeenCalled();
@@ -517,7 +517,7 @@ describe("TagReviewPage", () => {
       await screen.findByText("任务 #501 已释放，已返回待领取队列"),
     ).toBeVisible();
     expect(confirm).toHaveBeenCalledWith(
-      "确认放弃任务 #501 并释放领取吗？任务将回到待领取队列，未提交的复核输入不会保留。",
+      "把任务 #501 退回待领取队列？未提交的复核输入不会保留，其他复核员可立即领取。",
     );
     expect(String(confirm.mock.calls.at(-1)?.[0])).not.toContain("browse");
     expect(screen.queryByText("browse")).not.toBeInTheDocument();
@@ -543,7 +543,7 @@ describe("TagReviewPage", () => {
 
     await user.click(
       await screen.findByRole("button", {
-        name: "放弃任务/释放领取",
+        name: "退回队列",
       }),
     );
 

@@ -237,7 +237,10 @@ describe("ReceptionStateInsightsPage", () => {
 
     await screen.findByRole("heading", { name: "跨接待状态流" });
     expect(screen.getByText("聚合结果已按预算截断")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "返回路径" })).toBeInTheDocument();
+    // 三档路径不再是模式切换:一张图同时渲染,置信档由线型/颜色区分。
+    expect(
+      screen.queryByRole("button", { name: "返回路径" }),
+    ).not.toBeInTheDocument();
     expect(screen.getByText("可见关键路径占比")).toBeInTheDocument();
     expect(screen.getAllByText("阶段规模").length).toBeGreaterThan(0);
     expect(screen.queryByText("完成率", { exact: false })).not.toBeInTheDocument();

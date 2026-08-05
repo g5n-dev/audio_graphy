@@ -26,7 +26,6 @@ import type {
 } from "@/types/api";
 import "./stateInsights.css";
 
-type PathMode = "key" | "all" | "anomaly";
 
 interface FilterDraft {
   storeIds: string;
@@ -53,12 +52,6 @@ const EMPTY_FILTERS: FilterDraft = {
   startedFrom: "",
   startedTo: "",
 };
-
-const PATH_MODES: Array<{ key: PathMode; label: string }> = [
-  { key: "key", label: "关键路径" },
-  { key: "all", label: "全部路径" },
-  { key: "anomaly", label: "异常跳转" },
-];
 
 const STAGE_COLORS = [
   "blue",
@@ -116,16 +109,6 @@ function toRequest(draft: FilterDraft): ReceptionStateInsightsRequest {
     ...(startedTo ? { started_to: startedTo } : {}),
     transition_limit: 100,
   };
-}
-
-function visibleForMode(
-  transition: ReceptionStateTransitionInsight,
-  mode: PathMode,
-): boolean {
-  const confidence = transition.average_confidence ?? 0;
-  if (mode === "key") return confidence >= 0.8;
-  if (mode === "anomaly") return confidence < 0.5;
-  return true;
 }
 
 function pathTone(
@@ -215,7 +198,6 @@ export default function ReceptionStateInsightsPage() {
     transition_limit: 100,
   });
   const [filterError, setFilterError] = useState<string | null>(null);
-  const [pathMode, setPathMode] = useState<PathMode>("all");
   const [selected, setSelected] = useState<GraphSelection | null>(null);
   const [zoom, setZoom] = useState(1);
 
@@ -238,10 +220,9 @@ export default function ReceptionStateInsightsPage() {
       (query.data?.transitions ?? []).filter(
         (transition) =>
           visualStageNames.has(transition.from_state) &&
-          visualStageNames.has(transition.to_state) &&
-          visibleForMode(transition, pathMode),
+          visualStageNames.has(transition.to_state),
       ),
-    [pathMode, query.data?.transitions, visualStageNames],
+    [query.data?.transitions, visualStageNames],
   );
 
   useEffect(() => {
@@ -343,7 +324,6 @@ export default function ReceptionStateInsightsPage() {
     setFilterError(null);
     setSelected(null);
     setZoom(1);
-    setPathMode("all");
   };
 
   return (
@@ -351,7 +331,7 @@ export default function ReceptionStateInsightsPage() {
       <InsightContextTabs />
       <header className="ag-state-insights-header">
         <div className="ag-topology-title">
-          <span className="ag-eyebrow">跨接待 · 聚合分析</span>
+          <span className="ag-eyebrow">CROSS-RECEPTION ANALYTICS · 对话洞察</span>
           <h1>跨接待状态流</h1>
           <p>沿阶段社区观察主路径、回退与异常跳转，并下钻到原始接待证据。</p>
         </div>
@@ -495,23 +475,6 @@ export default function ReceptionStateInsightsPage() {
 
         <section className="ag-state-flow-workbench">
           <div className="ag-state-flow-toolbar">
-            <div role="group" aria-label="路径模式">
-              {PATH_MODES.map((item) => (
-                <button
-                  type="button"
-                  key={item.key}
-                  aria-pressed={pathMode === item.key}
-                  onClick={() => {
-                    setPathMode(item.key);
-                    setSelected(null);
-                  }}
-                >
-                  {item.key === "all" && data.truncated
-                    ? "返回路径"
-                    : item.label}
-                </button>
-              ))}
-            </div>
             <dl
               className="ag-topology-summary-strip"
               aria-label="聚合状态摘要"

@@ -25,6 +25,7 @@ ENV_FILE="$ROOT/.env"
 ENV_EXAMPLE="$ROOT/.env.example"
 MODEL_FILE="$ROOT/models/silero_vad.onnx"
 MODEL_URL="https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx"
+PROD_FRONTEND_OVERLAY="$ROOT/docker-compose.frontend-prod.yml"
 BLOCK_BEGIN="# >>> deploy.sh managed profile block >>>"
 BLOCK_END="# <<< deploy.sh managed profile block <<<"
 
@@ -201,10 +202,11 @@ cmd_model() {
 # ------------------------------------------------------------
 cmd_up() {
   require_env
-  local profile="" offline=0
+  local profile="" offline=0 dev_frontend=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --offline) offline=1; shift ;;
+      --dev-frontend) dev_frontend=1; shift ;;
       -*) die "up 不认识的参数: $1" ;;
       *) profile="$1"; shift ;;
     esac
@@ -227,12 +229,17 @@ cmd_up() {
   local timeout=300
   [ "$profile" != "mock" ] && timeout=1800
 
+  # 部署默认生产前端(构建产物 + nginx):样式与资产全在镜像内,离线
+  # 一致;Vite dev server 只在显式 --dev-frontend 时保留(开发热更)。
+  local files="-f $ROOT/docker-compose.yml"
+  [ "$dev_frontend" -eq 0 ] && files="$files -f $PROD_FRONTEND_OVERLAY"
+
   info "启动 profile=$profile(healthcheck 等待上限 ${timeout}s)…"
   # shellcheck disable=SC2086
-  docker compose $flags up -d --wait --wait-timeout "$timeout" $extra || {
+  docker compose $files $flags up -d --wait --wait-timeout "$timeout" $extra || {
     warn "有容器未在时限内变健康;当前状态:"
     # shellcheck disable=SC2086
-    docker compose $flags ps
+    docker compose $files $flags ps
     die "排查: ./scripts/deploy.sh logs <service>;VAD 容器 unhealthy 通常是模型文件缺失"
   }
 
@@ -245,7 +252,7 @@ cmd_up() {
     else
       info "拉取 LLM 权重 $llm_model(首次约 5 GB,已缓存则秒回)…"
       # shellcheck disable=SC2086
-      docker compose $flags exec -T ollama ollama pull "$llm_model" \
+      docker compose $files $flags exec -T ollama ollama pull "$llm_model" \
         || warn "ollama pull 失败——问答/抽取会退回固定文案;稍后可手动重试同一命令"
     fi
   fi
@@ -356,7 +363,8 @@ usage() {
 
   init --profile <mock|cpu|gpu|gpu-multi>  生成 .env(随机密钥)并写入 profile 配置
   model                                     下载 Silero VAD 权重(models profile 必需)
-  up [profile] [--offline]                  启动并等待健康;--offline 禁止 build/pull
+  up [profile] [--offline] [--dev-frontend] 启动并等待健康;--offline 禁 build/pull;
+                                            --dev-frontend 保留 Vite 开发服务器(默认生产 nginx)
   admin --email <邮箱> [--password <密码>]  创建首个租户与管理员(幂等)
   verify                                    部署体检(就绪/指标/前端/健康/密钥)
   status | logs [service] | down            日常运维

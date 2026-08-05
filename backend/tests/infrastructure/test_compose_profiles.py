@@ -502,3 +502,49 @@ class TestDeployScriptStaysTrue:
             f"deploy.sh passes --profile {sorted(unknown)} which docker-compose.yml "
             "does not declare — the stack would silently start nothing for them"
         )
+
+
+class TestProdFrontendOverlay:
+    """docker-compose.frontend-prod.yml must swap the dev server for the build.
+
+    The dev target serves bind-mounted source through Vite — fine for HMR,
+    wrong as a delivery vehicle: styles then depend on a source checkout and a
+    node_modules volume agreeing with each other. The overlay is what
+    deploy.sh and the offline bundle actually ship, so its render is pinned.
+    """
+
+    OVERLAY = PROJECT_ROOT / "docker-compose.frontend-prod.yml"
+
+    def _rendered(self) -> dict[str, Any]:
+        result = subprocess.run(
+            [
+                "docker",
+                "compose",
+                "-f",
+                str(COMPOSE_FILE),
+                "-f",
+                str(self.OVERLAY),
+                "--profile",
+                "mock",
+                "config",
+                "--format",
+                "json",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+            cwd=PROJECT_ROOT,
+        )
+        return json.loads(result.stdout)  # type: ignore[no-any-return]
+
+    @pytest.mark.skipif(shutil.which("docker") is None, reason="docker unavailable")
+    def test_frontend_becomes_a_static_build_with_no_source_mounts(self) -> None:
+        frontend = self._rendered()["services"]["frontend"]
+        assert frontend["build"]["target"] == "prod"
+        # !reset must actually remove the bind mount and the node_modules
+        # volume — if compose merged instead of resetting, the nginx image
+        # would carry a useless /app mount and the reset marker regressed.
+        assert not frontend.get("volumes"), frontend.get("volumes")
+        ports = frontend["ports"]
+        assert len(ports) == 1 and ports[0]["target"] == 80
+        assert "wget" in frontend["healthcheck"]["test"]

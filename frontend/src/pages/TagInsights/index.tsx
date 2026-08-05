@@ -916,7 +916,7 @@ export default function TagInsightsPage() {
       <InsightContextTabs />
       <header className="ag-feature-header ag-tag-insights-header">
         <div>
-          <span className="ag-eyebrow">对话标签 · 多组/多版本</span>
+          <span className="ag-eyebrow">CROSS-RECEPTION TAG INSIGHT · 对话洞察</span>
           <h1>目标对话标签洞察</h1>
           <p>
             对齐同一接待与时间窗，合并多组标签并分析分歧、缺失、趋势和业务差异。

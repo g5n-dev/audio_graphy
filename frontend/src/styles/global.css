@@ -5252,3 +5252,31 @@ a:focus-visible {
   border-radius: 4px;
   user-select: all;
 }
+
+/* ── 原生 select 全局归一:与 Arco 输入件同语言 ─────────────── */
+select {
+  appearance: none;
+  min-height: 32px;
+  padding: 4px 28px 4px 10px;
+  color: #1d2129;
+  font-size: 14px;
+  background-color: #fff;
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%234e5969' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  border: 1px solid var(--ag-border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+select:focus-visible {
+  border-color: var(--ag-primary);
+  outline: none;
+  box-shadow: 0 0 0 2px rgb(22 93 255 / 12%);
+}
+
+select:disabled {
+  color: #a9aeb8;
+  background-color: #f7f8fa;
+  cursor: not-allowed;
+}

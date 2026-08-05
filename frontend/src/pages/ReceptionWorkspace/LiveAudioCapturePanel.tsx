@@ -755,7 +755,13 @@ export function LiveAudioCapturePanel({
                 key={String(sourceRecordingId(recording))}
                 value={String(sourceRecordingId(recording))}
               >
-                {recording.name} · #{String(sourceRecordingId(recording))}
+                {/* 名称通常已是「录音 #id」——再拼一次 id 就成了
+                    「录音 #5002 · #5002」。仅在名称未含 id 时补注。 */}
+                {recording.name.includes(
+                  `#${String(sourceRecordingId(recording))}`,
+                )
+                  ? recording.name
+                  : `${recording.name} · #${String(sourceRecordingId(recording))}`}
               </option>
             ))}
           </select>

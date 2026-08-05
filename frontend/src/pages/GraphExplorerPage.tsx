@@ -448,6 +448,9 @@ function EntityRelationshipPanel() {
           },
           labelText: (d: { data?: { relation?: string } }) =>
             d.data?.relation ?? "",
+          // 与主题聚类同语言:标签水平白底药丸。沿边旋转的斜排文字在
+          // 交叉密集处不可读,是两图观感差距的主因。
+          labelAutoRotate: false,
           labelFontSize: 12,
           labelFontWeight: 500,
           labelFill: "#5b6a87",
@@ -557,6 +560,8 @@ function EntityRelationshipPanel() {
       },
     }));
 
+    // 标签沿边错位取位:多条边交汇时中点标签会互压,按序轮转
+    // 0.38/0.5/0.62 拉开;placement 由数据带入,样式回调按值取用。
     const edges = activeData.edges
       .slice(0, MAX_RENDERED_GRAPH_EDGES)
       .map((e: GraphEdgeResponse, i: number) => ({
@@ -566,6 +571,12 @@ function EntityRelationshipPanel() {
         data: {
           relation: e.relation,
           weight: e.weight,
+        },
+        // v5 的逐元素样式:直接随数据下发,绕开样式回调对 placement
+        // 函数值的兼容性问题。
+        style: {
+          labelPlacement: 0.38 + (i % 3) * 0.12,
+          labelAutoRotate: false,
         },
       }));
 

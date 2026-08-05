@@ -414,3 +414,10 @@
   }
 
 }
+
+/* CJK 词(上限/总时长)不许词内断行;在空格与分隔点处折行。 */
+.ag-graph-window-context dl dd,
+.ag-graph-window-context header strong {
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}

@@ -1049,7 +1049,7 @@ export default function TagReviewPage() {
                       onClick={() => {
                         if (
                           !window.confirm(
-                            `确认放弃任务 #${reviewTask.id} 并释放领取吗？任务将回到待领取队列，未提交的复核输入不会保留。`,
+                            `把任务 #${reviewTask.id} 退回待领取队列？未提交的复核输入不会保留，其他复核员可立即领取。`,
                           )
                         ) {
                           return;
@@ -1059,9 +1059,9 @@ export default function TagReviewPage() {
                         releaseMutation.mutate(reviewTask.id);
                       }}
                     >
-                      {releaseMutation.isPending
-                        ? "释放中…"
-                        : "放弃任务/释放领取"}
+                      {/* 按去向命名,不用「放弃/释放」这类内部租约术语的并列
+                          ——后果在确认弹窗里讲。 */}
+                      {releaseMutation.isPending ? "退回中…" : "退回队列"}
                     </button>
                   )}
                 </div>

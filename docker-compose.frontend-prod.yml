@@ -1,0 +1,28 @@
+# ============================================================
+# 生产前端 overlay:把 frontend 从 Vite dev server 换成
+# 「构建产物 + nginx」。deploy.sh up 默认叠加本文件(--dev-frontend
+# 退出);离线打包(offline_bundle.sh)始终包含——私有化交付绝不
+# 依赖开发服务器供样式。
+#
+#   docker compose -f docker-compose.yml -f docker-compose.frontend-prod.yml \
+#     --profile mock up -d
+#
+# !override / !reset 需要 docker compose ≥ 2.24(与本仓库要求一致)。
+# ============================================================
+services:
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: prod
+    # 生产镜像自带产物,源码 bind mount 与匿名 node_modules 卷都不再需要
+    # ——dev 模式的样式坏账(镜像内依赖与挂载源码错版)正是它们造成的。
+    volumes: !reset []
+    ports: !override
+      - "${COMPOSE_APP_BIND_HOST:-127.0.0.1}:${FRONTEND_HOST_PORT:-5173}:80"
+    environment: !reset {}
+    healthcheck: !override
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:80/"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
