@@ -118,6 +118,36 @@ const NODE_TYPE_RAMPS: Record<
   未知: { fill: "#F1EFE8", stroke: "#888780", text: "#444441", label: "未知" },
 };
 
+/**
+ * 未收录类型的兜底色板:与主题聚类视图同一族的柔和色。
+ * 后端的节点类型是自由字符串(演示租户就有 dialogue_state),全部落到
+ * 米色「未知」会让实体图整图一个颜色——和聚类视图的色彩语言完全脱节。
+ * 用类型名哈希取色:同类型永远同色,跨会话稳定。
+ */
+const FALLBACK_RAMPS: Array<{ fill: string; stroke: string; text: string }> = [
+  { fill: "#E8F1FD", stroke: "#5B8DEF", text: "#1D4E9E" },
+  { fill: "#E5F6EE", stroke: "#34A853", text: "#14532D" },
+  { fill: "#FDEEF0", stroke: "#E5484D", text: "#8A1F24" },
+  { fill: "#FFF4E5", stroke: "#F59E0B", text: "#7C4A03" },
+  { fill: "#F1ECFE", stroke: "#8B5CF6", text: "#4C1D95" },
+  { fill: "#E4F7F9", stroke: "#0EA5B7", text: "#155E66" },
+];
+
+function rampForType(type: string | undefined): {
+  fill: string;
+  stroke: string;
+  text: string;
+  label: string;
+} {
+  const key = type ?? "未知";
+  const known = NODE_TYPE_RAMPS[key];
+  if (known) return known;
+  let hash = 0;
+  for (const ch of key) hash = (hash * 31 + ch.codePointAt(0)!) >>> 0;
+  // 标签用原始类型名:把 dialogue_state 显示成「未知」是在抹掉信息。
+  return { ...FALLBACK_RAMPS[hash % FALLBACK_RAMPS.length], label: key };
+}
+
 // Node type ramps are the single source of truth for type → color mapping.
 // They also seed the type filter suggestions; the backend accepts any type
 // string, so the filter stays free-text with these as known shortcuts.
@@ -351,14 +381,12 @@ function EntityRelationshipPanel() {
         state: {
           active: {
             fill: (d: { data?: { type?: string } }) =>
-              NODE_TYPE_RAMPS[d.data?.type ?? "未知"]?.stroke ??
-              "#888780",
+              rampForType(d.data?.type).stroke,
             stroke: (d: { data?: { type?: string } }) =>
-              NODE_TYPE_RAMPS[d.data?.type ?? "未知"]?.stroke ??
-              "#888780",
+              rampForType(d.data?.type).stroke,
             lineWidth: 2,
             shadowColor: (d: { data?: { type?: string } }) =>
-              NODE_TYPE_RAMPS[d.data?.type ?? "未知"]?.stroke ?? "#888780",
+              rampForType(d.data?.type).stroke,
             shadowBlur: 18,
           },
         },
@@ -368,9 +396,9 @@ function EntityRelationshipPanel() {
             return Math.min(46, Math.max(22, 22 + deg * 2.4));
           },
           fill: (d: { data?: { type?: string } }) =>
-            NODE_TYPE_RAMPS[d.data?.type ?? "未知"]?.fill ?? "#F1EFE8",
+            rampForType(d.data?.type).fill,
           stroke: (d: { data?: { type?: string } }) =>
-            NODE_TYPE_RAMPS[d.data?.type ?? "未知"]?.stroke ?? "#888780",
+            rampForType(d.data?.type).stroke,
           lineWidth: 2,
           shadowColor: "rgba(80, 127, 232, 0.18)",
           shadowBlur: 10,
@@ -382,7 +410,7 @@ function EntityRelationshipPanel() {
           labelFontSize: 14,
           labelFontWeight: 600,
           labelFill: (d: { data?: { type?: string } }) =>
-            NODE_TYPE_RAMPS[d.data?.type ?? "未知"]?.text ?? "#444441",
+            rampForType(d.data?.type).text,
           labelPlacement: "bottom" as const,
           labelBackground: true,
           labelBackgroundFill: "rgba(255, 255, 255, 0.92)",
@@ -936,7 +964,7 @@ function EntityRelationshipPanel() {
         {selectedEntity && entityDetail && (
           (() => {
             const ramp =
-              NODE_TYPE_RAMPS[entityDetail.node.type] ?? NODE_TYPE_RAMPS["未知"];
+              rampForType(entityDetail.node.type);
             return (
               <Card
                 className="ag-entity-detail-panel"
@@ -1000,7 +1028,7 @@ function EntityRelationshipPanel() {
                       }}
                     >
                       {entityDetail.neighbors.slice(0, 14).map((n) => {
-                        const nRamp = NODE_TYPE_RAMPS[n.type] ?? NODE_TYPE_RAMPS["未知"];
+                        const nRamp = rampForType(n.type);
                         return (
                           <button
                             key={n.id}

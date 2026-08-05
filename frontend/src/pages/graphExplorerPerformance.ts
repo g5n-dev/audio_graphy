@@ -56,6 +56,12 @@ export function createBoundedGraphLayout(
     };
   }
 
+  // Spacing scales inversely with size. The constants below were tuned for
+  // ~200-node results; on a sparse graph (a demo tenant, a fresh deployment,
+  // a tight filter) the same forces collapse a handful of nodes into an
+  // overlapping clump in the canvas centre — the layout must spread WIDER
+  // when there is less to show, not tighter.
+  const sparse = count <= 30;
   return {
     // G6's `force` layout uses an all-pairs repulsion pass. `d3-force`
     // preserves the force-directed interaction while using Barnes-Hut
@@ -64,11 +70,11 @@ export function createBoundedGraphLayout(
     type: "d3-force",
     animation: false,
     iterations: MAX_FORCE_LAYOUT_ITERATIONS,
-    linkDistance: 80,
-    nodeStrength: -50,
+    linkDistance: sparse ? 170 : 80,
+    nodeStrength: sparse ? -340 : -50,
     edgeStrength: 0.1,
     preventOverlap: true,
-    nodeSize: 30,
+    nodeSize: sparse ? 48 : 30,
   };
 }
 

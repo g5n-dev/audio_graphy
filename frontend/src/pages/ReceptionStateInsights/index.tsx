@@ -714,8 +714,9 @@ export default function ReceptionStateInsightsPage() {
                         textAnchor="start"
                         className="ag-stage-meta"
                       >
-                        {stage.reception_count} 个接待｜平均流出{" "}
-                        {averageOutgoingEvents(stage).toFixed(2)} 次
+                        {/* 接待数不在这里重复——正下方的「阶段规模」药丸就是它。
+                            13px 下这行是列间横向溢出的主犯:相邻列会串成一行。 */}
+                        平均流出 {averageOutgoingEvents(stage).toFixed(2)} 次
                       </text>
 
                       <text

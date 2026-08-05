@@ -42,6 +42,30 @@ const jsonHeaders = {
   "Cache-Control": "no-store",
 };
 const demoTenantId = "tenant-demo";
+
+// 开放接口密钥的演示态:预置一把在用的、一把已吊销的,签发的追加在后。
+const demoApiKeys: Array<{
+  id: number;
+  name: string;
+  active: boolean;
+  created_at: string;
+  last_used_at: string | null;
+}> = [
+  {
+    id: 1,
+    name: "crm-sync",
+    active: true,
+    created_at: "2026-07-30T09:00:00Z",
+    last_used_at: "2026-08-05T01:30:00Z",
+  },
+  {
+    id: 2,
+    name: "bi-export(已轮换)",
+    active: false,
+    created_at: "2026-07-21T09:00:00Z",
+    last_used_at: "2026-07-29T18:00:00Z",
+  },
+];
 const canonicalTargetLabels = [
   "stage",
   "intent",
@@ -1470,6 +1494,10 @@ function safeGet(pathname: string, url: URL): Response | null {
   if (pathname === "/tags/stats") return json(demoStats);
   if (pathname === "/prompts") return json({ items: [] });
   if (pathname === "/speakers") return json({ items: [], total: 0 });
+  // ── Open API 密钥列表(演示;签发/吊销在异步主处理器里)──
+  if (pathname === "/integration/api-keys") {
+    return json({ items: demoApiKeys, total: demoApiKeys.length });
+  }
   if (/^\/recordings\/\d+\/speakers$/.test(pathname)) {
     // 声纹归属解析:工作台时间线用它把 speaker_label 升级为「已确认身份」。
     // 缺了这个端点,前端会亮出「说话人身份加载失败」的降级横幅——那是给
@@ -3790,6 +3818,41 @@ export default {
       }
     }
 
+    if (request.method === "POST" && pathname === "/integration/api-keys") {
+      // 演示态只在内存:刷新 worker 即复位,不落 D1。
+      const body = (await request.json().catch(() => ({}))) as { name?: string };
+      const id = demoApiKeys.length + 1;
+      const key = {
+        id,
+        name: body.name ?? `demo-key-${id}`,
+        active: true,
+        created_at: "2026-08-05T02:00:00Z",
+        last_used_at: null,
+      };
+      demoApiKeys.push(key);
+      return json(
+        {
+          key,
+          api_key: `agk_demo${String(id).padStart(4, "0")}${"0".repeat(32)}`,
+          webhook_secret: `${"d".repeat(8)}${String(id).padStart(4, "0")}${"e".repeat(52)}`,
+        },
+        201,
+      );
+    }
+    {
+      const revokeMatch = /^\/integration\/api-keys\/(\d+)\/revoke$/.exec(pathname);
+      if (revokeMatch && request.method === "POST") {
+        const key = demoApiKeys.find((item) => item.id === Number(revokeMatch[1]));
+        if (!key) {
+          return json(
+            { error: { code: "API_KEY_NOT_FOUND", message: "密钥不存在", detail: {} } },
+            404,
+          );
+        }
+        key.active = false;
+        return json({ key });
+      }
+    }
     if (request.method === "POST" && pathname === "/auth/login") {
       return json({
         access_token: "demo-access-token",
