@@ -95,10 +95,10 @@ export default function TimeTravelPage() {
     } catch (err) {
       const e = err as { response?: { status?: number } };
       if (e.response?.status === 404) {
-        Message.info("Advanced graph endpoints are disabled on this backend");
+        Message.info("该后端未启用高级图谱能力(ENABLE_ADVANCED_GRAPH)");
         setEdges([]);
       } else {
-        Message.error("Failed to load edges");
+        Message.error("关系边加载失败");
       }
     } finally {
       setLoading(false);
@@ -122,28 +122,28 @@ export default function TimeTravelPage() {
   }
 
   const columns = [
-    { title: "Source", dataIndex: "source" },
-    { title: "Relation", dataIndex: "relation" },
-    { title: "Target", dataIndex: "target" },
+    { title: "起点", dataIndex: "source" },
+    { title: "关系", dataIndex: "relation" },
+    { title: "终点", dataIndex: "target" },
     {
-      title: "Confidence",
+      title: "置信度",
       dataIndex: "confidence",
       render: (_: unknown, row: EdgeOut) => <Tag>{row.confidence}</Tag>,
     },
     {
-      title: "Valid at",
+      title: "生效于",
       dataIndex: "valid_at",
       render: (v: string | null) =>
         v ? dayjs(v).format("YYYY-MM-DD HH:mm") : "—",
     },
     {
-      title: "Invalid at",
+      title: "失效于",
       dataIndex: "invalid_at",
       render: (v: string | null) =>
         v ? dayjs(v).format("YYYY-MM-DD HH:mm") : "—",
     },
     {
-      title: "Action",
+      title: "操作",
       key: "action",
       render: (_: unknown, row: EdgeOut) => (
         <span style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -171,7 +171,7 @@ export default function TimeTravelPage() {
       <Card style={{ marginBottom: 16 }}>
         <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
           <div>
-            <Text>Recording</Text>
+            <Text>录音</Text>
             <AutoComplete
               value={autoCompleteValue}
               data={recordingOptions.map((opt) => opt.label)}
@@ -190,7 +190,7 @@ export default function TimeTravelPage() {
             />
           </div>
           <div>
-            <Text>As-of</Text>
+            <Text>时间基准</Text>
             <DatePicker
               showTime
               value={at ?? undefined}
@@ -200,10 +200,15 @@ export default function TimeTravelPage() {
           </div>
         </div>
       </Card>
-      <Card title="Live edges">
+      <Card title="该时刻生效的关系边">
         <Spin loading={loading}>
           {edges.length === 0 && !loading ? (
-            <Empty description="No edges alive at this timestamp" />
+            // 双时态图谱的空是有含义的:这一时刻确实没有生效的边,
+            // 而不是查询失败——文案要说清是「时间点」的问题。
+            <div className="ag-timetravel-empty">
+              <Empty description="该时间点没有生效中的关系边" />
+              <p>关系边有生效与失效时间;把时间基准调到录音已索引之后再看。</p>
+            </div>
           ) : (
             <Table
               columns={columns}
@@ -215,13 +220,13 @@ export default function TimeTravelPage() {
         </Spin>
       </Card>
       {historyVisible && (
-        <Card title="Edge history (audit log)" style={{ marginTop: 16 }}>
+        <Card title="边的变更历史(审计日志)" style={{ marginTop: 16 }}>
           <Table
             columns={[
-              { title: "Event", dataIndex: "event_type" },
-              { title: "Actor", dataIndex: "actor" },
+              { title: "事件", dataIndex: "event_type" },
+              { title: "操作者", dataIndex: "actor" },
               {
-                title: "Valid at",
+                title: "生效于",
                 dataIndex: "valid_at",
                 render: (v: string) => dayjs(v).format("YYYY-MM-DD HH:mm"),
               },

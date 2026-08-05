@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 from audio_graphy.core.reception_merge import (
@@ -311,6 +312,35 @@ class TestManualConstraints:
 
         assert proposal.decision == "reject"
         assert "manual_force_split" in proposal.reason_codes
+
+    def test_manual_force_merge_outranks_a_conflicting_explicit_identity(self) -> None:
+        """人工 > 显式:复核员看过证据,上游系统的元数据没有。
+
+        这条顺序此前只存在于 evaluate_pair 的语句次序里,没有测试;
+        「任务与编排」页一度把它写反成「显式 > 人工」。
+        """
+        left = _recording("a", 0, reception_id="r-1")
+        right = _recording("b", 1, reception_id="r-2")  # 显式身份冲突 → 本应 reject
+        constraints = ManualReceptionConstraints.from_pairs(force_merge=[("a", "b")])
+
+        proposal = ReceptionMerger().evaluate_pair(left, right, constraints=constraints)
+
+        assert proposal.decision == "merge"
+        assert proposal.manual_override is True
+        assert "manual_force_merge" in proposal.reason_codes
+        assert "explicit_reception_conflict" not in proposal.reason_codes
+
+    def test_hard_constraints_outrank_even_a_manual_merge(self) -> None:
+        """人工可以推翻显式与自动,但推不翻租户边界——那是隔离,不是判断。"""
+        left = _recording("a", 0)
+        right = _recording("b", 1)
+        right = replace(right, tenant_id="other-tenant")
+        constraints = ManualReceptionConstraints.from_pairs(force_merge=[("a", "b")])
+
+        proposal = ReceptionMerger().evaluate_pair(left, right, constraints=constraints)
+
+        assert proposal.decision == "reject"
+        assert "tenant_mismatch" in proposal.reason_codes
 
     def test_force_merge_can_resolve_review_with_auditable_reason(self) -> None:
         left = _recording("a", 0, agent=None)

@@ -5343,3 +5343,20 @@ select:disabled {
   white-space: nowrap;
   text-overflow: ellipsis;
 }
+
+/* 时间演化:空态居中并解释「为什么空」。 */
+.ag-timetravel-empty {
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  padding: 26px 16px;
+  text-align: center;
+}
+
+.ag-timetravel-empty p {
+  max-width: 420px;
+  margin: 0;
+  color: var(--ag-text-secondary);
+  font-size: 13px;
+  line-height: 1.7;
+}

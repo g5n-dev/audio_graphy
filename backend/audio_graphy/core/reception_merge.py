@@ -1,8 +1,14 @@
 """Pure reception grouping for fragmented retail audio.
 
-The grouping policy is conservative by design.  Tenant and store boundaries
-are hard automatic constraints, explicit reception/session identifiers have
-the highest positive priority, and weak proximity evidence never auto-merges
+The grouping policy is conservative by design, and its precedence — asserted
+by tests rather than only implied by statement order in ``evaluate_pair`` — is:
+
+    hard constraints  >  human constraints  >  explicit ids  >  weighted evidence
+
+Tenant and store boundaries are hard: no human override crosses them, because
+they are isolation, not judgement.  A human constraint outranks an explicit
+reception/session id from upstream, because the reviewer has seen the evidence
+and the upstream metadata has not.  Weak proximity evidence never auto-merges
 unknown customers by itself.
 
 The module also detects a second reception inside one long recording using

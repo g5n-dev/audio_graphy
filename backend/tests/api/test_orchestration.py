@@ -90,3 +90,36 @@ class TestTopology:
         other = test_client.get("/api/v1/orchestration/topology", headers=auth_headers["admin_t2"])
         ingest_t2 = next(s for s in other.json()["stages"] if s["id"] == "ingest")
         assert ingest_t2["queue"] == 0, "积压计数必须按租户隔离"
+
+
+class TestMergePrecedenceIsStatedCorrectly:
+    """页面上的合并优先级必须与 reception_merge 的实际判定顺序一致。
+
+    这条测试的由来:「任务与编排」页从设计原型抄来了「显式 > 人工 > 自动」,
+    而代码里人工约束是在显式身份之前判定的——文档说反了操作员的权限边界,
+    比不写更糟。
+    """
+
+    def test_the_topology_states_the_order_evaluate_pair_actually_uses(
+        self, test_client: TestClient, auth_headers: dict
+    ) -> None:
+        import inspect
+
+        from audio_graphy.core import reception_merge
+
+        response = test_client.get(
+            "/api/v1/orchestration/topology", headers=auth_headers["inspector_t1"]
+        )
+        assemble = next(stage for stage in response.json()["stages"] if stage["id"] == "assemble")
+        stated = next(row for row in assemble["config"] if row[0] == "合并判定优先级")[1]
+        assert stated == "硬约束 > 人工 > 显式 > 自动"
+
+        # 与实现对表:evaluate_pair 里人工分支必须早于显式身份分支出现。
+        source = inspect.getsource(reception_merge.ReceptionMerger.evaluate_pair)
+        manual_at = source.index("manual_mode ==")
+        explicit_at = source.index("_explicit_identity_decision")
+        tenant_at = source.index("tenant_mismatch")
+        assert manual_at < explicit_at, "人工约束必须在显式身份之前判定"
+        assert tenant_at < source.index('manual_mode == "merge"'), (
+            "租户边界是硬约束,人工合并推不翻它"
+        )

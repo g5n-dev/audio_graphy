@@ -159,9 +159,9 @@ async def get_topology(
             name="接待组装",
             service="reception_merge",
             mode=None,
-            note="相邻录音组合成一次接待;逻辑合并不改写源文件,合并优先级 显式 > 人工 > 自动。",
+            note="相邻录音组合成一次接待;逻辑合并不改写源文件,合并优先级 硬约束 > 人工 > 显式 > 自动。",
             config=[
-                ("合并策略", "显式 > 人工 > 自动", "—"),
+                ("合并判定优先级", "硬约束 > 人工 > 显式 > 自动", "—"),
                 (
                     "声纹一致性",
                     f"余弦 ≥ {settings.voiceprint_ambiguous_threshold}",
