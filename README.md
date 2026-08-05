@@ -178,6 +178,19 @@ flowchart LR
 
 ## 快速启动
 
+一键脚本覆盖从零到可登录的完整路径（生成随机密钥的 `.env` → 下载 VAD 权重
+→ 启动等健康 → 建管理员 → 五项体检）：
+
+```bash
+./scripts/deploy.sh init --profile mock   # 或 cpu / gpu / gpu-multi
+./scripts/deploy.sh up
+./scripts/deploy.sh admin --email you@example.com
+./scripts/deploy.sh verify
+```
+
+想理解每一步在做什么，往下读手工版本；内网私有化（离线镜像与模型缓存打包）
+与数据备份见[部署指南](./docs/deployment.md)的 §8 / §9。
+
 ### Docker Compose：Mock 全栈
 
 Mock profile 不下载模型、不需要 GPU，适合产品体验、功能验证和前后端联调。
@@ -376,6 +389,14 @@ flowchart TB
 | `prompt-lab` | 独立 optimizer-worker（提示词编译） | 0 | 启用提示词实验室后台 |
 | `models-single-gpu` | vLLM、BGE-M3、CLAP、CAM++ | 1 | 单卡推理 |
 | `models-multi-gpu` | Strong/Weak LLM 分卡及完整音频模型 | 2+ | 多卡生产拓扑 |
+
+### 私有化部署
+
+单机 Docker Compose 就是交付形态，不依赖任何外部 SaaS。内网离线环境用
+`scripts/offline_bundle.sh` 在有网机器上把该 profile 的全部镜像、VAD 权重与
+模型缓存卷打成介质，目标机导入后 `deploy.sh up --offline`（禁 build 禁 pull，
+缺什么立即失败而不是偷偷出网）。业务数据只有三个卷（MySQL、音频与图谱、
+PIPL 主密钥），备份与恢复的完整命令在[部署指南](./docs/deployment.md) §8 / §9。
 
 ### LLM 多级缓存
 

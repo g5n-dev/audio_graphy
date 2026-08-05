@@ -423,3 +423,82 @@ class TestMigrationsCanRunAsTheApplicationUser:
             "no migration creates a trigger any more — drop "
             "log_bin_trust_function_creators from mysql/conf.d/audiography.cnf"
         )
+
+
+class TestDeployScriptStaysTrue:
+    """scripts/deploy.sh embeds per-profile dotenv blocks; they must not drift.
+
+    The blocks are copies of the ones docs/deployment.md walks operators
+    through by hand. This repository has already shipped two rounds of
+    "the docs prescribe one config, the deployment runs another" — this pins
+    the third copy to the first two.
+    """
+
+    DEPLOY_SH = PROJECT_ROOT / "scripts" / "deploy.sh"
+    DEPLOYMENT_MD = PROJECT_ROOT / "docs" / "deployment.md"
+
+    @staticmethod
+    def _script_blocks(text: str) -> dict[str, list[str]]:
+        """Extract the KEY=VALUE lines of each profile's heredoc in profile_block()."""
+        blocks: dict[str, list[str]] = {}
+        profile: str | None = None
+        collecting = False
+        import re
+
+        opener = re.compile(r"^([a-z-]+)\) cat <<'EOF'$")
+        for line in text.splitlines():
+            stripped = line.strip()
+            m = opener.match(stripped)
+            if m:
+                # 只认 profile_block() 里的 case 分支;usage() 的帮助 heredoc 不算
+                profile = m.group(1)
+                collecting = True
+                blocks[profile] = []
+                continue
+            if collecting and stripped == "EOF":
+                collecting = False
+                continue
+            if collecting and "=" in stripped and not stripped.startswith("#"):
+                blocks[profile or "?"].append(stripped)
+        return blocks
+
+    def test_every_env_line_in_the_script_appears_in_the_deployment_guide(self) -> None:
+        blocks = self._script_blocks(self.DEPLOY_SH.read_text(encoding="utf-8"))
+        docs = self.DEPLOYMENT_MD.read_text(encoding="utf-8")
+        readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+        assert set(blocks) == {"mock", "cpu", "gpu", "gpu-multi"}
+        for profile, lines in blocks.items():
+            assert lines or profile == "mock", f"profile {profile} has no env lines"
+            for line in lines:
+                # The cpu block mirrors the README's Ollama walkthrough; the two
+                # GPU blocks mirror the guide's §3.3/§3.4. A line in neither
+                # document is a config the operator can't read about anywhere.
+                assert line in docs or line in readme, (
+                    f"deploy.sh {profile} sets {line!r}, which appears in neither "
+                    "docs/deployment.md nor README.md — update the doc or the script"
+                )
+
+    def test_the_script_only_names_compose_profiles_that_exist(self) -> None:
+        import re
+
+        script = self.DEPLOY_SH.read_text(encoding="utf-8")
+        compose = COMPOSE_FILE.read_text(encoding="utf-8")
+        declared = set(re.findall(r'profiles: \["([^"]+)"', compose))
+        declared |= {
+            name
+            for group in re.findall(r"profiles: \[([^\]]+)\]", compose)
+            for name in re.findall(r'"([^"]+)"', group)
+        }
+        # 只看真正传给 compose 的行(echo 与直接调用);脚本自己的简称
+        # (cpu/gpu/…)是 compose_profiles() 的输入,不是 compose profile。
+        used = {
+            name
+            for line in script.splitlines()
+            if 'echo "--profile' in line or "docker compose --profile" in line
+            for name in re.findall(r"--profile ([a-z0-9-]+)", line)
+        }
+        unknown = used - declared
+        assert not unknown, (
+            f"deploy.sh passes --profile {sorted(unknown)} which docker-compose.yml "
+            "does not declare — the stack would silently start nothing for them"
+        )

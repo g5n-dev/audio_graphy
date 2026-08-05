@@ -78,6 +78,28 @@ Backend 还在 ASGI 入口同时校验 `Content-Length` 和分块累计字节，
 
 ## 3. 快速启动
 
+### 3.0 一键脚本（推荐）
+
+手工步骤（3.1–3.4）讲清每一步是什么；日常装机走脚本，它做的就是下面各节的
+事，顺带把三个必须随机化的密钥（`MYSQL_PASSWORD` / `MYSQL_ROOT_PASSWORD` /
+`JWT_SECRET`）生成好：
+
+```bash
+./scripts/deploy.sh init --profile cpu   # 生成 .env + 写入该 profile 的 adapter 配置
+./scripts/deploy.sh model                # 下载 Silero VAD 权重（models profile 必需）
+./scripts/deploy.sh up                   # 启动并等待全部容器健康
+./scripts/deploy.sh admin --email you@example.com   # 创建首个租户与管理员（密码交互输入）
+./scripts/deploy.sh verify               # 就绪 / 指标 / 前端 / 健康 / 密钥五项体检
+```
+
+profile 取值：`mock`（零模型）｜`cpu`（models-cpu + models-cpu-llm）｜
+`gpu`（models-single-gpu）｜`gpu-multi`（models-multi-gpu）。`init` 把
+profile 记进 `.env` 末尾的管理块，之后 `up` / `status` / `logs` / `down`
+不用再带参数；换 profile 重跑 `init` 即可，已有密钥不会被改动。
+
+`down` 刻意不删数据卷；删除数据请先读 §9 的备份章节。离线（内网私有化）
+环境见 §8。
+
 ### 3.1 Mock
 
 ```bash
@@ -487,3 +509,78 @@ CPU/GPU 两个服务通过网络别名统一为 `bge-m3`。
 
 两个镜像以 UID/GID `10001` 运行。Compose 命名卷会自动提供容器内缓存；
 如果改成宿主 bind mount，必须预先把目录授权给 `10001:10001`。
+
+## 8. 离线 / 内网（私有化）部署
+
+目标机不出网时，介质在有网机器上准备。镜像清单不用手抄——脚本直接问
+compose 要（`config --images`），加服务、换 tag 自动跟上：
+
+```bash
+# 有网机器（架构需与目标机一致，x86_64 对 x86_64、arm64 对 arm64）
+./scripts/deploy.sh model
+./scripts/offline_bundle.sh export --profile cpu --output /tmp/ag-bundle
+```
+
+`export` 会构建全部自有镜像、拉齐第三方镜像、`docker save` 成单档，并附带
+VAD 权重与 MANIFEST。**真离线环境务必加 `--with-caches`**：funASR / BGE-M3 /
+CAM++ / Ollama 的权重都是首次启动时下载进缓存卷的（合计可达 10 GB），不带
+缓存卷的介质在内网首启必然失败。前提是本机用同一 profile 完整启动并跑通过
+一次：
+
+```bash
+./scripts/offline_bundle.sh export --profile cpu --output /tmp/ag-bundle --with-caches
+```
+
+把 bundle 目录与代码仓库一起拷入目标机：
+
+```bash
+./scripts/offline_bundle.sh import --input /path/ag-bundle
+./scripts/deploy.sh init --profile cpu
+./scripts/deploy.sh up --offline        # --no-build --pull never：缺镜像立即失败，绝不出网
+./scripts/deploy.sh admin --email you@example.com
+./scripts/deploy.sh verify
+```
+
+三条纪律：
+
+- **两台机器的 `COMPOSE_RESOURCE_PREFIX` 必须一致**（或都不设）。自建镜像
+  名内嵌该前缀（`audiography-backend` 等），不一致时 `--no-build` 找不到
+  镜像。
+- 慢速链路构建可给自有镜像换 PyPI 镜像源：
+  `PYPI_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple docker compose build`
+  （各 Dockerfile 均声明了该 build arg）。
+- GPU profile 的 vLLM 在缓存齐全时也可能启动时探测 HuggingFace——内网环境
+  给 `vllm-strong` / `vllm-weak` 追加环境变量 `HF_HUB_OFFLINE=1` 可彻底断念。
+
+## 9. 数据备份与恢复
+
+全部业务数据在三个卷里，模型缓存卷丢了可以重下，这三个不行：
+
+| 卷 | 内容 | 丢失后果 |
+|---|---|---|
+| `audiography_mysql_data` | 全部结构化数据 | 一切业务记录 |
+| `audiography_working_dir` | 音频文件、GraphML 图谱 | 录音与图谱本体 |
+| `audiography_master_key` | PIPL 音频加密主密钥 | **加密音频永久不可解** |
+
+备份（停机窗口内执行，保证一致性）：
+
+```bash
+docker compose down
+for v in mysql_data working_dir master_key; do
+  docker run --rm -v "audiography_${v}":/src:ro -v "$PWD/backup":/out alpine     tar czf "/out/${v}.tar.gz" -C /src .
+done
+docker compose --profile mock up -d   # 按实际 profile
+```
+
+恢复到空机：先 `docker volume create` 同名卷，再用 `tar xzf` 反向解开，然后
+正常 `deploy.sh up`。主密钥卷另外单独多存一份冷备——数据库可以重建，密钥
+不能。
+
+在线逻辑备份（不停机，只覆盖 MySQL）：
+
+```bash
+docker compose exec mysql sh -c \
+  'exec mysqldump --single-transaction -uroot -p"$MYSQL_ROOT_PASSWORD" audiography' \
+  > backup/audiography-$(date +%F).sql
+```
+
