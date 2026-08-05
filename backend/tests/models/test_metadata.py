@@ -121,6 +121,7 @@ EXPECTED_TABLES = {
     "receptions",
     "reception_recordings",
     "dialogue_units",
+    "domain_events",
     "dialogue_state_transitions",
     "dialogue_tag_assignments",
     "provenance_events",

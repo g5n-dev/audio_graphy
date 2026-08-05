@@ -62,6 +62,7 @@ from audio_graphy.models.tag_governance import (
     TagSchemaVersion,
 )
 from audio_graphy.models.user import User
+from audio_graphy.services.events import emit_domain_event
 from audio_graphy.services.stage_projection import (
     project_stage_change_in_session,
 )
@@ -5768,6 +5769,19 @@ class TagGovernanceService:
             if job.attempt_count >= job.max_attempts:
                 job.status = "failed"
                 job.finished_at = now
+                emit_domain_event(
+                    session,
+                    tenant_id=str(job.tenant_id),
+                    event_type="tag_job.failed",
+                    aggregate_type="tag_job",
+                    aggregate_id=job.id,
+                    payload={
+                        "job_id": job.id,
+                        "job_type": job.job_type,
+                        "status": "failed",
+                        "failed_items": job.failed_items,
+                    },
+                )
                 await self._sync_evaluation_job_state(
                     session,
                     job=job,
@@ -6167,6 +6181,19 @@ class TagGovernanceService:
                     "job cannot finish before every scoped item is accounted for"
                 )
             job.status = "completed" if job.failed_items == 0 else "failed"
+            emit_domain_event(
+                session,
+                tenant_id=tenant_id,
+                event_type=f"tag_job.{job.status}",
+                aggregate_type="tag_job",
+                aggregate_id=job.id,
+                payload={
+                    "job_id": job.id,
+                    "job_type": job.job_type,
+                    "status": job.status,
+                    "failed_items": job.failed_items,
+                },
+            )
             job.budget_usage_complete = bool(
                 job.status == "completed"
                 and job.job_type in {"extract", "recompute", "remediate"}

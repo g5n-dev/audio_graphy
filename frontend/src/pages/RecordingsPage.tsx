@@ -29,6 +29,7 @@ import { PanelState } from "@/components/PanelState";
 import { useAuthStore } from "@/stores/auth";
 import { getErrorMessage } from "@/utils/errors";
 import { recordingsPollInterval } from "@/utils/recordingsPolling";
+import { useEventStream } from "@/hooks/useEventStream";
 import type {
   RecordingCreateRequest,
   RecordingListItem,
@@ -143,6 +144,14 @@ function ImportRecordingModal({
 export default function RecordingsPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  // 事件流是加速器不是依赖:收到录音终态/失败事件立即刷新列表,
+  // 5 秒轮询仍在,流断了页面照常工作。
+  useEventStream(
+    ["recording.indexed", "recording.ready_no_speech", "recording.failed"],
+    () => {
+      void queryClient.invalidateQueries({ queryKey: ["recordings"] });
+    },
+  );
   const user = useAuthStore((s) => s.user);
   const isAdmin = user?.role === "admin";
   const [page, setPage] = useState(1);

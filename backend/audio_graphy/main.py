@@ -25,6 +25,7 @@ from audio_graphy.api.auth import router as auth_router
 from audio_graphy.api.deprecation import LegacyTaggingDeprecationMiddleware
 from audio_graphy.api.dsar import router as dsar_router
 from audio_graphy.api.eval import router as eval_router
+from audio_graphy.api.events import router as events_router
 from audio_graphy.api.graph import router as graph_router
 from audio_graphy.api.health import router as health_router
 from audio_graphy.api.integration_admin import router as integration_admin_router
@@ -767,6 +768,7 @@ def create_app() -> FastAPI:
     app.include_router(recordings_router, prefix=API_PREFIX)
     app.include_router(open_router, prefix=API_PREFIX)
     app.include_router(integration_admin_router, prefix=API_PREFIX)
+    app.include_router(events_router, prefix=API_PREFIX)
     app.include_router(receptions_router, prefix=API_PREFIX)
     app.include_router(reception_pipeline_router, prefix=API_PREFIX)
     app.include_router(reception_state_insights_router, prefix=API_PREFIX)

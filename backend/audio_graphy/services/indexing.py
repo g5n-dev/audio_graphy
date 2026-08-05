@@ -35,6 +35,7 @@ from audio_graphy.models.pipeline import (
     pipeline_run_transition_allowed,
 )
 from audio_graphy.models.recording import Recording
+from audio_graphy.services.events import emit_domain_event
 from audio_graphy.services.integration import enqueue_recording_callbacks
 from audio_graphy.storage.file_index import FileIndex
 from audio_graphy.storage.graph_networkx import NetworkXGraphStore
@@ -704,6 +705,18 @@ class IndexingService:
                 generation=run.generation,
                 status=recording.status,
             )
+            emit_domain_event(
+                session,
+                tenant_id=run.tenant_id,
+                event_type=f"recording.{recording.status}",
+                aggregate_type="recording",
+                aggregate_id=recording.id,
+                payload={
+                    "recording_id": recording.id,
+                    "status": recording.status,
+                    "agent_user_id": recording.agent_user_id,
+                },
+            )
             return True
 
     async def _fail_run(
@@ -757,6 +770,19 @@ class IndexingService:
                     status=RecordingStatus.FAILED.value,
                     error_code=run.error_code,
                     error_message=run.error_message,
+                )
+                emit_domain_event(
+                    session,
+                    tenant_id=run.tenant_id,
+                    event_type="recording.failed",
+                    aggregate_type="recording",
+                    aggregate_id=recording.id,
+                    payload={
+                        "recording_id": recording.id,
+                        "status": RecordingStatus.FAILED.value,
+                        "agent_user_id": recording.agent_user_id,
+                        "error_code": run.error_code,
+                    },
                 )
 
     async def _stage_vad_asr_chunk(

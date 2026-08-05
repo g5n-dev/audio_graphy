@@ -274,3 +274,10 @@ class TestPipelineEmitsOnTerminalStates:
             assert callback.payload["event_type"] == "recording.indexed"
             assert callback.payload["external_ref"] == "crm-cb-1"
             assert callback.status == "pending"
+            # The SSE feed rides the same transaction: one domain event, with
+            # the agent filter's key present so the stream can scope agents.
+            from audio_graphy.models.domain_event import DomainEvent
+
+            domain_event = (await session.execute(select(DomainEvent))).scalar_one()
+            assert domain_event.event_type == "recording.indexed"
+            assert "agent_user_id" in domain_event.payload

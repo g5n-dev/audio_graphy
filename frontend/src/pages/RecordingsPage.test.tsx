@@ -14,6 +14,10 @@ import { recordingsPollInterval } from "@/utils/recordingsPolling";
 import { useAuthStore } from "@/stores/auth";
 import type { RecordingListResponse, RecordingResponse } from "@/types/api";
 
+vi.mock("@/hooks/useEventStream", () => ({
+  useEventStream: vi.fn(),
+}));
+
 vi.mock("@/api/services", () => ({
   createRecording: vi.fn(),
   listRecordings: vi.fn(),
@@ -25,6 +29,11 @@ import {
   listRecordings,
   reindexRecording,
 } from "@/api/services";
+import { useEventStream } from "@/hooks/useEventStream";
+
+const mockedUseEventStream = useEventStream as unknown as ReturnType<
+  typeof vi.fn
+>;
 
 const mockedCreate = createRecording as unknown as ReturnType<typeof vi.fn>;
 const mockedList = listRecordings as unknown as ReturnType<typeof vi.fn>;
@@ -124,6 +133,30 @@ beforeEach(() => {
   mockedReindex.mockReset();
   mockedList.mockResolvedValue(LIST);
   setUser("admin");
+});
+
+describe("the event-stream wiring", () => {
+  it("refreshes the list the moment a recording event arrives", async () => {
+    renderPage();
+    await screen.findByText("销售甲");
+    const callsBefore = mockedList.mock.calls.length;
+
+    // 页面把回调交给了 useEventStream;取出它,模拟服务端推来一条终态事件。
+    const [types, handler] = mockedUseEventStream.mock.calls.at(-1)!;
+    expect(types).toContain("recording.indexed");
+    handler({
+      id: 7,
+      event_type: "recording.indexed",
+      aggregate_type: "recording",
+      aggregate_id: "1",
+      payload: { recording_id: 1 },
+      occurred_at: null,
+    });
+
+    await waitFor(() => {
+      expect(mockedList.mock.calls.length).toBeGreaterThan(callsBefore);
+    });
+  });
 });
 
 describe("the polling wiring", () => {

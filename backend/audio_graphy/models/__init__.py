@@ -19,6 +19,7 @@ from audio_graphy.models.audit_log import AuditLog
 from audio_graphy.models.base import Base, TenantScopedBase
 from audio_graphy.models.chunk import Chunk, ChunkSegment
 from audio_graphy.models.community_summary import CommunitySummary
+from audio_graphy.models.domain_event import DomainEvent
 from audio_graphy.models.edge_event import EdgeEvent
 from audio_graphy.models.entity_alias import EntityAlias
 from audio_graphy.models.enums import (
@@ -122,6 +123,7 @@ __all__ = [
     "DialogueStateTransition",
     "DialogueTagAssignment",
     "DialogueUnit",
+    "DomainEvent",
     "EdgeEvent",
     "EntityAlias",
     "ErasureOutbox",
