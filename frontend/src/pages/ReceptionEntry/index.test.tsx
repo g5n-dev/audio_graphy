@@ -331,9 +331,31 @@ describe("ReceptionEntryPage", () => {
     });
     renderEntry();
 
+    // 无筛选 + 零结果 = 空系统,这是新部署的第一屏:必须指出下一步,
+    // 而不是一句「暂无」把人留在原地。
+    expect(await screen.findByText("还没有接待记录")).toBeInTheDocument();
     expect(
-      await screen.findByText("当前筛选条件下暂无真实接待"),
+      screen.getByRole("button", { name: "去扫描接待候选" }),
     ).toBeInTheDocument();
+  });
+
+  it("keeps the onboarding out of the way when a filter emptied the queue", async () => {
+    // 「筛选筛没了」和「系统里还没有接待」是两回事;把前者也导去扫描,
+    // 等于劝一个已有数据的租户再造一遍接待。
+    const user = userEvent.setup();
+    mockedList.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 20 });
+    renderEntry();
+
+    await screen.findByText("还没有接待记录");
+    await user.type(screen.getByLabelText("门店筛选"), "store-001");
+    await user.click(screen.getByRole("button", { name: "查询工作队列" }));
+
+    expect(
+      await screen.findByText(/当前筛选条件下暂无接待/),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "去扫描接待候选" }),
+    ).not.toBeInTheDocument();
   });
 
   it("scans a bounded window and renders explainable candidates without fake data", async () => {

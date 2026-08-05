@@ -310,6 +310,8 @@ export default function ReceptionEntryPage() {
   >("");
   const [queueStore, setQueueStore] = useState(focusStoreId);
   const [queueStatus, setQueueStatus] = useState<"" | ReceptionStatus>("");
+  // 空态分流依据:只有「无筛选且零结果」才是真正的空系统。
+  const hasQueueFilter = Boolean(queueStore || queueStatus);
   const appliedFocusStoreRef = useRef(focusStoreId);
 
   const [scenario, setScenario] =
@@ -590,7 +592,31 @@ export default function ReceptionEntryPage() {
                 </Button>
               </div>
             ) : queueQuery.data.items.length === 0 ? (
-              <Empty description="当前筛选条件下暂无真实接待" />
+              // 两种空是两回事:筛选筛没了,还是系统里根本还没有接待。
+              // 后者是新部署看到的第一屏——不能只说「暂无」就完事,要指出
+              // 下一步在哪(下方的候选扫描是唯一的入口)。
+              hasQueueFilter ? (
+                <Empty description="当前筛选条件下暂无接待,换个门店或状态再看看。" />
+              ) : (
+                <div className="ag-queue-onboarding">
+                  <strong>还没有接待记录</strong>
+                  <p>
+                    接待由录音组合而来:先在下方的「接待候选扫描」按门店与时间窗
+                    扫一遍,确认候选后即可进入调听工作台。
+                  </p>
+                  <Button
+                    type="primary"
+                    size="small"
+                    onClick={() => {
+                      document
+                        .getElementById("reception-discovery-title")
+                        ?.scrollIntoView({ behavior: "smooth", block: "start" });
+                    }}
+                  >
+                    去扫描接待候选
+                  </Button>
+                </div>
+              )
             ) : (
               <div className="ag-reception-table-wrap">
                 <table className="ag-reception-table">

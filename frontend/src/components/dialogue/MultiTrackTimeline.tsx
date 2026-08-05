@@ -29,6 +29,11 @@ interface TimelineBlock {
   label: string;
   tone: string;
   unitId?: EntityId;
+  /** 标签块专用:维度名、值、来源与置信度,用于药丸的分段展示。 */
+  dimension?: string;
+  value?: string;
+  manual?: boolean;
+  confidence?: number | null;
   tag?: ReceptionTagAssignment;
   lane?: number;
 }
