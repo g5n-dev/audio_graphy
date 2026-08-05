@@ -207,6 +207,13 @@ class Settings(BaseSettings):
 
     # --- PIPL §14.3 (M6) — audio encryption ---
     master_key_path: str = "/run/secrets/audiography_master.key"
+
+    # ── 开放接口(机器对机器)────────────────────────────────
+    #: 允许回调地址落在私网/环回段。默认拒绝(SSRF 面);私有化内网的下游
+    #: 系统通常就在私网,须显式打开并保证出网侧有边界控制。
+    integration_allow_private_callback_urls: bool = False
+    #: 单次回调 POST 的超时秒数。
+    integration_callback_timeout_sec: float = 10.0
     max_recording_audio_bytes: int = 512 * 1024 * 1024
     audio_crypto_chunk_size_bytes: int = 4 * 1024 * 1024
     max_request_body_bytes: int = 16 * 1024 * 1024

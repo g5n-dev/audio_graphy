@@ -29,6 +29,7 @@ from audio_graphy.models.enums import (
 )
 from audio_graphy.models.erasure_outbox import ErasureOutbox
 from audio_graphy.models.eval_run import EvalRunORM
+from audio_graphy.models.integration import ApiKey, IntegrationCallback, IntegrationUpload
 from audio_graphy.models.leiden_job import LeidenJob
 from audio_graphy.models.llm_cache import (
     LLMCacheEntry,
@@ -112,6 +113,7 @@ from audio_graphy.models.vector_entity import VectorEntity
 from audio_graphy.models.voiceprint_vector import VoiceprintVector
 
 __all__ = [
+    "ApiKey",
     "AuditLog",
     "Base",
     "Chunk",
@@ -124,6 +126,8 @@ __all__ = [
     "EntityAlias",
     "ErasureOutbox",
     "EvalRunORM",
+    "IntegrationCallback",
+    "IntegrationUpload",
     "LLMCacheEntry",
     "LLMCachePurge",
     "LLMCacheRef",

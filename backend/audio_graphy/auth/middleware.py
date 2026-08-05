@@ -224,6 +224,14 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if path in self.DEFAULT_PUBLIC_PATHS:
             return await call_next(request)
 
+        # The open (machine-to-machine) surface authenticates with API keys,
+        # not JWTs — a prefix, not an exact match, because it is a namespace.
+        # Every route under it hard-requires the require_api_key dependency;
+        # tests/api/test_open_api.py pins that no route ships without it, so
+        # this pass-through cannot become an unauthenticated hole.
+        if path.startswith("/api/v1/open/"):
+            return await call_next(request)
+
         # Extract and verify token
         token = self._extract_token(request)
         if token is None:

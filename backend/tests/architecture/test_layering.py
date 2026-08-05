@@ -116,6 +116,11 @@ KNOWN_VIOLATIONS: frozenset[tuple[str, str]] = frozenset(
         ("audio_graphy.api.eval", "audio_graphy.errors"),
         ("audio_graphy.api.graph", "audio_graphy.config"),
         ("audio_graphy.api.graph", "audio_graphy.errors"),
+        # Accepted (errors is a package-root cross-cutting leaf; see the module
+        # docstring's taxonomy): the two open-API routers raise APIError like
+        # every other router.
+        ("audio_graphy.api.integration_admin", "audio_graphy.errors"),
+        ("audio_graphy.api.open", "audio_graphy.errors"),
         ("audio_graphy.api.leiden_admin", "audio_graphy.errors"),
         ("audio_graphy.api.prompt_lab", "audio_graphy.errors"),
         ("audio_graphy.api.prompts", "audio_graphy.errors"),

@@ -88,6 +88,7 @@ EXPECTED_TABLES = {
     "prompts",
     "vectors_entity",
     "vectors_chunk",
+    "api_keys",
     "audit_logs",
     "llm_call_logs",
     "recompute_tasks",
@@ -125,6 +126,8 @@ EXPECTED_TABLES = {
     "provenance_events",
     "reception_automation_runs",
     # Tag governance closed loop
+    "integration_callbacks",
+    "integration_uploads",
     "legacy_tag_mappings",
     "tag_assignment_current",
     "tag_assignment_facts",

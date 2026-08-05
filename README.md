@@ -24,8 +24,6 @@ AudioGraphy 不是只服务某一种销售流程的录音工具，而是一套�
 
 它接收一次业务交互中的多段短录音或长录音，完成接待还原、ASR、语义切分、标签派生、关系建图与证据绑定。阶段模型、Prompt、标签体系和证据规则共同定义“怎样切、怎样理解”，因此同一套引擎可以适配汽车销售、零售导购、外贸洽谈、咨询服务等不同过程。
 
-项目的图谱驱动 RAG 设计来源于 [VideoRAG](https://github.com/HKUDS/VideoRAG)，并针对音频场景重新实现索引、图谱与检索链路：使用 VAD、ASR、音频嵌入和声纹能力替换视觉模态预处理。
-
 ## 工作方式
 
 一段原始汽车销售对话：
@@ -44,14 +42,23 @@ AudioGraphy 不只保存这句话，而是把它转译为可以计算和追溯�
 
 ```mermaid
 flowchart LR
-    A["多段录音 / 长音频"] --> B["接待发现与时间线还原"]
-    B --> C["VAD / ASR / 说话人"]
-    C --> D["场景化对话切分"]
-    D --> E["阶段 · 意图 · 异议 · 行动 · 风险"]
-    E --> F["标签事实与证据"]
-    E --> G["关系 / 时序 / 状态 / 溯源图谱"]
-    F --> H["单次复盘与跨接待洞察"]
+    A("多段录音<br/>长音频") --> B("接待发现<br/>时间线还原")
+    B --> C("VAD · ASR<br/>说话人识别")
+    C --> D("场景化<br/>对话切分")
+    D --> E("阶段 · 意图 · 异议<br/>行动 · 风险")
+    E --> F("标签事实<br/>证据绑定")
+    E --> G("关系 · 时序 · 状态<br/>溯源图谱")
+    F --> H("单次复盘<br/>跨接待洞察")
     G --> H
+
+    classDef input fill:#1d4ed8,stroke:#93c5fd,stroke-width:2px,color:#ffffff
+    classDef stage fill:#6d28d9,stroke:#c4b5fd,stroke-width:2px,color:#ffffff
+    classDef fact fill:#047857,stroke:#6ee7b7,stroke-width:2px,color:#ffffff
+    classDef insight fill:#b45309,stroke:#fcd34d,stroke-width:2px,color:#ffffff
+    class A input
+    class B,C,D,E stage
+    class F,G fact
+    class H insight
 ```
 
 ## 一个引擎，多种切分语义
@@ -76,7 +83,7 @@ flowchart LR
 
 ## 产品界面
 
-以下界面来自仓库内置的**金店销售**场景 Mock 演示数据，不包含真实客户信息。
+以下界面为 Mock 数据。
 
 ### 接待时间线：从多段录音回到一次完整业务过程
 
@@ -363,18 +370,64 @@ Sites 使用独立 D1 保存交互演示状态，与生产 MySQL 数据隔离，
 ## 架构与部署
 
 ```mermaid
-flowchart TB
-    UI["React / Arco Design / AntV G6"] --> API["FastAPI API"]
-    API --> RECEPTION["接待还原与场景切分"]
-    API --> QUERY["GraphRAG / Local / Global Search"]
-    RECEPTION --> ADAPTER["Mock / Real Adapters"]
-    ADAPTER --> MODEL["FunASR · vLLM · BGE-M3 · CLAP · CAM++"]
-    RECEPTION --> MYSQL["MySQL：业务状态、版本、审计与向量"]
-    RECEPTION --> INDEX["租户文件索引与图谱快照"]
-    WORKER["Tag Worker：抽取、复核、评估、发布"] --> MYSQL
-    WORKER --> ADAPTER
-    MYSQL --> API
-    INDEX --> API
+flowchart LR
+    subgraph CLIENT[" 接入 "]
+        direction TB
+        UI("Web 工作台<br/>React · Arco · AntV G6")
+        EXT("外部系统<br/>CRM · BI · 企微")
+    end
+
+    subgraph SERVICE[" 服务层 · FastAPI "]
+        direction TB
+        API("REST API<br/>JWT · RBAC · 多租户")
+        OPEN("Open API<br/>API Key · 幂等上传")
+        QUERY("GraphRAG 检索<br/>Local · Global · Rerank")
+    end
+
+    subgraph WORKERS[" 后台进程 "]
+        direction TB
+        PIPE("处理管线<br/>VAD → ASR → 切分 → 建图")
+        TAGW("Tag Worker<br/>抽取 · 评估 · 灰度发布")
+        CBW("回调投递<br/>HMAC 签名 · 退避重试")
+    end
+
+    subgraph DATA[" 数据层 "]
+        direction TB
+        MYSQL[("MySQL<br/>业务 · 审计 · 向量 · Outbox")]
+        GRAPH[("图谱与文件<br/>GraphML · 加密音频")]
+    end
+
+    MODELS("模型服务 · Compose Profile<br/>funASR · Silero VAD · BGE-M3 · CAM++ · vLLM / Ollama")
+
+    UI --> API
+    EXT -- "上传 · 状态查询" --> OPEN
+    API --> QUERY
+    API --> MYSQL
+    OPEN --> MYSQL
+    QUERY --> GRAPH
+    QUERY --> MYSQL
+    MYSQL -. "出队" .-> PIPE
+    MYSQL -. "出队" .-> CBW
+    PIPE --> GRAPH
+    PIPE --> MODELS
+    TAGW --> MYSQL
+    TAGW --> MODELS
+    CBW -- "签名回调" --> EXT
+
+    classDef client fill:#1d4ed8,stroke:#93c5fd,stroke-width:2px,color:#ffffff
+    classDef service fill:#6d28d9,stroke:#c4b5fd,stroke-width:2px,color:#ffffff
+    classDef worker fill:#b45309,stroke:#fcd34d,stroke-width:2px,color:#ffffff
+    classDef data fill:#047857,stroke:#6ee7b7,stroke-width:2px,color:#ffffff
+    classDef model fill:#0e7490,stroke:#67e8f9,stroke-width:2px,color:#ffffff
+    class UI,EXT client
+    class API,OPEN,QUERY service
+    class PIPE,TAGW,CBW worker
+    class MYSQL,GRAPH data
+    class MODELS model
+    style CLIENT fill:transparent,stroke:#94a3b8,stroke-dasharray:6 4
+    style SERVICE fill:transparent,stroke:#94a3b8,stroke-dasharray:6 4
+    style WORKERS fill:transparent,stroke:#94a3b8,stroke-dasharray:6 4
+    style DATA fill:transparent,stroke:#94a3b8,stroke-dasharray:6 4
 ```
 
 ### 部署 Profile
@@ -389,6 +442,14 @@ flowchart TB
 | `prompt-lab` | 独立 optimizer-worker（提示词编译） | 0 | 启用提示词实验室后台 |
 | `models-single-gpu` | vLLM、BGE-M3、CLAP、CAM++ | 1 | 单卡推理 |
 | `models-multi-gpu` | Strong/Weak LLM 分卡及完整音频模型 | 2+ | 多卡生产拓扑 |
+
+### 外部系统对接(Open API)
+
+机器对机器三件套:外部系统凭 API key **上传**录音(`external_ref` 幂等)、按
+自己的 ref **查询**计算状态、终态时收到 **HMAC 签名回调**(与状态转移同事务
+落库,at-least-once + 退避 + dead_letter)。回调只带 id 与状态,不带转写内容
+——开放接口是事件通道,不是数据出口。完整契约与验签示例见
+[对接指南](./docs/integration.md)。
 
 ### 私有化部署
 
@@ -466,6 +527,8 @@ Redis 当时不可用，在途 leader 也不能复活结果，恢复后会自动
 - [架构图资产](./docs/assets/)：索引、查询、存储分层与标签版本图。
 
 ### 部署与合规
+
+- [外部系统对接指南](./docs/integration.md) — Open API:上传、状态查询、签名回调
 
 - [部署指南](./docs/deployment.md)：模型 Profile、端口、密钥、安全边界和 VAD 部署。
 - [PIPL 实现指南](./docs/m6-pipl.md)：音频加密、PII、保留、DSAR 与审计。

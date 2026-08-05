@@ -35,6 +35,7 @@ from audio_graphy.models.pipeline import (
     pipeline_run_transition_allowed,
 )
 from audio_graphy.models.recording import Recording
+from audio_graphy.services.integration import enqueue_recording_callbacks
 from audio_graphy.storage.file_index import FileIndex
 from audio_graphy.storage.graph_networkx import NetworkXGraphStore
 from audio_graphy.storage.mysql_vector import MySQLVectorStore
@@ -694,6 +695,15 @@ class IndexingService:
             )
             recording.pipeline_state = PipelineState.DONE.value
             recording.indexed_at = now if ready_state == "ready" else None
+            # Same transaction as the terminal status: the open-API caller's
+            # callback intent commits with the state it reports, or neither does.
+            await enqueue_recording_callbacks(
+                session,
+                tenant_id=run.tenant_id,
+                recording_id=recording.id,
+                generation=run.generation,
+                status=recording.status,
+            )
             return True
 
     async def _fail_run(
@@ -736,6 +746,18 @@ class IndexingService:
                 recording.status = RecordingStatus.FAILED.value
                 recording.pipeline_state = PipelineState.ERROR.value
                 recording.indexed_at = None
+                # Deterministic event id (upload, generation, status) makes a
+                # retried attempt of the same generation dedupe instead of
+                # notifying the receiver once per attempt.
+                await enqueue_recording_callbacks(
+                    session,
+                    tenant_id=run.tenant_id,
+                    recording_id=recording.id,
+                    generation=run.generation,
+                    status=RecordingStatus.FAILED.value,
+                    error_code=run.error_code,
+                    error_message=run.error_message,
+                )
 
     async def _stage_vad_asr_chunk(
         self,

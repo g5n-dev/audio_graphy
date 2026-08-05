@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import threading
 from collections.abc import AsyncIterator, Awaitable, Callable, MutableMapping
 from contextlib import asynccontextmanager
@@ -26,6 +27,8 @@ from audio_graphy.api.dsar import router as dsar_router
 from audio_graphy.api.eval import router as eval_router
 from audio_graphy.api.graph import router as graph_router
 from audio_graphy.api.health import router as health_router
+from audio_graphy.api.integration_admin import router as integration_admin_router
+from audio_graphy.api.open import router as open_router
 from audio_graphy.api.prompt_lab import router as prompt_lab_router
 from audio_graphy.api.prompts import router as prompts_router
 from audio_graphy.api.query import router as query_router
@@ -497,6 +500,30 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.error("Failed to start pipeline worker: %s", exc, exc_info=True)
         _record_degradation(app, "pipeline_worker", exc)
 
+    integration_callback_task: asyncio.Task[None] | None = None
+    integration_callback_worker = None
+    try:
+        import socket as _socket
+
+        from audio_graphy.services.integration import (
+            IntegrationCallbackWorker,
+            load_signing_root,
+        )
+
+        if session_factory is None:
+            raise RuntimeError("session factory unavailable")
+        integration_callback_worker = IntegrationCallbackWorker(
+            session_factory,
+            signing_root=load_signing_root(str(settings.master_key_path), settings.jwt_secret),
+            allow_private_targets=settings.integration_allow_private_callback_urls,
+            worker_id=f"{_socket.gethostname()}:{os.getpid()}",
+            request_timeout_sec=settings.integration_callback_timeout_sec,
+        )
+        integration_callback_task = asyncio.create_task(integration_callback_worker.run_forever())
+    except Exception as exc:
+        logger.error("Failed to start integration callback worker: %s", exc, exc_info=True)
+        _record_degradation(app, "integration_callback_worker", exc)
+
     reception_audio_reconciler_task: asyncio.Task[None] | None = None
     app.state.reception_audio_operation_service = None
     if session_factory is not None:
@@ -636,6 +663,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         reception_audio_reconciler_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await reception_audio_reconciler_task
+    if integration_callback_task is not None:
+        if integration_callback_worker is not None:
+            integration_callback_worker.stop()
+        integration_callback_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await integration_callback_task
 
     # M6: shut down AuditWriter (flushes remaining queue) + retention scheduler.
     audit_writer = getattr(app.state, "audit_writer", None)
@@ -732,6 +765,8 @@ def create_app() -> FastAPI:
     app.include_router(health_router)
     app.include_router(auth_router, prefix=API_PREFIX)
     app.include_router(recordings_router, prefix=API_PREFIX)
+    app.include_router(open_router, prefix=API_PREFIX)
+    app.include_router(integration_admin_router, prefix=API_PREFIX)
     app.include_router(receptions_router, prefix=API_PREFIX)
     app.include_router(reception_pipeline_router, prefix=API_PREFIX)
     app.include_router(reception_state_insights_router, prefix=API_PREFIX)
