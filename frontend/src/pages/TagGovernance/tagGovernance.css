@@ -86,7 +86,7 @@
 .ag-governance-tabs {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
-  width: min(1440px, calc(100% - 40px));
+  width: calc(100% - 40px);
   margin: 22px auto 0;
   padding: 5px;
   background: #fff;
@@ -140,7 +140,7 @@
 }
 
 .ag-governance-panel {
-  width: min(1440px, calc(100% - 40px));
+  width: calc(100% - 40px);
   min-height: 440px;
   margin: 14px auto 36px;
   padding: 18px;
@@ -1046,7 +1046,7 @@
   align-items: flex-end;
   justify-content: space-between;
   gap: 18px;
-  width: min(1480px, calc(100% - 40px));
+  width: calc(100% - 40px);
   margin: 18px auto 0;
   padding: 12px 14px;
   background: #fff;
@@ -1082,7 +1082,7 @@
   display: grid;
   grid-template-columns: 290px minmax(0, 1fr);
   gap: 14px;
-  width: min(1480px, calc(100% - 40px));
+  width: calc(100% - 40px);
   margin: 14px auto 36px;
 }
 
@@ -1553,7 +1553,7 @@
 .ag-run-overview {
   display: grid;
   grid-template-columns: 0.55fr 0.55fr 0.55fr 2.35fr;
-  width: min(1320px, calc(100% - 40px));
+  width: calc(100% - 40px);
   margin: 20px auto 0;
   overflow: hidden;
   background: #fff;
@@ -1617,7 +1617,7 @@
 
 .ag-run-sync,
 .ag-run-feedback {
-  width: min(1320px, calc(100% - 40px));
+  width: calc(100% - 40px);
   margin: 10px auto -1px;
 }
 
@@ -1631,7 +1631,7 @@
   display: flex;
   align-items: center;
   gap: 12px;
-  width: min(1320px, calc(100% - 40px));
+  width: calc(100% - 40px);
   margin: 13px auto 0;
   padding: 12px 14px;
   color: #9d3540;
@@ -1672,7 +1672,7 @@
   display: grid;
   grid-template-columns: minmax(0, 1.6fr) minmax(280px, 0.8fr);
   gap: 14px;
-  width: min(1320px, calc(100% - 40px));
+  width: calc(100% - 40px);
   margin: 14px auto 36px;
 }
 

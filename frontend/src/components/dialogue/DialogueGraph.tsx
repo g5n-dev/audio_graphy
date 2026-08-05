@@ -1097,7 +1097,22 @@ export function DialogueGraph({
           </g>
 
           <g className="ag-graph-edges" aria-hidden="true">
-            {graph.edges.map((edge, index) => {
+            {/* 同源边的标签沿边错开取位:一个节点扇出多条边时(接待 →
+                四段源录音),所有中点都挤在同一片,标签卡互相盖住。按同源
+                序号轮转 t,让每张卡落在各自边的不同进度上。 */}
+            {(() => {
+              const sameSourceOrder = new Map<number, number>();
+              const sameSourceCount = new Map<string, number>();
+              graph.edges.forEach((edge, index) => {
+                const seen = sameSourceCount.get(edge.source) ?? 0;
+                sameSourceOrder.set(index, seen);
+                sameSourceCount.set(edge.source, seen + 1);
+              });
+              return graph.edges.map((edge, index) => {
+              const fanOut = sameSourceCount.get(edge.source) ?? 1;
+              const fanIndex = sameSourceOrder.get(index) ?? 0;
+              const labelT =
+                fanOut > 1 ? 0.32 + (fanIndex % 4) * 0.14 : 0.5;
               const source = layout.positions.get(edge.source);
               const target = layout.positions.get(edge.target);
               const sourceNode = nodesById.get(edge.source);
@@ -1112,8 +1127,8 @@ export function DialogueGraph({
                 hasHighlightedEdge &&
                 highlightedEdge?.source === edge.source &&
                 highlightedEdge.target === edge.target;
-              const midX = (source.x + target.x) / 2;
-              const midY = (source.y + target.y) / 2;
+              const midX = source.x + (target.x - source.x) * labelT;
+              const midY = source.y + (target.y - source.y) * labelT;
               const highlightedLabel = displayLabel(edge.label);
               const visibleLabel = isHighlighted
                 ? `${highlightedLabel} · 当前路径`
@@ -1210,7 +1225,8 @@ export function DialogueGraph({
                   )}
                 </g>
               );
-            })}
+            });
+            })()}
           </g>
 
           <g className="ag-graph-nodes">

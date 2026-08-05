@@ -20,6 +20,7 @@
   font-size: 14px;
 }
 
+
 .ag-context-navigation__identity > a {
   display: inline-flex;
   align-items: center;
@@ -33,16 +34,21 @@
   text-decoration: none;
 }
 
+/* 与各页头带同一套「眉标 + 标题」DNA:眉标为主题蓝小字、标题加重。
+   此前两行同灰小字,顶层看起来像另一套产品。 */
 .ag-context-navigation__identity > span {
   overflow: hidden;
-  color: #7b879a;
+  color: var(--ag-primary);
+  font-weight: 600;
+  letter-spacing: 0.06em;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .ag-context-navigation__identity > strong {
-  color: #1d2a40;
-  font-size: 13px;
+  color: #1d2129;
+  font-size: 16px;
+  font-weight: 700;
 }
 
 .ag-context-navigation__tabs {

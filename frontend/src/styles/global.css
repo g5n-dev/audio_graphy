@@ -243,9 +243,9 @@ a:focus-visible {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 320px;
   gap: 16px;
-  width: min(1520px, 100%);
-  margin: 0 auto;
-  padding: 16px;
+  /* 满幅:居中上限在宽屏上留出两侧空白,与仪表盘家族的满幅容器不一致。 */
+  width: 100%;
+  padding: 16px 24px;
 }
 
 .ag-reception-panel {
