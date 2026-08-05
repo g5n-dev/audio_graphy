@@ -660,8 +660,11 @@
   resize: vertical;
 }
 
-.ag-governance-dialog label.is-full {
+/* 通选 .is-full:定义编辑器是 div 不是 label,只写 label.is-full 会让它
+   落回单列,内容右侧被裁掉。 */
+.ag-governance-dialog .is-full {
   grid-column: 1 / -1;
+  min-width: 0;
 }
 
 .ag-governance-dialog label > small {
@@ -747,7 +750,8 @@
 }
 
 .ag-schema-version-dialog {
-  width: min(680px, 100%);
+  /* 层次树的卡片头是五列(展开/键/名/类型/删除),680px 下会挤成一团。 */
+  width: min(880px, 100%);
 }
 
 .ag-quality-grid {
@@ -3188,4 +3192,44 @@
   .ag-runs-filters {
     flex-wrap: wrap;
   }
+}
+
+/* ── 标签定义编辑器:层次树 / JSON 双视图 ────────────────── */
+.ag-def-editor {
+  display: grid;
+  gap: 8px;
+}
+
+.ag-def-editor__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ag-def-editor__head > span {
+  color: #4e5969;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.ag-def-editor__head > div {
+  display: flex;
+  gap: 2px;
+}
+
+.ag-def-editor__head button {
+  padding: 4px 12px;
+  color: #56637a;
+  font-size: 12px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.ag-def-editor__head button[aria-pressed="true"] {
+  color: #155bd7;
+  background: #edf3ff;
+  border-color: #cbdcff;
 }

@@ -69,6 +69,7 @@ import { useAuthStore } from "@/stores/auth";
 import { getErrorMessage, getErrorStatus } from "@/utils/errors";
 import { EvolutionPanel } from "./EvolutionPanel";
 import { RunsPanel } from "./RunsPanel";
+import { TagDefinitionTree } from "./TagDefinitionTree";
 import "./tagGovernance.css";
 
 const TABS = [
@@ -361,7 +362,12 @@ function SchemaVersionDialog({
   pending: boolean;
 }) {
   const [version, setVersion] = useState("");
-  const [definitions, setDefinitions] = useState(DEFINITION_TEMPLATE);
+  // 结构化数组是唯一事实源;JSON 视图只是它的另一种呈现,切换时同步。
+  const [definitions, setDefinitions] = useState<TagDefinition[]>(
+    () => JSON.parse(DEFINITION_TEMPLATE) as TagDefinition[],
+  );
+  const [mode, setMode] = useState<"tree" | "json">("tree");
+  const [jsonDraft, setJsonDraft] = useState(DEFINITION_TEMPLATE);
   const [error, setError] = useState<string | null>(null);
 
   const submit = (event: FormEvent) => {
@@ -370,12 +376,14 @@ function SchemaVersionDialog({
       setError("体系版本号仅支持字母、数字、下划线、点和短横线。");
       return;
     }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(definitions);
-    } catch {
-      setError("标签定义 JSON 无法解析。");
-      return;
+    let parsed: unknown = definitions;
+    if (mode === "json") {
+      try {
+        parsed = JSON.parse(jsonDraft);
+      } catch {
+        setError("标签定义 JSON 无法解析。");
+        return;
+      }
     }
     if (
       !Array.isArray(parsed) ||
@@ -428,19 +436,59 @@ function SchemaVersionDialog({
               onChange={(event) => setVersion(event.target.value)}
             />
           </label>
-          <label className="is-full">
-            标签定义 JSON
-            <textarea
-              rows={17}
-              aria-label="标签定义 JSON"
-              value={definitions}
-              spellCheck={false}
-              onChange={(event) => setDefinitions(event.target.value)}
-            />
+          <div className="is-full ag-def-editor">
+            <div className="ag-def-editor__head">
+              <span>标签定义</span>
+              <div role="group" aria-label="定义编辑方式">
+                <button
+                  type="button"
+                  aria-pressed={mode === "tree"}
+                  onClick={() => {
+                    // 从 JSON 切回树:先解析,解析不了就不切,免得静默丢改动。
+                    try {
+                      const parsed = JSON.parse(jsonDraft) as TagDefinition[];
+                      if (Array.isArray(parsed)) setDefinitions(parsed);
+                    } catch {
+                      setError("JSON 无法解析,修正后才能切回层次树。");
+                      return;
+                    }
+                    setError(null);
+                    setMode("tree");
+                  }}
+                >
+                  层次树
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={mode === "json"}
+                  onClick={() => {
+                    setJsonDraft(JSON.stringify(definitions, null, 2));
+                    setMode("json");
+                  }}
+                >
+                  JSON
+                </button>
+              </div>
+            </div>
+            {mode === "tree" ? (
+              <TagDefinitionTree
+                definitions={definitions}
+                onChange={setDefinitions}
+              />
+            ) : (
+              <textarea
+                rows={17}
+                aria-label="标签定义 JSON"
+                value={jsonDraft}
+                spellCheck={false}
+                onChange={(event) => setJsonDraft(event.target.value)}
+              />
+            )}
             <small>
               发布后版本不可变；业务主体只允许 dialogue_unit 或 reception。
+              从上一版复制粘贴时切到 JSON 视图。
             </small>
-          </label>
+          </div>
           {error && (
             <p className="ag-inline-feedback is-error" role="alert">
               {error}

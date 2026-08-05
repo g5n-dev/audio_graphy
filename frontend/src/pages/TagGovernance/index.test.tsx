@@ -606,6 +606,8 @@ describe("TagGovernancePage", () => {
       screen.getByRole("button", { name: "为销售对话标签创建版本" }),
     );
     await user.type(screen.getByRole("textbox", { name: "体系版本号" }), "1.3.0");
+    // 默认是层次树;整份粘贴走 JSON 视图——这正是保留它的理由。
+    await user.click(screen.getByRole("button", { name: "JSON" }));
     fireEvent.change(screen.getByRole("textbox", { name: "标签定义 JSON" }), {
       target: {
         value: JSON.stringify([
