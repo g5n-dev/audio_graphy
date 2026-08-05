@@ -610,7 +610,6 @@ export default function ReceptionStateInsightsPage() {
                   if (sourceIndex === undefined || targetIndex === undefined) {
                     return null;
                   }
-                  const confidence = transition.average_confidence ?? 0;
                   const tone = pathTone(transition);
                   const geometry = transitionGeometry(
                     sourceIndex,
@@ -645,13 +644,6 @@ export default function ReceptionStateInsightsPage() {
                         d={geometry.d}
                         markerEnd={markerForTone(tone)}
                       />
-                      <text
-                        x={geometry.labelX}
-                        y={geometry.labelY}
-                        textAnchor="middle"
-                      >
-                        {transition.count} 次 · {formatPercent(confidence)}
-                      </text>
                     </g>
                   );
                 })}
@@ -794,6 +786,52 @@ export default function ReceptionStateInsightsPage() {
                         className="ag-topology-sample-count"
                       >
                         关联样本 {stage.count}
+                      </text>
+                    </g>
+                  );
+                })}
+
+                {/* 连线标签层。相邻列间距(≈stageGap)只比阶段气泡宽一条缝,
+                    标签必然压进两侧气泡;SVG 按文档序作画,画在阶段层之后
+                    才能压其上,再垫白底药丸保证可读。层不接事件——点击仍
+                    落在下面的连线命中区上。 */}
+                {orderedTransitions.map((transition, lane) => {
+                  const sourceIndex = stageIndex.get(transition.from_state);
+                  const targetIndex = stageIndex.get(transition.to_state);
+                  if (sourceIndex === undefined || targetIndex === undefined) {
+                    return null;
+                  }
+                  const tone = pathTone(transition);
+                  const geometry = transitionGeometry(
+                    sourceIndex,
+                    targetIndex,
+                    stageGap,
+                    lane,
+                  );
+                  const label = `${transition.count} 次 · ${formatPercent(
+                    transition.average_confidence ?? 0,
+                  )}`;
+                  const width = label.length * 6.9 + 14;
+                  return (
+                    <g
+                      key={`label-${transition.from_state}-${transition.to_state}`}
+                      className={`ag-state-path-label is-${tone}`}
+                      pointerEvents="none"
+                      aria-hidden="true"
+                    >
+                      <rect
+                        x={geometry.labelX - width / 2}
+                        y={geometry.labelY - 12}
+                        width={width}
+                        height={17}
+                        rx={4}
+                      />
+                      <text
+                        x={geometry.labelX}
+                        y={geometry.labelY}
+                        textAnchor="middle"
+                      >
+                        {label}
                       </text>
                     </g>
                   );

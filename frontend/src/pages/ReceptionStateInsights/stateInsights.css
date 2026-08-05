@@ -265,30 +265,27 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* 与标签洞察的视图切换同一套软药丸语言(浅蓝底选中),不再用
+   深蓝实底的硬分段控件——同一产品里两种切换器是认知税。 */
 .ag-state-topology .ag-state-flow-toolbar > div:first-child {
-  overflow: hidden;
-  border: 1px solid #dce3ee;
-  border-radius: 5px;
+  display: flex;
+  gap: 2px;
 }
 
 .ag-state-topology .ag-state-flow-toolbar button {
   min-height: 29px;
-  padding: 4px 13px;
-  border: 0;
-  border-right: 1px solid #e3e8f0;
-  border-radius: 0;
+  padding: 4px 14px;
+  color: #56637a;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px;
   font-size: 13px;
 }
 
-.ag-state-topology .ag-state-flow-toolbar button:last-child {
-  border-right: 0;
-}
-
 .ag-state-topology .ag-state-flow-toolbar button[aria-pressed="true"] {
-  color: #fff;
-  background: #246bce;
-  border-color: #246bce;
-  box-shadow: inset 0 0 0 1px #246bce;
+  color: #155bd7;
+  background: #edf3ff;
+  border-color: #cbdcff;
 }
 
 .ag-state-topology .ag-state-flow-toolbar > span {
@@ -384,15 +381,6 @@
   fill: none;
   stroke: transparent;
   stroke-width: 16;
-}
-
-.ag-state-topology .ag-state-path > text {
-  fill: #6a7689;
-  paint-order: stroke;
-  stroke: #fbfdff;
-  stroke-width: 4px;
-  font-size: 13px;
-  font-weight: 600;
 }
 
 .ag-state-topology .ag-state-path.is-strong {
@@ -824,4 +812,32 @@
   .ag-state-topology .ag-topology-confidence-legend {
     display: none;
   }
+}
+
+/* ── 连线标签层:压在阶段气泡之上的白底药丸 ───────────────── */
+.ag-state-topology .ag-state-path-label rect {
+  fill: rgb(255 255 255 / 95%);
+  stroke: #e2e8f2;
+  stroke-width: 1;
+}
+
+.ag-state-topology .ag-state-path-label text {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.ag-state-topology .ag-state-path-label.is-strong text {
+  fill: #1d5fc2;
+}
+
+.ag-state-topology .ag-state-path-label.is-normal text {
+  fill: #67748a;
+}
+
+.ag-state-topology .ag-state-path-label.is-danger text {
+  fill: #c2402a;
+}
+
+.ag-state-topology .ag-state-path-label.is-danger rect {
+  stroke: #f2cdc4;
 }
