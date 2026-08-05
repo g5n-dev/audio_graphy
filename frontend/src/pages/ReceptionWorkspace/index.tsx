@@ -35,6 +35,7 @@ import {
 } from "@/api/services";
 import { getRecordingSpeakers } from "@/api/speakers";
 import { EvidenceAuditPanel } from "@/components/dialogue/EvidenceAuditPanel";
+import { FloatingSubtitle } from "@/components/dialogue/FloatingSubtitle";
 import { formatClock, formatPercent } from "@/components/dialogue/format";
 import { MultiTrackTimeline } from "@/components/dialogue/MultiTrackTimeline";
 import { LiveAudioCapturePanel } from "./LiveAudioCapturePanel";
@@ -218,6 +219,11 @@ export default function ReceptionWorkspacePage() {
   const queryClient = useQueryClient();
   const currentUser = useAuthStore((state) => state.user);
   const audioRef = useRef<HTMLAudioElement>(null);
+  const transcriptRef = useRef<HTMLDivElement>(null);
+  // 悬浮字幕的时间与播放态一律来自 <audio> 本体:自己维护一份会和音频漂移。
+  const [playbackSec, setPlaybackSec] = useState(0);
+  const [playbackDuration, setPlaybackDuration] = useState(0);
+  const [isPlaying, setIsPlaying] = useState(false);
   const deepLinkAppliedRef = useRef(false);
   const initializedReceptionRef = useRef<string | null>(null);
   const initializedWindowRef = useRef<string | null>(null);
@@ -229,6 +235,30 @@ export default function ReceptionWorkspacePage() {
   const draggedMappingRef = useRef<string | null>(null);
   const previousAutomationStatusRef = useRef<string | null>(null);
   const [activeSourceId, setActiveSourceId] = useState<AudioSourceId>(null);
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    const syncTime = () => setPlaybackSec(audio.currentTime);
+    const syncMeta = () =>
+      setPlaybackDuration(Number.isFinite(audio.duration) ? audio.duration : 0);
+    const play = () => setIsPlaying(true);
+    const pause = () => setIsPlaying(false);
+    audio.addEventListener("timeupdate", syncTime);
+    audio.addEventListener("loadedmetadata", syncMeta);
+    audio.addEventListener("durationchange", syncMeta);
+    audio.addEventListener("play", play);
+    audio.addEventListener("pause", pause);
+    audio.addEventListener("ended", pause);
+    syncMeta();
+    return () => {
+      audio.removeEventListener("timeupdate", syncTime);
+      audio.removeEventListener("loadedmetadata", syncMeta);
+      audio.removeEventListener("durationchange", syncMeta);
+      audio.removeEventListener("play", play);
+      audio.removeEventListener("pause", pause);
+      audio.removeEventListener("ended", pause);
+    };
+  }, [activeSourceId]);
   const [pendingSeek, setPendingSeek] = useState<PendingSeek | null>(null);
   const [timelineTime, setTimelineTime] = useState(0);
   const [silenceGap, setSilenceGap] =
@@ -2399,7 +2429,11 @@ export default function ReceptionWorkspacePage() {
             </section>
           )}
 
-          <div className="ag-transcript" aria-label="对话转写">
+          <div
+            ref={transcriptRef}
+            className="ag-transcript"
+            aria-label="对话转写"
+          >
             {workspace.transcript_items.length === 0 ? (
               <p className="ag-empty-inline">暂无转写数据</p>
             ) : (
@@ -2435,6 +2469,40 @@ export default function ReceptionWorkspacePage() {
           />
         </aside>
       </main>
+
+      {/* 调听台很长:转写滚出视口后,这条给出「现在说到哪句」与跳转,
+          时间与播放态直接来自上面的 <audio>。 */}
+      <FloatingSubtitle
+        lines={workspace.transcript_items.map((item) => ({
+          atSec: item.start_sec,
+          speaker: item.speaker_label,
+          role:
+            item.speaker_role === "agent" || item.speaker_role === "customer"
+              ? item.speaker_role
+              : "unknown",
+          text: item.text,
+        }))}
+        currentSec={playbackSec}
+        durationSec={playbackDuration}
+        playing={isPlaying}
+        anchorRef={transcriptRef}
+        onSeek={(second) => {
+          const audio = audioRef.current;
+          if (audio) audio.currentTime = second;
+        }}
+        onTogglePlay={() => {
+          const audio = audioRef.current;
+          if (!audio) return;
+          if (audio.paused) void audio.play().catch(() => undefined);
+          else audio.pause();
+        }}
+        onBackToTranscript={() =>
+          transcriptRef.current?.scrollIntoView({
+            behavior: "smooth",
+            block: "center",
+          })
+        }
+      />
     </div>
   );
 }
