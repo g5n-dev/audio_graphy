@@ -2493,3 +2493,27 @@ export interface ApiKeyListResponse {
   items: ApiKeyResource[];
   total: number;
 }
+
+// ============================================================
+// Orchestration topology
+// ============================================================
+
+export interface OrchestrationStage {
+  id: string;
+  name: string;
+  service: string;
+  /** null 表示该阶段没有 mock/real 开关。 */
+  adapter_mode: string | null;
+  state: "ok" | "busy" | "mock";
+  queue: number;
+  note: string;
+  /** [标签, 当前值, 控制它的 env 键] —— 配置是 12-factor 的,只读展示。 */
+  config: [string, string, string][];
+  in_schema: string[];
+  out_schema: string[];
+}
+
+export interface OrchestrationTopologyResponse {
+  stages: OrchestrationStage[];
+  links: [string, string][];
+}

@@ -7,6 +7,7 @@
 
 import { httpClient } from "./client";
 import type {
+  OrchestrationTopologyResponse,
   ApiKeyListResponse,
   ApiKeyMintResponse,
   ApiKeyResource,
@@ -1458,6 +1459,17 @@ export async function listApiKeys(): Promise<ApiKeyListResponse> {
 export async function revokeApiKey(keyId: number): Promise<{ key: ApiKeyResource }> {
   const { data } = await httpClient.post<{ key: ApiKeyResource }>(
     `/integration/api-keys/${keyId}/revoke`,
+  );
+  return data;
+}
+
+// ============================================================
+// Orchestration
+// ============================================================
+
+export async function getOrchestrationTopology(): Promise<OrchestrationTopologyResponse> {
+  const { data } = await httpClient.get<OrchestrationTopologyResponse>(
+    "/orchestration/topology",
   );
   return data;
 }

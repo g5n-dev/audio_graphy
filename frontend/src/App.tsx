@@ -61,6 +61,7 @@ const GraphExplorerPage = lazy(() => import("@/pages/GraphExplorerPage"));
 const QueryPage = lazy(() => import("@/pages/QueryPage"));
 const StatsPage = lazy(() => import("@/pages/StatsPage"));
 const OpenApiKeysPage = lazy(() => import("@/pages/OpenApiKeys"));
+const OrchestrationPage = lazy(() => import("@/pages/Orchestration"));
 const SpeakerProfileListPage = lazy(() => import("@/pages/SpeakerProfile"));
 const SpeakerProfileDetailPage = lazy(
   () => import("@/pages/SpeakerProfile/Detail"),
@@ -302,6 +303,12 @@ const menuGroups = [
       { key: "/query", icon: <IconMessage />, label: "智能问答" },
       { key: "/stats", icon: <IconStorage />, label: "标签统计" },
       {
+        key: "/orchestration",
+        icon: <IconBranch />,
+        label: "任务与编排",
+        requiresInspector: true,
+      },
+      {
         key: "/open-api-keys",
         icon: <IconStorage />,
         label: "开放接口",
@@ -535,6 +542,14 @@ function AppLayout() {
                 <Route path="/time-travel" element={<TimeTravelPage />} />
                 <Route path="/stats" element={<StatsPage />} />
                 <Route path="/tag-insights" element={<TagInsightsPage />} />
+                <Route
+                  path="/orchestration"
+                  element={
+                    <GovernedRoute allowed={canGovernTags} role={user?.role}>
+                      <OrchestrationPage />
+                    </GovernedRoute>
+                  }
+                />
                 <Route
                   path="/open-api-keys"
                   element={

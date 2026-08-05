@@ -30,6 +30,7 @@ from audio_graphy.api.graph import router as graph_router
 from audio_graphy.api.health import router as health_router
 from audio_graphy.api.integration_admin import router as integration_admin_router
 from audio_graphy.api.open import router as open_router
+from audio_graphy.api.orchestration import router as orchestration_router
 from audio_graphy.api.prompt_lab import router as prompt_lab_router
 from audio_graphy.api.prompts import router as prompts_router
 from audio_graphy.api.query import router as query_router
@@ -769,6 +770,7 @@ def create_app() -> FastAPI:
     app.include_router(open_router, prefix=API_PREFIX)
     app.include_router(integration_admin_router, prefix=API_PREFIX)
     app.include_router(events_router, prefix=API_PREFIX)
+    app.include_router(orchestration_router, prefix=API_PREFIX)
     app.include_router(receptions_router, prefix=API_PREFIX)
     app.include_router(reception_pipeline_router, prefix=API_PREFIX)
     app.include_router(reception_state_insights_router, prefix=API_PREFIX)
