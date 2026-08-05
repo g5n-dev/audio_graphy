@@ -60,6 +60,7 @@ const RecordingDetailPage = lazy(() => import("@/pages/RecordingDetailPage"));
 const GraphExplorerPage = lazy(() => import("@/pages/GraphExplorerPage"));
 const QueryPage = lazy(() => import("@/pages/QueryPage"));
 const StatsPage = lazy(() => import("@/pages/StatsPage"));
+const OpenApiKeysPage = lazy(() => import("@/pages/OpenApiKeys"));
 const SpeakerProfileListPage = lazy(() => import("@/pages/SpeakerProfile"));
 const SpeakerProfileDetailPage = lazy(
   () => import("@/pages/SpeakerProfile/Detail"),
@@ -301,6 +302,12 @@ const menuGroups = [
       { key: "/query", icon: <IconMessage />, label: "智能问答" },
       { key: "/stats", icon: <IconStorage />, label: "标签统计" },
       {
+        key: "/open-api-keys",
+        icon: <IconStorage />,
+        label: "开放接口",
+        requiresAdmin: true,
+      },
+      {
         key: "/tag-governance",
         icon: <IconStorage />,
         label: "标签治理",
@@ -335,7 +342,10 @@ function AppLayout() {
   const visibleMenuGroups = menuGroups.map((group) => ({
     ...group,
     items: group.items.filter(
-      (item) => !("requiresInspector" in item) || canGovernTags,
+      (item) =>
+        "requiresAdmin" in item
+          ? user?.role === "admin"
+          : !("requiresInspector" in item) || canGovernTags,
     ),
   }));
   const visibleMenuItems = visibleMenuGroups.flatMap(
@@ -525,6 +535,17 @@ function AppLayout() {
                 <Route path="/time-travel" element={<TimeTravelPage />} />
                 <Route path="/stats" element={<StatsPage />} />
                 <Route path="/tag-insights" element={<TagInsightsPage />} />
+                <Route
+                  path="/open-api-keys"
+                  element={
+                    <GovernedRoute
+                      allowed={user?.role === "admin"}
+                      role={user?.role}
+                    >
+                      <OpenApiKeysPage />
+                    </GovernedRoute>
+                  }
+                />
                 <Route
                   path="/tag-governance"
                   element={

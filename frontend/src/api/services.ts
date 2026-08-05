@@ -7,6 +7,9 @@
 
 import { httpClient } from "./client";
 import type {
+  ApiKeyListResponse,
+  ApiKeyMintResponse,
+  ApiKeyResource,
   CreatePromptCompilationRequest,
   CreatePromptCompilationResponse,
   PromptArtifact,
@@ -1429,6 +1432,32 @@ export async function promotePromptArtifact(
   const { data } = await httpClient.post<PromptArtifactPromoteResponse>(
     `/prompt-lab/artifacts/${artifactId}/promote`,
     body,
+  );
+  return data;
+}
+
+// ============================================================
+// Open API integration — API keys (admin)
+// ============================================================
+
+export async function createApiKey(name: string): Promise<ApiKeyMintResponse> {
+  const { data } = await httpClient.post<ApiKeyMintResponse>(
+    "/integration/api-keys",
+    { name },
+  );
+  return data;
+}
+
+export async function listApiKeys(): Promise<ApiKeyListResponse> {
+  const { data } = await httpClient.get<ApiKeyListResponse>(
+    "/integration/api-keys",
+  );
+  return data;
+}
+
+export async function revokeApiKey(keyId: number): Promise<{ key: ApiKeyResource }> {
+  const { data } = await httpClient.post<{ key: ApiKeyResource }>(
+    `/integration/api-keys/${keyId}/revoke`,
   );
   return data;
 }

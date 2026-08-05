@@ -2469,3 +2469,27 @@ export type PromptArtifactListResponse =
   TagGovernanceListResponse<PromptArtifactSummary>;
 export type PromptGradientListResponse =
   TagGovernanceListResponse<PromptGradient>;
+
+// ============================================================
+// Open API integration — admin-side key management
+// ============================================================
+
+export interface ApiKeyResource {
+  id: number;
+  name: string;
+  active: boolean;
+  created_at: string;
+  last_used_at: string | null;
+}
+
+/** 创建响应:api_key 与 webhook_secret 只在这里出现一次,后端只存哈希。 */
+export interface ApiKeyMintResponse {
+  key: ApiKeyResource;
+  api_key: string;
+  webhook_secret: string;
+}
+
+export interface ApiKeyListResponse {
+  items: ApiKeyResource[];
+  total: number;
+}

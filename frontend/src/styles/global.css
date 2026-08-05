@@ -5223,3 +5223,32 @@ a:focus-visible {
     flex: 1;
   }
 }
+
+/* ── Open API 密钥页:一次性密钥展示 ─────────────────────── */
+.ag-openapi-reveal strong {
+  display: block;
+  margin-bottom: 12px;
+  color: #b45309;
+}
+
+.ag-openapi-secret-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.ag-openapi-secret-label {
+  flex: 0 0 110px;
+  font-weight: 600;
+}
+
+.ag-openapi-secret-value {
+  flex: 1 1 auto;
+  overflow-x: auto;
+  white-space: nowrap;
+  padding: 4px 8px;
+  background: rgba(125, 125, 125, 0.12);
+  border-radius: 4px;
+  user-select: all;
+}
