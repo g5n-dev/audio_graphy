@@ -170,10 +170,10 @@
 }
 
 .ag-graph-window-context header {
+  /* 标签在上、时间值在下。原先的 1fr/auto 两列会让长时间文本把
+     「当前窗口」挤成一字一行——侧栏只有 ~260px,放不下并排。 */
   display: grid;
-  grid-template-columns: 1fr auto;
-  align-items: baseline;
-  gap: 2px 6px;
+  gap: 2px;
 }
 
 .ag-graph-window-context header strong {

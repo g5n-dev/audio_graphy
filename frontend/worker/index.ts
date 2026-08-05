@@ -1470,6 +1470,37 @@ function safeGet(pathname: string, url: URL): Response | null {
   if (pathname === "/tags/stats") return json(demoStats);
   if (pathname === "/prompts") return json({ items: [] });
   if (pathname === "/speakers") return json({ items: [], total: 0 });
+  if (/^\/recordings\/\d+\/speakers$/.test(pathname)) {
+    // 声纹归属解析:工作台时间线用它把 speaker_label 升级为「已确认身份」。
+    // 缺了这个端点,前端会亮出「说话人身份加载失败」的降级横幅——那是给
+    // 真实故障准备的,不该出现在演示里。
+    const recordingId = Number(pathname.split("/")[2]);
+    return json({
+      recording_id: recordingId,
+      items: [
+        {
+          source_speaker_label: "顾问小林",
+          speaker_node_id: 9101,
+          display_name: "顾问小林",
+          speaker_role: "agent",
+          ambiguity_tag: null,
+          merge_confidence: 0.97,
+          cosine_similarity: 0.93,
+          strategy: "voiceprint",
+        },
+        {
+          source_speaker_label: "客户",
+          speaker_node_id: 9102,
+          display_name: "客户",
+          speaker_role: "customer",
+          ambiguity_tag: null,
+          merge_confidence: 0.95,
+          cosine_similarity: 0.91,
+          strategy: "voiceprint",
+        },
+      ],
+    });
+  }
   if (/^\/recordings\/\d+\/segments$/.test(pathname)) {
     return json({
       recording_id: Number(pathname.split("/")[2]),
